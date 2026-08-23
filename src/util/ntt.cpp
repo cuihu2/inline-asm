@@ -22,8 +22,8 @@ std::string generate_hpu_ntt_body_asm(
 {
     std::ostringstream asm_code;
 
-    if (!is_power_of_two(N) || !hpu::fits_regular_object(N)) {
-        asm_code << "        // Invalid config: require power-of-two N fitting 1024 lines\n";
+    if (!is_power_of_two(N) || !hpu::fits_ntt_object(N)) {
+        asm_code << "        // Invalid config: require power-of-two 128 <= N <= 65536\n";
         return asm_code.str();
     }
 
@@ -66,8 +66,8 @@ std::string generate_hpu_intt_body_asm(
 {
     std::ostringstream asm_code;
 
-    if (!is_power_of_two(N) || !hpu::fits_regular_object(N)) {
-        asm_code << "        // Invalid config: require power-of-two N fitting 1024 lines\n";
+    if (!is_power_of_two(N) || !hpu::fits_ntt_object(N)) {
+        asm_code << "        // Invalid config: require power-of-two 128 <= N <= 65536\n";
         return asm_code.str();
     }
 
@@ -114,8 +114,8 @@ std::string generate_hpu_ntt_asm(
 
     asm_code << "void hpu_ntt_N" << N << "(void) {\n";
 
-    if (!is_power_of_two(N) || !hpu::fits_regular_object(N)) {
-        asm_code << "    // Invalid config: require power-of-two N fitting 1024 lines\n";
+    if (!is_power_of_two(N) || !hpu::fits_ntt_object(N)) {
+        asm_code << "    // Invalid config: require power-of-two 128 <= N <= 65536\n";
         asm_code << "}\n";
         return asm_code.str();
     }
@@ -156,8 +156,8 @@ std::string generate_hpu_intt_asm(
 
     asm_code << "void hpu_intt_N" << N << "(void) {\n";
 
-    if (!is_power_of_two(N) || !hpu::fits_regular_object(N)) {
-        asm_code << "    // Invalid config: require power-of-two N fitting 1024 lines\n";
+    if (!is_power_of_two(N) || !hpu::fits_ntt_object(N)) {
+        asm_code << "    // Invalid config: require power-of-two 128 <= N <= 65536\n";
         asm_code << "}\n";
         return asm_code.str();
     }

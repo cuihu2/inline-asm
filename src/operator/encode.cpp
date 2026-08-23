@@ -16,7 +16,7 @@ bool is_power_of_two(int value)
 bool valid_encode_config(int N, int num_q)
 {
     return is_power_of_two(N)
-        && hpu::fits_regular_object(N)
+        && hpu::fits_ntt_object(N)
         && num_q > 0
         && num_q <= hpu::kMaxModContexts;
 }

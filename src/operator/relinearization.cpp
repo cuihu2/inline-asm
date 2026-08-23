@@ -15,7 +15,7 @@ bool is_power_of_two(int x)
 
 bool is_valid_config(int N, int num_q, int num_p, int dnum)
 {
-    return is_power_of_two(N) && hpu::fits_regular_object(N)
+    return is_power_of_two(N) && hpu::fits_ntt_object(N)
         && num_q > 0 && num_p > 0 && dnum > 0
         && num_q % dnum == 0 && num_q + num_p <= hpu::kMaxModContexts;
 }

@@ -38,6 +38,9 @@ endwhile()
 if(NOT FHE_STAGE_LENGTH EQUAL FHE_N)
     message(FATAL_ERROR "Configured N is not a power of two: ${FHE_N}")
 endif()
+if(FHE_N LESS 128)
+    message(FATAL_ERROR "Configured N is smaller than the 128-register NTT array: ${FHE_N}")
+endif()
 math(EXPR FHE_LAST_STAGE "${FHE_STAGE_COUNT} - 1")
 if(FHE_LAST_STAGE LESS 10)
     set(FHE_LAST_STAGE_NAME "0${FHE_LAST_STAGE}")
@@ -199,6 +202,20 @@ endif()
 if(NOT HARDWARE_ABI MATCHES
         "\"stage_payload_lines\": ${FHE_STAGE_LINES}")
     message(FATAL_ERROR "Hardware ABI stage twiddle line count is not ceil((N/2)/64)")
+endif()
+if(NOT HARDWARE_ABI MATCHES
+        "\"coefficient_physical_order\": \"memory\\[position\\] = coefficient\\[bit_reverse\\(position\\)\\]\"")
+    message(FATAL_ERROR "Hardware ABI does not freeze bit-reversed coefficient images")
+endif()
+if(NOT HARDWARE_ABI MATCHES
+        "\"ntt_physical_order\": \"memory\\[position\\] = logical_ntt\\[forward_layout\\[position\\]\\]\"")
+    message(FATAL_ERROR "Hardware ABI does not freeze the post-P-network NTT layout")
+endif()
+if(NOT HARDWARE_ABI MATCHES "128 registers, 64 BF lanes")
+    message(FATAL_ERROR "Hardware ABI does not identify the autotest NTT batch model")
+endif()
+if(NOT HARDWARE_ABI MATCHES "P\\^-1 before BF, lazy-scale w_bf=alpha/beta")
+    message(FATAL_ERROR "Hardware ABI does not freeze the dual-schedule PINTT rule")
 endif()
 if(NOT HARDWARE_ABI MATCHES "\"pre_twist_execution\": \"explicit PMUL")
     message(FATAL_ERROR "Hardware ABI does not explicitly execute the negacyclic pre-twist")
@@ -627,6 +644,8 @@ file(WRITE "${ROOT}/outputs/DELIVERY_REPORT.txt"
     "MOD_CTX_Q32_MU48=PASS\n"
     "MOD_TABLE_BASE_0X1400=PASS\n"
     "STAGE_TWIDDLE_LAYOUT=PASS\n"
+    "AUTOTEST_NTT_SCHEDULE=PASS\n"
+    "FHE_HARDWARE_CONVOLUTION=PASS\n"
     "NEGACYCLIC_FACTORS_EXPLICIT=PASS\n"
     "NTT_PHYSICAL_OUT_OF_PLACE=PASS\n"
     "ENCODE_HOST_RNS_BOUNDARY=PASS\n"

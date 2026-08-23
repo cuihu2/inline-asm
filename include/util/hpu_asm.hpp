@@ -14,6 +14,7 @@ inline constexpr const char* kDmaCountRegister = "x11";
 inline constexpr int kRegularBankCount = 5;
 inline constexpr int kRegularBankLines = 1024;
 inline constexpr int kHpuWordsPerLine = 64;
+inline constexpr int kNttRegisterCount = 128;
 inline constexpr int kSmallBankId = 5;
 inline constexpr int kSmallBankLines = 32;
 inline constexpr int kModTableBaseLine = 0x1400;
@@ -35,8 +36,14 @@ inline constexpr bool fits_regular_object(int words) {
     return words > 0 && hpu_lines_for_words(words) <= kRegularBankLines;
 }
 
+inline constexpr bool fits_ntt_object(int words) {
+    return words >= kNttRegisterCount && fits_regular_object(words);
+}
+
 static_assert(fits_regular_object(65536));
 static_assert(!fits_regular_object(65537));
+static_assert(fits_ntt_object(128));
+static_assert(!fits_ntt_object(64));
 
 inline std::string pobj(int id) {
     return "p" + std::to_string(id);

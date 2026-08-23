@@ -158,12 +158,14 @@ Encrypt(ctA, ctB)
 `0x1400..0x141F` 共 32 line，物理可放 512 条记录；但 `MOD_ID` 为 8 bit，
 所以软件只允许 256 个 context，寻址 `0x1400..0x140F`。
 
-Twiddle 与软件 reference 一致，采用 negacyclic pre-twist 和 radix-2 DIT；
-NTT stage 0 前显式执行 `PMUL psi^i`，INTT 最后一个 stage 后显式执行
-`PMUL (N^-1 * psi^-i)`，不依赖 PE 隐式归一化或 twist。每个 stage 按
-group-major butterfly 顺序展开为固定 `N/2` 个 `uint32`，即 `N/128` 条
-256B line。默认 `N=4096` 时每个 stage 恰为 2048 words、32 line，不再使用
-“唯一 twiddle 由各 group 复用”的压缩镜像。
+Twiddle 与硬件组 `autotest/hw_ntt_intt_complete.py` 的 128-register 模型一致。
+系数域镜像为 bit-reversed order，NTT 域镜像为全部前向 P 网络后的物理
+layout。NTT stage 0 前显式执行物理顺序的 `PMUL psi^i`；每个 PNTT batch
+由 64 个 BF lane 消费 64 个 twiddle，随后执行 P。PINTT 反向遍历对应的
+前向 stage，每批先执行 `P^-1`，再使用 dual schedule 的 lazy-scale BF
+twiddle。最终显式执行物理顺序的 `PMUL (N^-1 * psi^-i)`，不依赖 PE 隐式
+归一化或 twist。每个 stage 固定 `N/2` 个 `uint32`、`N/128` 条 256B line；
+默认 `N=4096` 时为 2048 words、32 line。
 
 ## 5. 失败定位
 
@@ -212,9 +214,9 @@ group-major butterfly 顺序展开为固定 `N/2` 个 `uint32`，即 `N/128` 条
 
 1. RTL 正确接受 V1 `mod_ctx = {reserved48, mu48, q32}`、32-line Bank 5 与固定
    `MOD_TABLE_BASE_LINE=0x1400`。
-2. `pntt/pintt stage` 按 `twiddle_map.csv` 的 `N/2` group-major DIT 次序执行，
-   采用物理 out-of-place 提交和显式 pre/post PMUL；当前数据为 canonical residue，
-   不是 Montgomery 域。
+2. `pntt/pintt stage` 按 `twiddle_map.csv` 的 `N/2` 个值，以 `autotest` 定义的
+   batch/lane 和 P/P^-1 次序执行，采用物理 out-of-place 提交和显式 pre/post
+   PMUL；当前数据为 canonical residue，不是 Montgomery 域。
 3. DMA、allocator 和 PE 对 `pfree`、`dstore rel=1`、对象生命周期、FAULT/IRQ 的
    目标实现与软件 ABI 一致。
 4. 目标输出逐字等于 golden，尾部 guard 未被改写，并提供外部 monitor/波形或板端

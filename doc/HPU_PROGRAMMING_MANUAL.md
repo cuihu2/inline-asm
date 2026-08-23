@@ -1,8 +1,8 @@
 # HPU 软件编程手册
 
-版本：0.3
+版本：0.4
 适用实现：`inline-asm` 当前软件实现
-日期：2026-07-24
+日期：2026-08-23
 
 ## 前言
 
@@ -453,12 +453,19 @@ pfree p3
 `pmul pdata, pdata, ptwiddle`，实现逐系数乘 `psi^i`。该步骤不是
 `pntt stage=0` 的隐含行为。
 
-硬件镜像为每个 stage 固定生成 `N/2` 个 little-endian `uint32`
-twiddle，即 `N/128` 条 256B line。当前物理顺序是 group-major DIT：
-对每个长度为 `length=2^(stage+1)` 的 butterfly group，依次写出
-`step^j mod q`（`j=0..length/2-1`），再写下一个 group；因此不同 group
-需要的相同 twiddle 也会在镜像中重复出现。当前 `N=4096` 时，每个 stage
-均为 2048 words、32 line，而不是仅保存一份可复用的唯一幂表。
+硬件镜像遵循硬件组 `autotest/hw_ntt_intt_complete.py` 的物理执行模型。
+系数域多项式先按 `memory[p] = coefficient[bit_reverse(p)]` 排列，因此
+`pre_twist[p] = psi^bit_reverse(p)`。每个 stage 处理 `N/128` 个 batch；每个
+batch 装入 128 个寄存器，由 64 个 BF lane 顺序消费 64 个 twiddle，BF 后
+对 7-bit 寄存器索引执行一次 P 网络，再写回本 batch。`m=2^stage < 128`
+时 loader 连续装入 128 words；`m >= 128` 时从蝶形的上下两半各取 64 words
+交错装入。stage twiddle 文件严格按“batch 顺序、batch 内 lane 顺序”写出，
+共 `N/2` 个 little-endian `uint32`，即 `N/128` 条 256B line。默认
+`N=4096` 时为 2048 words、32 line。
+
+完成所有 stage 后，NTT 域数据保持 P 网络产生的物理排列：
+`memory[p] = logical_ntt[forward_layout[p]]`。因此 NTT 域明文、密钥和中间
+结果也必须使用同一排列；不能把自然顺序 NTT 数据直接作为硬件镜像。
 
 ### 5.2 PINTT - 逆向 NTT stage
 
@@ -485,18 +492,20 @@ pintt pdata, ptwiddle, stage, 0, 0
 pfree ptwiddle
 ```
 
-软件 reference 的数学行为是 radix-2 DIT 逆循环 NTT，随后逐系数乘
-`N^-1 * psi^-i mod q`，同时完成归一化和负循环 inverse twist。硬件数据包
-为每个 RNS 模数生成逐 stage 的逆 DIT twiddle以及
-`post_untwist_scale.u32.bin`；其中第 `i` 项为 `N^-1 * psi^-i mod q`。
-最终 `pintt` 后，生成器显式执行一次 `dload + pmul + pfree` 消费该 post
-factor，不再假设 PE 或最后一个 stage 隐式融合它。
+硬件 PINTT 使用与前向变换严格对偶的 schedule。指令的 `stage=k` 对应前向
+`stage=log2(N)-1-k` 的 loader；每个 batch 先执行一次 P 的逆网络 `P^-1`，
+再进入 64 个 BF lane。逆表不是简单的自然顺序 `omega^-j` 表，而是由 dual
+schedule 跟踪每个物理位置的 lazy scale，逐 lane 生成
+`w_bf = alpha * beta^-1 mod q`。这样全部 PINTT stage 结束后，物理布局和
+lazy scale 都恢复到系数域约定。
 
-软件 reference 中的 bit-reversal 循环是其 radix-2 DIT 实现细节，不对应一条
-独立 HPU 指令。硬件通过 stream_ctrl 的 stage 地址生成与 PE lane transpose
-形成各 stage 配对，不再声明“stage 0 前隐式执行一次全多项式 shuffle”。
-runtime 需按 `twiddle_map.csv` 分别绑定 pre-twist、各 stage twiddle 和
-post factor 的 line offset/count。
+随后显式加载 `post_untwist_scale.u32.bin` 并执行
+`dload + pmul + pfree`。物理位置 `p` 的值为
+`N^-1 * psi^-bit_reverse(p) mod q`，同时完成归一化和 negacyclic inverse
+twist。完整的 `PNTT -> pointwise multiply -> PINTT` 已由 reference 与硬件
+schedule 模型逐字比较，结果对应系数域的 negacyclic convolution。
+runtime 按 `twiddle_map.csv` 绑定 pre-twist、各 stage twiddle 和 post factor
+的 line offset/count。
 
 **示例**
 
@@ -821,7 +830,7 @@ ctest --test-dir build --output-on-failure
 
 1. relocation/runtime 是否把每条 DMA 的实际 line offset/count 装入 `rs1/rs2`。
 2. runtime 是否按 `MOD_TABLE_BASE_LINE=0x1400` 将模表 DMA 搬入 Bank 5。
-3. RTL 是否按已生成的 group-major 次序消费 twiddle，并按 out-of-place 协议提交各 stage 新 base。
+3. RTL 是否按 `autotest` 的 batch/lane、P/P^-1 次序消费 twiddle，并按 out-of-place 协议提交各 stage 新 base。
 4. cache maintenance、中断和 fault 的 runtime 实现。
 
 上述列表是尚未实现的 runtime/RTL 行为，不是这些ABI 的备选解释。

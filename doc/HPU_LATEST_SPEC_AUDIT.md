@@ -18,6 +18,9 @@
 5. [HPU](https://icnj64z5e8zz.feishu.cn/wiki/MZkHwbivGiOs7ekMGb0cMSk5nTY)。知识库根文档，包含新旧章节，只用于定位历史约定，不作为单一冻结版本。
 6. [HPU 通过 DMA 访问主存的实现方案讨论稿](https://icnj64z5e8zz.feishu.cn/wiki/KOfhwRW4Oi33f6kPEXWcJJwDnSS)。该文档明确是讨论稿；当它与集成手册冲突时，以集成手册为准。
 7. 硬件负责人于 2026-08-18 确认：DMA 一致性由硬件维护，`psync` 不作为 DMA 等待屏障，只在整个程序完成后用于通知 CPU。该确认覆盖此前文档中关于软件插入 DMA 屏障的推断。
+8. 硬件负责人提供的 `/home/songyexin/fhe/autotest/hw_ntt_intt_complete.py`，于
+   2026-08-23 作为 PNTT/PINTT loader、128-register BF、P/P^-1 网络和 lazy
+   scale 的可执行物理模型。它补充了文档只给出总容量、未冻结逐 lane 顺序的部分。
 
 ## 2. 已完成修复
 
@@ -77,18 +80,25 @@ cmd26[24:0] = control payload
 2. 输出可直接运行的 host harness：装载寄存器、发射 `.inst32`、等待完成、检查 fault。
 3. 将“所有 DMA 使用 x0/x0”改成 delivery 失败条件；仅显式 `--symbolic-dma` 模式允许占位符。
 
-### A5. stage twiddle 物理布局与 PE 文档不一致（已修复，2026-07-24）
+### A5. stage twiddle 物理布局与硬件执行模型不一致（已修复，2026-08-23）
 
 原实现为 stage `s` 只生成 `2^s` 个唯一 twiddle，并声明由 butterfly group
 复用，不符合 PE 的物理搬运数量。
 
 文档来源：《HPU_PE_反串讲》13.2、13.3：每个 stage 的物理 twiddle 对象为 `N/2` 个 32-bit 元素；以 `N=65536` 为例正好是 512 line。每个 stage 前独立 DLoad。
 
-当前生成器已按 group-major DIT butterfly 顺序展开每个 stage：每个 group
-依次写 `step^j`，相同值在不同 group 中物理重复。每个 stage 固定为 `N/2`
-个 `uint32`、`N/128` line；默认 `N=4096` 为 2048 words/32 lines。
-`twiddle_map.csv` 新增 `group_count` 和 `twiddles_per_group`，delivery 门禁逐一检查
-NTT/INTT 的 12 个 stage。negacyclic pre/post factor 已按 A13 显式执行。
+2026-08-23 对照硬件负责人提供的 `autotest/hw_ntt_intt_complete.py` 后发现，
+仅把唯一 twiddle 扩展成 group-major 顺序仍不正确。RTL 模型以 128 个寄存器、
+64 个 BF lane 为批处理单元，PNTT 每个 batch 在 BF 后执行 P 网络；PINTT
+反向遍历 stage，每批先执行 `P^-1`，再以 dual schedule 的 lazy-scale
+`w_bf=alpha/beta` 执行 BF。因此 twiddle 的值和物理次序都依赖此前全部 shuffle。
+
+当前生成器已逐 stage 模拟 loader、P/P^-1 和 lane 标签，按 batch/lane 消费
+顺序生成固定 `N/2` 个 `uint32`、`N/128` line；默认 `N=4096` 为
+2048 words/32 lines。系数域镜像改为 bit-reversed order，NTT 域明文、密钥和
+中间结果改为 forward P-layout。reference 内置硬件模型同时检查前向数学 NTT
+以及 `PNTT -> pointwise -> PINTT` 的卷积语义。negacyclic pre/post factor 仍按
+A13 显式执行，但也改为对应物理位置的 bit-reversed 顺序。
 
 ### A6. HPU_MEM CSR 数字地址（已修复，2026-07-24）
 
@@ -198,9 +208,9 @@ negacyclic twist 或 INTT 归一化融合。《HPU_PE_反串讲》13.2 也要求
 
 当前 NTT 在 stage 0 前显式生成 `dload pre_twist -> pmul -> pfree`；INTT 在
 最终 stage 后显式生成
-`dload post_untwist_scale -> pmul -> pfree`。软件 reference 的 bit-reversal
-循环只作为 DIT 数学实现细节；硬件 stage 配对由 stream_ctrl 地址生成和 PE
-lane transpose 实现，不再虚构独立隐式 shuffle。
+`dload post_untwist_scale -> pmul -> pfree`。按照 A5 的硬件执行模型，系数域
+数据、pre-twist 和 post factor 均使用 bit-reversed 物理位置；各 stage 的
+P/P^-1 shuffle 由硬件执行，没有独立的全多项式 bit-reversal 指令。
 
 ### A14. 未定义的 `dload load_type=3`（已修复，2026-08-18）
 

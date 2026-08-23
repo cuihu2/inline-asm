@@ -47,6 +47,7 @@
 - **`doc/HPU_INSTRUCTION_MANUAL.md`**：当前 HPU 指令格式和语义说明。
 - **`doc/HPU_TEST_DELIVERY.md`**：指令流、完整密文乘法 golden、RV 接口冒烟用例、验收命令和硬件联调前置项。
 - **`doc/HPU_LATEST_SPEC_AUDIT.md`**：项目与最新飞书集成/控制/RV/PE 文档的逐项符合性审计、来源和修改顺序。
+- **`doc/HPU_AUTOTEST_DELIVERY_AUDIT.md`**：硬件组 `autotest` 对照、FHE 卷积修复、reference 与最终 IT ELF 的验证证据。
 
 ### 8) 三个程序入口
 
@@ -157,8 +158,8 @@ relocation manifest、line map 与 HPU_MEM 镜像。
 指向仓库配置，`hpu_delivery` 会把同一路径显式传给指令生成器和 reference；使用
 另一份配置时可执行 `cmake -S . -B build -DHPU_TEST_CONFIG=/abs/path/fhe_test.conf`。
 
-配置必须满足 `N` 为不小于 2 的 2 次幂、`ceil(N/64) <= 1024`（即
-`N <= 65536`）、`num_q >= 2`、`num_q % dnum == 0`、
+配置必须满足 `N` 为不小于 128 的 2 次幂、`ceil(N/64) <= 1024`（即
+`128 <= N <= 65536`）、`num_q >= 2`、`num_q % dnum == 0`、
 `num_q + num_p <= 256`，且当前 Auto 仅支持 `auto_index=1`。默认值为
 `N=4096, Q=4, P=3, dnum=2`。small Bank 5 为 32 line，固定范围
 `0x1400..0x141F`，物理可放 512 个 context；由于 `MOD_ID` 只有 8 bit，软件可
@@ -207,8 +208,8 @@ KeySwitch 和 Relinearization 的独立 UT 数据包。
 
 调用方需要保证：
 
-- `N` 为 2 的幂，且 `ceil(N/64) <= 1024`（当前硬件上限 `N <= 65536`）
-- 仅允许 3 个工作槽位：`p0/p1/p2`
+- `N` 为 2 的幂且 `128 <= N <= 65536`；下界来自 NTT 的 128-register batch，上界来自普通 bank 的 1024 line
+- ISA 提供 8 个逻辑对象号 `p0..p7`；当前复合算子最多同时使用 `p0..p4`，具体角色见 `doc/dload_instructions.md`
 - 复杂算子（Encode/Rescale/PMULT/CMULT/MODUP/MODDOWN）使用 `dload/dstore` 流式搬运，不在本地长期保留多基对象
 - `dload type=2, flag[0]=1` 将模表逻辑对象分配到 small Bank 5；DMA 与后续指令的一致性由硬件维护，可直接使用 `pmodld MOD_ID` 激活表项
 - 每个可编码算子同时生成 `.inst32` 和 `.cmd26`；`cmd26[25]` 区分 custom0/custom1，custom0 直接携带 `inst[31:7]`，custom1 按控制逻辑字段重排并另带 offset/count sideband

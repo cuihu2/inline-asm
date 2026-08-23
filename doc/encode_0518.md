@@ -148,7 +148,7 @@ outputs/<case>/
 将同一路径显式传给二者。`outputs/*/test_data/params.json` 是生成结果，不是输入
 配置，重新生成时会覆盖。
 
-配置需要满足 `N` 为不小于 2 的 2 次幂、`ceil(N/64) <= 1024`、
+配置需要满足 `N` 为不小于 128 的 2 次幂、`ceil(N/64) <= 1024`、
 `num_q >= 2`、`num_q % dnum == 0`、`num_q + num_p <= 256`，且当前仅支持
 `auto_index=1`。8 个逻辑对象槽位与 8-bit `MOD_ID` 编码空间是独立资源；Bank 5
 为 32 line、固定基址 `0x1400`，物理可放 512 个 context，但 `MOD_ID` 最多寻址

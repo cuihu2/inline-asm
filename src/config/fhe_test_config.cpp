@@ -73,8 +73,9 @@ void validate(const FheTestConfig& config)
     constexpr std::size_t kRegularBankLines = 1024;
     constexpr std::size_t kMaxModContexts = 256;
 
-    if (config.N < 2 || (config.N & (config.N - 1)) != 0) {
-        throw std::runtime_error("N must be a power of two and at least 2");
+    if (config.N < 128 || (config.N & (config.N - 1)) != 0) {
+        throw std::runtime_error(
+            "N must be a power of two and at least 128 for the 128-register NTT array");
     }
     if ((config.N + kWordsPerLine - 1) / kWordsPerLine > kRegularBankLines) {
         throw std::runtime_error("N exceeds one 1024-line regular SRAM bank");

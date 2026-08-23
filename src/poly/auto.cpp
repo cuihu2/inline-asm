@@ -20,7 +20,7 @@ std::string generate_hpu_auto_body_asm(
     std::ostringstream asm_code;
 
     if (num_q <= 0 || num_p <= 0 || !is_power_of_two(N) || dnum <= 0
-        || !hpu::fits_regular_object(N)
+        || !hpu::fits_ntt_object(N)
         || num_q % dnum != 0
         || num_q + num_p > hpu::kMaxModContexts) return "";
 
@@ -50,7 +50,7 @@ std::string generate_hpu_auto_asm(
 			 << "_A" << auto_idx << "(void) {\n";
 
 			if (num_q <= 0 || num_p <= 0 || !is_power_of_two(N) || dnum <= 0
-				|| !hpu::fits_regular_object(N)
+				|| !hpu::fits_ntt_object(N)
 				|| num_q % dnum != 0
 				|| num_q + num_p > hpu::kMaxModContexts) {
 			asm_code << "    // Invalid config: require power-of-two N fitting 1024 lines, valid digits, and at most 256 mod contexts\n";
