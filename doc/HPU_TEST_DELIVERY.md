@@ -72,12 +72,14 @@ generated-operator relocation manifest；这不影响其独立数据包交付，
 
 顶层 `hpu_delivery` 依次执行三个程序，再调用 `test/delivery/check_delivery.cmake` 检查文件完整性、FHE 校验结果、阶段标记和指令数量。单独执行 `hpu_reference_vectors` 只会生成数据，不会生成或更新 HPU ASM。
 
-当前存在两组需要保持一致的源配置：
+`config/fhe_test.conf` 是唯一的参数输入。HPU 指令生成器和软件 reference 通过
+`hpu_test_config` 共享解析库读取同一份 `N/num_q/num_p/dnum/auto_index`；reference
+还从该文件读取 `plaintext_modulus/seed`。顶层 `hpu_delivery` 显式向两个程序传递
+CMake cache 变量 `HPU_TEST_CONFIG` 指向的同一路径，避免指令流与数据来自不同参数。
 
-- `src/main.cpp`：HPU 指令生成参数，完整乘法、Relinearization 和 KeySwitch 复用 `kCiphertextMultiplyCfg`。
-- `test/reference/main.cpp`：软件 reference 参数 `kN/kNumQ/kNumP/kDnum/kPlainModulus/kSeed`。
-
-`outputs/*/test_data/params.json` 是 reference 写出的结果清单，不是配置入口。修改它不会影响生成逻辑，并会在下一次执行 `hpu_delivery` 时被覆盖。
+`outputs/*/test_data/params.json` 是 reference 写出的结果清单，不是配置入口。修改
+它不会影响生成逻辑，并会在下一次执行 `hpu_delivery` 时被覆盖。自定义配置可通过
+`cmake -S . -B build -DHPU_TEST_CONFIG=/abs/path/fhe_test.conf` 选择。
 
 ### 2.1 正式交付包
 
@@ -112,7 +114,7 @@ Encrypt(ctA, ctB)
   -> Decrypt and compare with mA * mB in Z_t[x]/(x^N+1)
 ```
 
-当前参数与主指令流一致：`N=4096`、`num_q=4`、`num_p=3`、`dnum=2`。数据使用确定性、无噪声、P 可整除的功能测试评估密钥，以获得逐位可比结果；它用于 UT/IT 定位，不代表生产密钥安全性。
+默认配置为 `N=4096`、`num_q=4`、`num_p=3`、`dnum=2`。数据使用确定性、无噪声、P 可整除的功能测试评估密钥，以获得逐位可比结果；它用于 UT/IT 定位，不代表生产密钥安全性。
 
 生成器和 reference 共同检查 `N` 为 2 的幂且 `ceil(N/64) <= 1024`，对应当前普通 bank 的最大可承载次数 `N=65536`。`dload load_type` 只接受 `0=seg`、`1=poly`、`2=mod_ctx`；编码值 3 为保留值并纳入 RV 负例。
 
@@ -131,7 +133,7 @@ Encrypt(ctA, ctB)
 | `expected/*.bin` | NTT、tensor、ModUp、KeySwitch、ModDown 和最终结果检查点 |
 | `VALIDATION.txt` | 软件参考模型最终校验结果 |
 
-顶层 `.bin` 均采用 little-endian `uint64_t` canonical residue，只作为数学 golden。多维数组按 C row-major 展平，最后一维始终是 coefficient；基顺序固定为 `Q[0..3]` 后接 `P[0..2]`。
+顶层 `.bin` 均采用 little-endian `uint64_t` canonical residue，只作为数学 golden。多维数组按 C row-major 展平，最后一维始终是 coefficient；基顺序固定为 `Q[0..num_q-1]` 后接 `P[0..num_p-1]`。
 
 每个 `.bin` 都有同名 `.hex.txt` 人工可读版本，例如 `input.bin` 对应 `input.hex.txt`。文本文件头包含用途、shape、维度含义和编码说明，多维数据按 component/digit/basis 分块，并在每行标注 coefficient 范围。
 

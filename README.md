@@ -147,15 +147,28 @@ relocation manifest、line map 与 HPU_MEM 镜像。
 2. `inline_asm_encode_outputs` 从 `test/encode/main.cpp` 进入，归档结果并把可编码 ASM 转成 `.inst32/.cmd26`。
 3. `hpu_reference_vectors` 从 `test/reference/main.cpp` 进入，计算并验证 test data，然后写入 `outputs/<case>/test_data/`。
 
-当前参数尚未收敛到单一配置文件：
+唯一输入配置为 `config/fhe_test.conf`。`inline_asm_codegen` 和
+`hpu_reference_vectors` 都通过共享解析库读取其中的 `N`、`num_q`、`num_p`、
+`dnum`、`auto_index`、`plaintext_modulus` 和 `seed`；未知、重复、缺失或非法字段
+会使生成立即失败。`outputs/*/test_data/params.json` 仍是生成结果，不能作为配置
+入口，直接修改后会在下一次生成时被覆盖。
 
-- HPU 指令流参数位于 `src/main.cpp` 的 `kNttCfg`、`kEncodeCfg`、`kRescaleCfg`、`kPmultCfg`、`kCmultCfg`、`kModdownCfg`、`kAutoCfg` 和 `kCiphertextMultiplyCfg`。
-- Reference 参数位于 `test/reference/main.cpp` 的 `kN`、`kNumQ`、`kNumP`、`kDnum`、`kPlainModulus` 和 `kSeed`。
-- `outputs/*/test_data/params.json` 是生成结果，不是输入配置；直接修改后会在下一次生成时被覆盖。
+两个程序都支持 `--config <path>`。顶层 CMake 的 `HPU_TEST_CONFIG` cache 变量默认
+指向仓库配置，`hpu_delivery` 会把同一路径显式传给指令生成器和 reference；使用
+另一份配置时可执行 `cmake -S . -B build -DHPU_TEST_CONFIG=/abs/path/fhe_test.conf`。
 
-修改 `N/Q/P/dnum` 时必须同步修改两处源配置，并满足 `N` 为 2 的幂、`ceil(N/64) <= 1024`（即 `N <= 65536`）、`num_q % dnum == 0`、`num_q + num_p <= 256`、所有 Q/P 模数可用 `uint32` 表示等约束。当前统一示例为 `N=4096, Q=4, P=3, dnum=2`。small Bank 5 为 32 line，固定范围 `0x1400..0x141F`，物理可放 512 个 context；由于 `MOD_ID` 只有 8 bit，软件可寻址上限为 256。它与 8 个并发对象槽位是两个独立资源。
+配置必须满足 `N` 为不小于 2 的 2 次幂、`ceil(N/64) <= 1024`（即
+`N <= 65536`）、`num_q >= 2`、`num_q % dnum == 0`、
+`num_q + num_p <= 256`，且当前 Auto 仅支持 `auto_index=1`。默认值为
+`N=4096, Q=4, P=3, dnum=2`。small Bank 5 为 32 line，固定范围
+`0x1400..0x141F`，物理可放 512 个 context；由于 `MOD_ID` 只有 8 bit，软件可
+寻址上限为 256。它与 8 个并发对象槽位是两个独立资源。
 
-`hpu_delivery` 会为 `ciphertext_multiply` 自动生成与主配置一致的 `N=4096, Q=4, P=3, dnum=2` 输入、评估密钥、阶段 golden、最终输出、明文校验和 artifact checksum。它同时生成独立的 `uint32` HPU_MEM 镜像、q/Barrett 上下文、逐 stage twiddle、256B line offset/count，并从同一 reference 拆分出 NTT、INTT、Encode、Rescale、MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、KeySwitch 和 Relinearization 的独立 UT 数据包。
+`hpu_delivery` 会根据该配置生成输入、评估密钥、阶段 golden、最终输出、明文校验
+和 artifact checksum。它同时生成独立的 `uint32` HPU_MEM 镜像、q/Barrett
+上下文、逐 stage twiddle、256B line offset/count，并从同一 reference 拆分出
+NTT、INTT、Encode、Rescale、MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、
+KeySwitch 和 Relinearization 的独立 UT 数据包。
 
 
 ## 4. 关键设计实现说明

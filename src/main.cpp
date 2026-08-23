@@ -1,8 +1,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 
+#include "config/fhe_test_config.hpp"
 #include "util/bconv.hpp"
 #include "util/mm.hpp"
 #include "util/ntt.hpp"
@@ -113,29 +115,47 @@ struct RescaleConfig {
 	int num_components;
 };
 
-constexpr NttConfig kNttCfg{4096, 0, 1, 2};
+NttConfig g_ntt_cfg{};
 constexpr MmConfig kMmCfg{0, 1, 2, 3};
 // 为了缩短独立 BConv 示例，采用 num_q = num_p = 1；模上下文使用独立 8-bit MOD_ID
 constexpr BconvConfig kBconvCfg{1, 1, 0, 1, 2, 3, 4, 5, 6};
-constexpr PmultConfig kPmultCfg{4, 0, 1, 2, 3, 4, 5};
-constexpr CmultConfig kCmultCfg{4, 0, 1, 2, 3, 4, 5, 6, 7};
-constexpr ModdownConfig kModdownCfg{4, 3, 0, 1, 2, 3, 4, 5, 6, 7};
-constexpr AutoConfig kAutoCfg{4096, 4, 3, 2, 1};
-constexpr CiphertextMultiplyConfig kCiphertextMultiplyCfg{4096, 4, 3, 2};
-constexpr EncodeConfig kEncodeCfg{4096, 4};
-constexpr RescaleConfig kRescaleCfg{4, 2};
+PmultConfig g_pmult_cfg{};
+CmultConfig g_cmult_cfg{};
+ModdownConfig g_moddown_cfg{};
+AutoConfig g_auto_cfg{};
+CiphertextMultiplyConfig g_ciphertext_multiply_cfg{};
+EncodeConfig g_encode_cfg{};
+RescaleConfig g_rescale_cfg{};
+
+void configure_generators(const hpu::test::FheTestConfig& config)
+{
+	const int N = static_cast<int>(config.N);
+	const int num_q = static_cast<int>(config.num_q);
+	const int num_p = static_cast<int>(config.num_p);
+	const int dnum = static_cast<int>(config.dnum);
+	const int auto_index = static_cast<int>(config.auto_index);
+
+	g_ntt_cfg = {N, 0, 1, 2};
+	g_pmult_cfg = {num_q, 0, 1, 2, 3, 4, 5};
+	g_cmult_cfg = {num_q, 0, 1, 2, 3, 4, 5, 6, 7};
+	g_moddown_cfg = {num_q, num_p, 0, 1, 2, 3, 4, 5, 6, 7};
+	g_auto_cfg = {N, num_q, num_p, dnum, auto_index};
+	g_ciphertext_multiply_cfg = {N, num_q, num_p, dnum};
+	g_encode_cfg = {N, num_q};
+	g_rescale_cfg = {num_q, 2};
+}
 
 void test_encode_codegen()
 {
 	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
 		std::ofstream("output/encode.cpp")
-			<< generate_hpu_encode_asm(kEncodeCfg.N, kEncodeCfg.num_q, true);
+			<< generate_hpu_encode_asm(g_encode_cfg.N, g_encode_cfg.num_q, true);
 		std::cout << "Saved encode ASM to output/encode.cpp\n";
 	}
 
 	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
 		std::ofstream("output/encode.asm")
-			<< generate_hpu_encode_body_asm(kEncodeCfg.N, kEncodeCfg.num_q, true);
+			<< generate_hpu_encode_body_asm(g_encode_cfg.N, g_encode_cfg.num_q, true);
 		std::cout << "Saved encode body ASM to output/encode.asm\n";
 	}
 }
@@ -145,14 +165,14 @@ void test_rescale_codegen()
 	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
 		std::ofstream("output/rescale.cpp")
 			<< generate_hpu_rescale_asm(
-				kRescaleCfg.num_q, kRescaleCfg.num_components, true);
+				g_rescale_cfg.num_q, g_rescale_cfg.num_components, true);
 		std::cout << "Saved rescale ASM to output/rescale.cpp\n";
 	}
 
 	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
 		std::ofstream("output/rescale.asm")
 			<< generate_hpu_rescale_body_asm(
-				kRescaleCfg.num_q, kRescaleCfg.num_components, true);
+				g_rescale_cfg.num_q, g_rescale_cfg.num_components, true);
 		std::cout << "Saved rescale body ASM to output/rescale.asm\n";
 	}
 }
@@ -160,10 +180,10 @@ void test_rescale_codegen()
 void test_intt_codegen() {
 	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
 		std::string intt = generate_hpu_intt_asm(
-		kNttCfg.N,
-		kNttCfg.obj_poly,
-		kNttCfg.twiddle_obj,
-		kNttCfg.mod_ctx_obj,
+		g_ntt_cfg.N,
+		g_ntt_cfg.obj_poly,
+		g_ntt_cfg.twiddle_obj,
+		g_ntt_cfg.mod_ctx_obj,
 		true);
 	std::ofstream("output/intt.cpp") << intt;
 	std::cout << "Saved intt ASM to output/intt.cpp\n";
@@ -171,10 +191,10 @@ void test_intt_codegen() {
 
 	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
 		std::string intt_body = generate_hpu_intt_asm(
-		kNttCfg.N,
-		kNttCfg.obj_poly,
-		kNttCfg.twiddle_obj,
-		kNttCfg.mod_ctx_obj,
+		g_ntt_cfg.N,
+		g_ntt_cfg.obj_poly,
+		g_ntt_cfg.twiddle_obj,
+		g_ntt_cfg.mod_ctx_obj,
 		true);
 	std::ofstream("output/intt.asm") << intt_body;
 	std::cout << "Saved intt body ASM to output/intt.asm\n";
@@ -185,10 +205,10 @@ void test_ntt_codegen()
 {
 	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
 		std::string ntt = generate_hpu_ntt_asm(
-		kNttCfg.N,
-		kNttCfg.obj_poly,
-		kNttCfg.twiddle_obj,
-		kNttCfg.mod_ctx_obj,
+		g_ntt_cfg.N,
+		g_ntt_cfg.obj_poly,
+		g_ntt_cfg.twiddle_obj,
+		g_ntt_cfg.mod_ctx_obj,
 		true);
 	std::ofstream("output/ntt.cpp") << ntt;
 	std::cout << "Saved ntt ASM to output/ntt.cpp\n";
@@ -196,10 +216,10 @@ void test_ntt_codegen()
 
 	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
 		std::string ntt_body = generate_hpu_ntt_asm(
-		kNttCfg.N,
-		kNttCfg.obj_poly,
-		kNttCfg.twiddle_obj,
-		kNttCfg.mod_ctx_obj,
+		g_ntt_cfg.N,
+		g_ntt_cfg.obj_poly,
+		g_ntt_cfg.twiddle_obj,
+		g_ntt_cfg.mod_ctx_obj,
 		true);
 	std::ofstream("output/ntt.asm") << ntt_body;
 	std::cout << "Saved ntt body ASM to output/ntt.asm\n";
@@ -258,7 +278,7 @@ void test_pmult_codegen()
 {
 	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
 		std::string pmult = generate_hpu_pmult_asm(
-		kPmultCfg.num_q,
+		g_pmult_cfg.num_q,
 		true);
 	std::ofstream("output/pmult.cpp") << pmult;
 	std::cout << "Saved pmult ASM to output/pmult.cpp\n";
@@ -266,7 +286,7 @@ void test_pmult_codegen()
 
 	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
 		std::string pmult_body = generate_hpu_pmult_body_asm(
-		kPmultCfg.num_q,
+		g_pmult_cfg.num_q,
 		true);
 	std::ofstream("output/pmult.asm") << pmult_body;
 	std::cout << "Saved pmult body ASM to output/pmult.asm\n";
@@ -277,7 +297,7 @@ void test_cmult_codegen()
 {
 	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
 		std::string cmult = generate_hpu_cmult_asm(
-		kCmultCfg.num_q,
+		g_cmult_cfg.num_q,
 		true);
 	std::ofstream("output/cmult.cpp") << cmult;
 	std::cout << "Saved cmult ASM to output/cmult.cpp\n";
@@ -285,7 +305,7 @@ void test_cmult_codegen()
 
 	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
 		std::string cmult_body = generate_hpu_cmult_body_asm(
-		kCmultCfg.num_q,
+		g_cmult_cfg.num_q,
 		true);
 	std::ofstream("output/cmult.asm") << cmult_body;
 	std::cout << "Saved cmult body ASM to output/cmult.asm\n";
@@ -296,9 +316,9 @@ void test_modup_codegen()
 {
 		if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
 			std::string modup = generate_hpu_modup_asm(
-				kCiphertextMultiplyCfg.num_q,
-				kCiphertextMultiplyCfg.num_p,
-				kCiphertextMultiplyCfg.num_q / kCiphertextMultiplyCfg.dnum,
+				g_ciphertext_multiply_cfg.num_q,
+				g_ciphertext_multiply_cfg.num_p,
+				g_ciphertext_multiply_cfg.num_q / g_ciphertext_multiply_cfg.dnum,
 				0,
 				true);
 	std::ofstream("output/modup.cpp") << modup;
@@ -307,9 +327,9 @@ void test_modup_codegen()
 
 		if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
 			std::string modup_body = generate_hpu_modup_body_asm(
-				kCiphertextMultiplyCfg.num_q,
-				kCiphertextMultiplyCfg.num_p,
-				kCiphertextMultiplyCfg.num_q / kCiphertextMultiplyCfg.dnum,
+				g_ciphertext_multiply_cfg.num_q,
+				g_ciphertext_multiply_cfg.num_p,
+				g_ciphertext_multiply_cfg.num_q / g_ciphertext_multiply_cfg.dnum,
 				0,
 				true);
 	std::ofstream("output/modup.asm") << modup_body;
@@ -321,11 +341,11 @@ void test_auto_codegen()
 {
 	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
 		std::string auto_code = generate_hpu_auto_asm(
-		kAutoCfg.N,
-		kAutoCfg.num_q,
-		kAutoCfg.num_p,
-		kAutoCfg.dnum,
-		kAutoCfg.auto_idx,
+		g_auto_cfg.N,
+		g_auto_cfg.num_q,
+		g_auto_cfg.num_p,
+		g_auto_cfg.dnum,
+		g_auto_cfg.auto_idx,
 		true);
 	std::ofstream("output/auto.cpp") << auto_code;
 	std::cout << "Saved auto ASM to output/auto.cpp\n";
@@ -333,11 +353,11 @@ void test_auto_codegen()
 
 	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
 		std::string auto_body = generate_hpu_auto_body_asm(
-		kAutoCfg.N,
-		kAutoCfg.num_q,
-		kAutoCfg.num_p,
-		kAutoCfg.dnum,
-		kAutoCfg.auto_idx,
+		g_auto_cfg.N,
+		g_auto_cfg.num_q,
+		g_auto_cfg.num_p,
+		g_auto_cfg.dnum,
+		g_auto_cfg.auto_idx,
 		true);
 	std::ofstream("output/auto.asm") << auto_body;
 	std::cout << "Saved auto body ASM to output/auto.asm\n";
@@ -348,8 +368,8 @@ void test_moddown_codegen()
 {
 	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
 		std::string moddown = generate_hpu_moddown_asm(
-		kModdownCfg.num_q,
-		kModdownCfg.num_p,
+		g_moddown_cfg.num_q,
+		g_moddown_cfg.num_p,
 		true);
 	std::ofstream("output/moddown.cpp") << moddown;
 	std::cout << "Saved moddown ASM to output/moddown.cpp\n";
@@ -357,8 +377,8 @@ void test_moddown_codegen()
 
 	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
 		std::string moddown_body = generate_hpu_moddown_body_asm(
-		kModdownCfg.num_q,
-		kModdownCfg.num_p,
+		g_moddown_cfg.num_q,
+		g_moddown_cfg.num_p,
 		true);
 	std::ofstream("output/moddown.asm") << moddown_body;
 	std::cout << "Saved moddown body ASM to output/moddown.asm\n";
@@ -369,10 +389,10 @@ void test_keyswitch_codegen()
 {
 	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
 		std::string keyswitch = generate_hpu_keyswitch_asm(
-			kCiphertextMultiplyCfg.N,
-			kCiphertextMultiplyCfg.num_q,
-			kCiphertextMultiplyCfg.num_p,
-			kCiphertextMultiplyCfg.dnum,
+			g_ciphertext_multiply_cfg.N,
+			g_ciphertext_multiply_cfg.num_q,
+			g_ciphertext_multiply_cfg.num_p,
+			g_ciphertext_multiply_cfg.dnum,
 			true);
 	std::ofstream("output/keyswitch.cpp") << keyswitch;
 	std::cout << "Saved keyswitch ASM to output/keyswitch.cpp\n";
@@ -380,10 +400,10 @@ void test_keyswitch_codegen()
 
 	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
 		std::string keyswitch_body = generate_hpu_keyswitch_body_asm(
-			kCiphertextMultiplyCfg.N,
-			kCiphertextMultiplyCfg.num_q,
-			kCiphertextMultiplyCfg.num_p,
-			kCiphertextMultiplyCfg.dnum,
+			g_ciphertext_multiply_cfg.N,
+			g_ciphertext_multiply_cfg.num_q,
+			g_ciphertext_multiply_cfg.num_p,
+			g_ciphertext_multiply_cfg.dnum,
 			true);
 	std::ofstream("output/keyswitch.asm") << keyswitch_body;
 	std::cout << "Saved keyswitch body ASM to output/keyswitch.asm\n";
@@ -394,10 +414,10 @@ void test_relinearization_codegen()
 {
 	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
 		std::string relinearization = generate_hpu_relinearization_asm(
-			kCiphertextMultiplyCfg.N,
-			kCiphertextMultiplyCfg.num_q,
-			kCiphertextMultiplyCfg.num_p,
-			kCiphertextMultiplyCfg.dnum,
+			g_ciphertext_multiply_cfg.N,
+			g_ciphertext_multiply_cfg.num_q,
+			g_ciphertext_multiply_cfg.num_p,
+			g_ciphertext_multiply_cfg.dnum,
 			true);
 		std::ofstream("output/relinearization.cpp") << relinearization;
 		std::cout << "Saved relinearization ASM to output/relinearization.cpp\n";
@@ -405,10 +425,10 @@ void test_relinearization_codegen()
 
 	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
 		std::string relinearization_body = generate_hpu_relinearization_body_asm(
-			kCiphertextMultiplyCfg.N,
-			kCiphertextMultiplyCfg.num_q,
-			kCiphertextMultiplyCfg.num_p,
-			kCiphertextMultiplyCfg.dnum,
+			g_ciphertext_multiply_cfg.N,
+			g_ciphertext_multiply_cfg.num_q,
+			g_ciphertext_multiply_cfg.num_p,
+			g_ciphertext_multiply_cfg.dnum,
 			true);
 		std::ofstream("output/relinearization.asm") << relinearization_body;
 		std::cout << "Saved relinearization body ASM to output/relinearization.asm\n";
@@ -419,10 +439,10 @@ void test_ciphertext_multiply_codegen()
 {
 	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
 		std::string ciphertext_multiply = generate_hpu_ciphertext_multiply_asm(
-		kCiphertextMultiplyCfg.N,
-		kCiphertextMultiplyCfg.num_q,
-		kCiphertextMultiplyCfg.num_p,
-		kCiphertextMultiplyCfg.dnum,
+		g_ciphertext_multiply_cfg.N,
+		g_ciphertext_multiply_cfg.num_q,
+		g_ciphertext_multiply_cfg.num_p,
+		g_ciphertext_multiply_cfg.dnum,
 		true);
 	std::ofstream("output/ciphertext_multiply.cpp") << ciphertext_multiply;
 	std::cout << "Saved ciphertext_multiply ASM to output/ciphertext_multiply.cpp\n";
@@ -430,10 +450,10 @@ void test_ciphertext_multiply_codegen()
 
 	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
 		std::string ciphertext_multiply_body = generate_hpu_ciphertext_multiply_body_asm(
-		kCiphertextMultiplyCfg.N,
-		kCiphertextMultiplyCfg.num_q,
-		kCiphertextMultiplyCfg.num_p,
-		kCiphertextMultiplyCfg.dnum,
+		g_ciphertext_multiply_cfg.N,
+		g_ciphertext_multiply_cfg.num_q,
+		g_ciphertext_multiply_cfg.num_p,
+		g_ciphertext_multiply_cfg.dnum,
 		true);
 	std::ofstream("output/ciphertext_multiply.asm") << ciphertext_multiply_body;
 	std::cout << "Saved ciphertext_multiply body ASM to output/ciphertext_multiply.asm\n";
@@ -444,33 +464,59 @@ void test_ciphertext_multiply_codegen()
 
 int main(int argc, char* argv[])
 {
-	std::string mode = "both";
-	if (argc > 1) {
-		mode = argv[1];
-	}
-	
-	if (mode == "cpp") {
-		g_output_mode = OutputMode::CPP;
-	} else if (mode == "asm") {
-		g_output_mode = OutputMode::ASM;
-	} else {
-		g_output_mode = OutputMode::BOTH;
-	}
+	try {
+		std::string mode = "both";
+		bool mode_seen = false;
+		std::filesystem::path config_path = hpu::test::default_fhe_test_config_path();
+		for (int index = 1; index < argc; ++index) {
+			const std::string argument = argv[index];
+			if (argument == "--config") {
+				if (++index >= argc) {
+					throw std::runtime_error("--config requires a path");
+				}
+				config_path = argv[index];
+			} else if (!mode_seen
+				&& (argument == "cpp" || argument == "asm" || argument == "both")) {
+				mode = argument;
+				mode_seen = true;
+			} else {
+				throw std::runtime_error("unknown argument: " + argument);
+			}
+		}
 
-	std::filesystem::create_directory("output");
-	test_ntt_codegen();
-	test_intt_codegen();
-	test_encode_codegen();
-	test_rescale_codegen();
-	test_mm_codegen();
-	test_bconv_codegen();
-	test_pmult_codegen();
-	test_cmult_codegen();
-	test_modup_codegen();
-	test_moddown_codegen();
-	test_auto_codegen();
-	test_keyswitch_codegen();
-	test_relinearization_codegen();
-	test_ciphertext_multiply_codegen();
-	return 0;
+		if (mode == "cpp") {
+			g_output_mode = OutputMode::CPP;
+		} else if (mode == "asm") {
+			g_output_mode = OutputMode::ASM;
+		} else {
+			g_output_mode = OutputMode::BOTH;
+		}
+
+		const hpu::test::FheTestConfig config =
+			hpu::test::load_fhe_test_config(config_path);
+		configure_generators(config);
+		std::cout << "Loaded shared FHE config from " << config_path
+			<< " (N=" << config.N << ", Q=" << config.num_q
+			<< ", P=" << config.num_p << ", dnum=" << config.dnum << ")\n";
+
+		std::filesystem::create_directory("output");
+		test_ntt_codegen();
+		test_intt_codegen();
+		test_encode_codegen();
+		test_rescale_codegen();
+		test_mm_codegen();
+		test_bconv_codegen();
+		test_pmult_codegen();
+		test_cmult_codegen();
+		test_modup_codegen();
+		test_moddown_codegen();
+		test_auto_codegen();
+		test_keyswitch_codegen();
+		test_relinearization_codegen();
+		test_ciphertext_multiply_codegen();
+		return 0;
+	} catch (const std::exception& exception) {
+		std::cerr << "Instruction generation failed: " << exception.what() << '\n';
+		return 1;
+	}
 }

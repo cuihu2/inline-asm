@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "config/fhe_test_config.hpp"
+
 namespace {
 
 using U64 = std::uint64_t;
@@ -24,12 +26,13 @@ using BasisPoly = std::vector<Poly>;
 using Ciphertext = std::array<BasisPoly, 2>;
 using TensorCiphertext = std::array<BasisPoly, 3>;
 
-constexpr std::size_t kN = 4096;
-constexpr std::size_t kNumQ = 4;
-constexpr std::size_t kNumP = 3;
-constexpr std::size_t kDnum = 2;
-constexpr U64 kPlainModulus = 257;
-constexpr U64 kSeed = 0x4850555f464845ULL;
+std::size_t g_n = 0;
+std::size_t g_num_q = 0;
+std::size_t g_num_p = 0;
+std::size_t g_dnum = 0;
+std::size_t g_auto_index = 0;
+U64 g_plaintext_modulus = 0;
+U64 g_seed = 0;
 constexpr U64 kFnv1a64OffsetBasis = 14695981039346656037ULL;
 constexpr std::size_t kHpuWordsPerLine = 64;
 constexpr U64 kHpuLineBytes = kHpuWordsPerLine * sizeof(U32);
@@ -51,13 +54,6 @@ constexpr std::size_t kPhysicalModContexts =
 constexpr std::size_t kModIdBits = 8;
 constexpr std::size_t kMaxModContexts =
     std::min(kPhysicalModContexts, std::size_t{1} << kModIdBits);
-
-static_assert(kNumQ + kNumP <= kMaxModContexts,
-              "Q union P mod contexts exceed the 8-bit MOD_ID address space");
-static_assert(kN > 0 && (kN & (kN - 1)) == 0,
-              "N must be a power of two");
-static_assert((kN + kHpuWordsPerLine - 1) / kHpuWordsPerLine <= kRegularBankLines,
-              "polynomial object exceeds one 1024-line regular bank");
 
 struct Artifact {
     std::string path;
@@ -338,7 +334,7 @@ Ciphertext encrypt_test_message(const std::vector<std::int64_t>& message,
     ciphertext[1].resize(moduli.size());
     for (std::size_t basis = 0; basis < moduli.size(); ++basis) {
         const U64 modulus = moduli[basis];
-        Poly a(kN);
+        Poly a(g_n);
         for (U64& value : a) {
             value = rng() % modulus;
         }
@@ -446,8 +442,8 @@ BasisPoly moddown(const BasisPoly& input_qp,
         const U64 modulus = q_moduli[i];
         const Poly correction = bconv_to_target(source_p, p_moduli, modulus);
         const U64 p_inverse = inverse_mod(product_mod(p_moduli, modulus), modulus);
-        out[i].resize(kN);
-        for (std::size_t coefficient = 0; coefficient < kN; ++coefficient) {
+        out[i].resize(g_n);
+        for (std::size_t coefficient = 0; coefficient < g_n; ++coefficient) {
             out[i][coefficient] = mul_mod(
                 sub_mod(input_qp[i][coefficient], correction[coefficient], modulus),
                 p_inverse,
@@ -485,9 +481,9 @@ BasisPoly direct_rounded_divide_last(const BasisPoly& input_q,
         throw std::runtime_error("direct rescale check requires a matching Q basis");
     }
 
-    BasisPoly out(q_moduli.size() - 1, Poly(kN));
+    BasisPoly out(q_moduli.size() - 1, Poly(g_n));
     const U64 dropped_modulus = q_moduli.back();
-    for (std::size_t coefficient = 0; coefficient < kN; ++coefficient) {
+    for (std::size_t coefficient = 0; coefficient < g_n; ++coefficient) {
         U128 value = 0;
         U128 product = 1;
         for (std::size_t basis = 0; basis < q_moduli.size(); ++basis) {
@@ -587,15 +583,15 @@ BasisPoly decrypt_tensor(const TensorCiphertext& tensor,
 std::vector<std::int64_t> plaintext_product(const std::vector<std::int64_t>& left,
                                             const std::vector<std::int64_t>& right)
 {
-    std::vector<std::int64_t> out(kN, 0);
-    for (std::size_t i = 0; i < kN; ++i) {
-        for (std::size_t j = 0; j < kN; ++j) {
+    std::vector<std::int64_t> out(g_n, 0);
+    for (std::size_t i = 0; i < g_n; ++i) {
+        for (std::size_t j = 0; j < g_n; ++j) {
             const std::int64_t term = left[i] * right[j];
             const std::size_t index = i + j;
-            if (index < kN) {
+            if (index < g_n) {
                 out[index] += term;
             } else {
-                out[index - kN] -= term;
+                out[index - g_n] -= term;
             }
         }
     }
@@ -914,13 +910,13 @@ std::vector<U32> geometric_words(std::size_t count, U64 first, U64 step, U64 mod
 
 std::vector<U32> stage_twiddle_words(std::size_t length, U64 step, U64 modulus)
 {
-    if (length < 2 || length > kN || kN % length != 0) {
+    if (length < 2 || length > g_n || g_n % length != 0) {
         throw std::runtime_error("invalid NTT stage length");
     }
 
     std::vector<U32> words;
-    words.reserve(kN / 2);
-    const std::size_t group_count = kN / length;
+    words.reserve(g_n / 2);
+    const std::size_t group_count = g_n / length;
     const std::size_t twiddles_per_group = length / 2;
     for (std::size_t group = 0; group < group_count; ++group) {
         U64 value = 1;
@@ -929,7 +925,7 @@ std::vector<U32> stage_twiddle_words(std::size_t length, U64 step, U64 modulus)
             value = mul_mod(value, step, modulus);
         }
     }
-    if (words.size() != kN / 2) {
+    if (words.size() != g_n / 2) {
         throw std::runtime_error("NTT stage twiddle count is not N/2");
     }
     return words;
@@ -946,7 +942,7 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
     if (moduli.size() > kMaxModContexts) {
         throw std::runtime_error("mod contexts exceed the 8-bit MOD_ID address space");
     }
-    if (kN == 0 || (kN & (kN - 1)) != 0) {
+    if (g_n == 0 || (g_n & (g_n - 1)) != 0) {
         throw std::runtime_error("hardware stage twiddles require power-of-two N");
     }
 
@@ -988,7 +984,7 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
     for (std::size_t basis = 0; basis < moduli.size(); ++basis) {
         const U64 modulus = moduli[basis];
         const U64 psi = roots[basis];
-        if (pow_mod(psi, static_cast<U64>(kN), modulus) != modulus - 1) {
+        if (pow_mod(psi, static_cast<U64>(g_n), modulus) != modulus - 1) {
             throw std::runtime_error("root is not a primitive 2N-th root for hardware twiddles");
         }
         const std::string basis_dir = "basis_" +
@@ -998,55 +994,55 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
             images,
             "constants/twiddle/ntt/" + basis_dir + "/pre_twist.u32.bin",
             "forward negacyclic pre-twist psi^i",
-            {kN},
-            geometric_words(kN, 1, psi, modulus));
+            {g_n},
+            geometric_words(g_n, 1, psi, modulus));
         twiddle_entries.push_back({"ntt", basis, modulus, "pre_twist", -1,
-                                    kN, 1, kN, 1, psi, image_index});
+                                    g_n, 1, g_n, 1, psi, image_index});
 
         const U64 omega = mul_mod(psi, psi, modulus);
         std::size_t stage = 0;
-        for (std::size_t length = 2; length <= kN; length <<= 1U, ++stage) {
-            const U64 step = pow_mod(omega, static_cast<U64>(kN / length), modulus);
+        for (std::size_t length = 2; length <= g_n; length <<= 1U, ++stage) {
+            const U64 step = pow_mod(omega, static_cast<U64>(g_n / length), modulus);
             const std::string stage_name = "stage_" +
                 (stage < 10 ? std::string("0") : std::string()) + std::to_string(stage);
             image_index = add_hardware_image(
                 images,
                 "constants/twiddle/ntt/" + basis_dir + "/" + stage_name + ".u32.bin",
                 "forward DIT stage physical twiddles in group-major butterfly order",
-                {kN / 2},
+                {g_n / 2},
                 stage_twiddle_words(length, step, modulus));
             twiddle_entries.push_back({"ntt", basis, modulus, "butterfly", static_cast<int>(stage),
-                                        kN / 2, kN / length, length / 2,
+                                        g_n / 2, g_n / length, length / 2,
                                         1, step, image_index});
         }
 
         const U64 inverse_omega = inverse_mod(omega, modulus);
         stage = 0;
-        for (std::size_t length = 2; length <= kN; length <<= 1U, ++stage) {
-            const U64 step = pow_mod(inverse_omega, static_cast<U64>(kN / length), modulus);
+        for (std::size_t length = 2; length <= g_n; length <<= 1U, ++stage) {
+            const U64 step = pow_mod(inverse_omega, static_cast<U64>(g_n / length), modulus);
             const std::string stage_name = "stage_" +
                 (stage < 10 ? std::string("0") : std::string()) + std::to_string(stage);
             image_index = add_hardware_image(
                 images,
                 "constants/twiddle/intt/" + basis_dir + "/" + stage_name + ".u32.bin",
                 "inverse DIT stage physical twiddles in group-major butterfly order",
-                {kN / 2},
+                {g_n / 2},
                 stage_twiddle_words(length, step, modulus));
             twiddle_entries.push_back({"intt", basis, modulus, "butterfly", static_cast<int>(stage),
-                                        kN / 2, kN / length, length / 2,
+                                        g_n / 2, g_n / length, length / 2,
                                         1, step, image_index});
         }
 
-        const U64 n_inverse = inverse_mod(static_cast<U64>(kN), modulus);
+        const U64 n_inverse = inverse_mod(static_cast<U64>(g_n), modulus);
         const U64 psi_inverse = inverse_mod(psi, modulus);
         image_index = add_hardware_image(
             images,
             "constants/twiddle/intt/" + basis_dir + "/post_untwist_scale.u32.bin",
             "inverse negacyclic post-factor N^-1 * psi^-i",
-            {kN},
-            geometric_words(kN, n_inverse, psi_inverse, modulus));
+            {g_n},
+            geometric_words(g_n, n_inverse, psi_inverse, modulus));
         twiddle_entries.push_back({"intt", basis, modulus, "post_untwist_scale", -1,
-                                    kN, 1, kN, n_inverse, psi_inverse, image_index});
+                                    g_n, 1, g_n, n_inverse, psi_inverse, image_index});
     }
 
     U64 next_line = 0;
@@ -1168,7 +1164,7 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
     std::ostringstream abi;
     abi << "{\n"
         << "  \"format_version\": 1,\n"
-        << "  \"N\": " << kN << ",\n"
+        << "  \"N\": " << g_n << ",\n"
         << "  \"modulus_count\": " << moduli.size() << ",\n"
         << "  \"coefficient_bits\": 32,\n"
         << "  \"byte_order\": \"little-endian\",\n"
@@ -1217,8 +1213,9 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
         << "  \"twiddle\": {\n"
         << "    \"convention\": \"explicit negacyclic pre/post factors with radix-2 DIT stages\",\n"
         << "    \"pre_twist_execution\": \"explicit PMUL by psi^i before PNTT stage 0\",\n"
-        << "    \"stage_payload_words\": " << kN / 2 << ",\n"
-        << "    \"stage_payload_lines\": " << (kN / 2) / kHpuWordsPerLine << ",\n"
+        << "    \"stage_payload_words\": " << g_n / 2 << ",\n"
+        << "    \"stage_payload_lines\": "
+        << (g_n / 2 + kHpuWordsPerLine - 1) / kHpuWordsPerLine << ",\n"
         << "    \"stage_payload\": \"N/2 physical values in group-major DIT butterfly order\",\n"
         << "    \"group_rule\": \"for each group, emit step^j for j=0..length/2-1\",\n"
         << "    \"stage_alignment\": \"each stage image starts at a 256-byte line\",\n"
@@ -1291,14 +1288,15 @@ void write_case_package(const std::filesystem::path& suite_root,
     write_text(root / "params.json", params);
     write_text(root / "artifact_manifest.csv", manifest.str());
     write_hardware_package(root, artifacts, moduli, roots);
-    write_text(root / "README.md",
-               "This UT package is generated from the same deterministic N=4096 FHE "
-               "reference used by ciphertext_multiply. Binary values are little-endian "
-               "uint64 canonical residues. Every binary has a complete annotated `.hex.txt` "
-               "view with block coordinates. Shape and checksum information is in "
-               "artifact_manifest.csv. The independent `hardware/` tree contains uint32, "
-               "256-byte-line-padded images, q/Barrett contexts, stage twiddles, line offsets, "
-               "and HPU_MEM window configuration.\n");
+    std::ostringstream readme;
+    readme << "This UT package is generated from the same deterministic N=" << g_n
+           << " FHE reference used by ciphertext_multiply. Binary values are little-endian "
+           << "uint64 canonical residues. Every binary has a complete annotated `.hex.txt` "
+           << "view with block coordinates. Shape and checksum information is in "
+           << "artifact_manifest.csv. The independent `hardware/` tree contains uint32, "
+           << "256-byte-line-padded images, q/Barrett contexts, stage twiddles, line offsets, "
+           << "and HPU_MEM window configuration.\n";
+    write_text(root / "README.md", readme.str());
 }
 
 void verify_equal(const BasisPoly& left, const BasisPoly& right, const std::string& label)
@@ -1311,17 +1309,17 @@ void verify_equal(const BasisPoly& left, const BasisPoly& right, const std::stri
 void generate(const std::filesystem::path& output_root,
               const std::filesystem::path* suite_root)
 {
-    const U64 order = static_cast<U64>(2 * kN);
+    const U64 order = static_cast<U64>(2 * g_n);
     std::vector<U64> q_moduli;
     std::vector<U64> p_moduli;
     U64 next = 50000000;
-    for (std::size_t i = 0; i < kNumQ; ++i) {
+    for (std::size_t i = 0; i < g_num_q; ++i) {
         const U64 prime = find_ntt_prime(next, order);
         q_moduli.push_back(prime);
         next = prime + order;
     }
     next = 90000000;
-    for (std::size_t i = 0; i < kNumP; ++i) {
+    for (std::size_t i = 0; i < g_num_p; ++i) {
         const U64 prime = find_ntt_prime(next, order);
         p_moduli.push_back(prime);
         next = prime + order;
@@ -1331,15 +1329,15 @@ void generate(const std::filesystem::path& output_root,
     all_moduli.insert(all_moduli.end(), p_moduli.begin(), p_moduli.end());
     std::vector<U64> all_roots;
     for (U64 modulus : all_moduli) {
-        all_roots.push_back(find_primitive_2n_root(modulus, kN));
+        all_roots.push_back(find_primitive_2n_root(modulus, g_n));
     }
-    const std::vector<U64> q_roots(all_roots.begin(), all_roots.begin() + kNumQ);
+    const std::vector<U64> q_roots(all_roots.begin(), all_roots.begin() + g_num_q);
 
-    std::mt19937_64 rng(kSeed);
-    std::vector<std::int64_t> secret_small(kN);
-    std::vector<std::int64_t> message_a(kN);
-    std::vector<std::int64_t> message_b(kN);
-    for (std::size_t i = 0; i < kN; ++i) {
+    std::mt19937_64 rng(g_seed);
+    std::vector<std::int64_t> secret_small(g_n);
+    std::vector<std::int64_t> message_a(g_n);
+    std::vector<std::int64_t> message_b(g_n);
+    for (std::size_t i = 0; i < g_n; ++i) {
         secret_small[i] = static_cast<std::int64_t>(rng() % 3) - 1;
         message_a[i] = static_cast<std::int64_t>((3 * i + 1) % 7) - 3;
         message_b[i] = static_cast<std::int64_t>((5 * i + 2) % 7) - 3;
@@ -1368,8 +1366,8 @@ void generate(const std::filesystem::path& output_root,
     }
     Ciphertext pmult_ntt;
     for (std::size_t component = 0; component < 2; ++component) {
-        pmult_ntt[component].resize(kNumQ);
-        for (std::size_t basis = 0; basis < kNumQ; ++basis) {
+        pmult_ntt[component].resize(g_num_q);
+        for (std::size_t basis = 0; basis < g_num_q; ++basis) {
             pmult_ntt[component][basis] = pointwise_mul(
                 ct_a_ntt[component][basis], plaintext_b_ntt[basis], q_moduli[basis]);
         }
@@ -1377,9 +1375,9 @@ void generate(const std::filesystem::path& output_root,
 
     TensorCiphertext tensor_ntt;
     for (BasisPoly& component : tensor_ntt) {
-        component.resize(kNumQ);
+        component.resize(g_num_q);
     }
-    for (std::size_t basis = 0; basis < kNumQ; ++basis) {
+    for (std::size_t basis = 0; basis < g_num_q; ++basis) {
         const U64 modulus = q_moduli[basis];
         tensor_ntt[0][basis] = pointwise_mul(ct_a_ntt[0][basis], ct_b_ntt[0][basis], modulus);
         tensor_ntt[2][basis] = pointwise_mul(ct_a_ntt[1][basis], ct_b_ntt[1][basis], modulus);
@@ -1394,19 +1392,19 @@ void generate(const std::filesystem::path& output_root,
         tensor[component] = transform_basis(tensor_ntt[component], q_moduli, q_roots, true);
     }
 
-    const std::size_t digit_size = kNumQ / kDnum;
-    std::vector<std::array<BasisPoly, 2>> rlk(kDnum);
-    std::vector<std::array<BasisPoly, 2>> rlk_ntt(kDnum);
+    const std::size_t digit_size = g_num_q / g_dnum;
+    std::vector<std::array<BasisPoly, 2>> rlk(g_dnum);
+    std::vector<std::array<BasisPoly, 2>> rlk_ntt(g_dnum);
     BasisPoly secret_squared_qp(all_moduli.size());
     for (std::size_t basis = 0; basis < all_moduli.size(); ++basis) {
         secret_squared_qp[basis] = negacyclic_mul(
             secret_qp[basis], secret_qp[basis], all_moduli[basis], all_roots[basis]);
     }
 
-    for (std::size_t digit = 0; digit < kDnum; ++digit) {
+    for (std::size_t digit = 0; digit < g_dnum; ++digit) {
         const std::vector<U64> gadget = crt_digit_factors(
             q_moduli, digit * digit_size, digit_size, all_moduli);
-        std::vector<std::int64_t> r_small(kN);
+        std::vector<std::int64_t> r_small(g_n);
         for (std::int64_t& value : r_small) {
             value = static_cast<std::int64_t>(rng() % 7) - 3;
         }
@@ -1432,7 +1430,6 @@ void generate(const std::filesystem::path& output_root,
     // AUTO index 1 is frozen to the standard odd Galois element 3.  The CPU
     // applies x -> x^3 in the negacyclic coefficient layout; the HPU then
     // performs a normal key switch from sigma_3(s) back to s.
-    constexpr std::size_t kAutoIndex = 1;
     constexpr U64 kAutoGaloisElement = 3;
     Ciphertext auto_rotated;
     for (std::size_t component = 0; component < 2; ++component) {
@@ -1441,12 +1438,12 @@ void generate(const std::filesystem::path& output_root,
     }
     const BasisPoly auto_secret_qp = apply_negacyclic_automorphism(
         secret_qp, kAutoGaloisElement, all_moduli);
-    std::vector<std::array<BasisPoly, 2>> galois_key(kDnum);
-    std::vector<std::array<BasisPoly, 2>> galois_key_ntt(kDnum);
-    for (std::size_t digit = 0; digit < kDnum; ++digit) {
+    std::vector<std::array<BasisPoly, 2>> galois_key(g_dnum);
+    std::vector<std::array<BasisPoly, 2>> galois_key_ntt(g_dnum);
+    for (std::size_t digit = 0; digit < g_dnum; ++digit) {
         const std::vector<U64> gadget = crt_digit_factors(
             q_moduli, digit * digit_size, digit_size, all_moduli);
-        std::vector<std::int64_t> r_small(kN);
+        std::vector<std::int64_t> r_small(g_n);
         for (std::int64_t& value : r_small) {
             value = static_cast<std::int64_t>(rng() % 7) - 3;
         }
@@ -1473,13 +1470,13 @@ void generate(const std::filesystem::path& output_root,
         }
     }
 
-    std::vector<BasisPoly> modup_coeff(kDnum);
-    std::vector<BasisPoly> modup_ntt(kDnum);
+    std::vector<BasisPoly> modup_coeff(g_dnum);
+    std::vector<BasisPoly> modup_ntt(g_dnum);
     std::array<BasisPoly, 2> keyswitch_ntt;
     for (BasisPoly& component : keyswitch_ntt) {
-        component.assign(all_moduli.size(), Poly(kN, 0));
+        component.assign(all_moduli.size(), Poly(g_n, 0));
     }
-    for (std::size_t digit = 0; digit < kDnum; ++digit) {
+    for (std::size_t digit = 0; digit < g_dnum; ++digit) {
         modup_coeff[digit] = modup(
             tensor[2], q_moduli, all_moduli, digit * digit_size, digit_size);
         modup_ntt[digit] = transform_basis(modup_coeff[digit], all_moduli, all_roots, false);
@@ -1505,9 +1502,9 @@ void generate(const std::filesystem::path& output_root,
 
     std::array<BasisPoly, 2> auto_keyswitch_ntt;
     for (BasisPoly& component : auto_keyswitch_ntt) {
-        component.assign(all_moduli.size(), Poly(kN, 0));
+        component.assign(all_moduli.size(), Poly(g_n, 0));
     }
-    for (std::size_t digit = 0; digit < kDnum; ++digit) {
+    for (std::size_t digit = 0; digit < g_dnum; ++digit) {
         const BasisPoly raised = modup(
             auto_rotated[1], q_moduli, all_moduli,
             digit * digit_size, digit_size);
@@ -1532,7 +1529,7 @@ void generate(const std::filesystem::path& output_root,
             coeff_qp, q_moduli, p_moduli);
     }
     Ciphertext auto_output;
-    for (std::size_t basis = 0; basis < kNumQ; ++basis) {
+    for (std::size_t basis = 0; basis < g_num_q; ++basis) {
         auto_output[0].push_back(add_poly(
             auto_rotated[0][basis], auto_keyswitch_q[0][basis],
             q_moduli[basis]));
@@ -1548,7 +1545,7 @@ void generate(const std::filesystem::path& output_root,
 
     Ciphertext keyswitch_output;
     Ciphertext output;
-    for (std::size_t basis = 0; basis < kNumQ; ++basis) {
+    for (std::size_t basis = 0; basis < g_num_q; ++basis) {
         keyswitch_output[0].push_back(
             add_poly(tensor[0][basis], keyswitch_q[0][basis], q_moduli[basis]));
         keyswitch_output[1].push_back(keyswitch_q[1][basis]);
@@ -1556,8 +1553,8 @@ void generate(const std::filesystem::path& output_root,
         output[1].push_back(add_poly(tensor[1][basis], keyswitch_q[1][basis], q_moduli[basis]));
     }
 
-    BasisPoly keyswitch_expected(kNumQ);
-    for (std::size_t basis = 0; basis < kNumQ; ++basis) {
+    BasisPoly keyswitch_expected(g_num_q);
+    for (std::size_t basis = 0; basis < g_num_q; ++basis) {
         keyswitch_expected[basis] = add_poly(
             tensor[0][basis],
             negacyclic_mul(
@@ -1579,20 +1576,20 @@ void generate(const std::filesystem::path& output_root,
     verify_equal(tensor_decrypted, output_decrypted, "relinearized ciphertext decryption");
 
     const std::vector<std::int64_t> expected_plain = plaintext_product(message_a, message_b);
-    std::vector<U64> expected_plain_mod_t(kN);
-    std::vector<U64> decrypted_plain_mod_t(kN);
-    for (std::size_t i = 0; i < kN; ++i) {
+    std::vector<U64> expected_plain_mod_t(g_n);
+    std::vector<U64> decrypted_plain_mod_t(g_n);
+    for (std::size_t i = 0; i < g_n; ++i) {
         const std::int64_t expected = expected_plain[i];
-        const std::int64_t expected_mod = ((expected % static_cast<std::int64_t>(kPlainModulus))
-            + static_cast<std::int64_t>(kPlainModulus)) % static_cast<std::int64_t>(kPlainModulus);
+        const std::int64_t expected_mod = ((expected % static_cast<std::int64_t>(g_plaintext_modulus))
+            + static_cast<std::int64_t>(g_plaintext_modulus)) % static_cast<std::int64_t>(g_plaintext_modulus);
         expected_plain_mod_t[i] = static_cast<U64>(expected_mod);
 
         const U64 residue = output_decrypted[0][i];
         const std::int64_t centered = residue > q_moduli[0] / 2
             ? static_cast<std::int64_t>(residue) - static_cast<std::int64_t>(q_moduli[0])
             : static_cast<std::int64_t>(residue);
-        const std::int64_t decoded = ((centered % static_cast<std::int64_t>(kPlainModulus))
-            + static_cast<std::int64_t>(kPlainModulus)) % static_cast<std::int64_t>(kPlainModulus);
+        const std::int64_t decoded = ((centered % static_cast<std::int64_t>(g_plaintext_modulus))
+            + static_cast<std::int64_t>(g_plaintext_modulus)) % static_cast<std::int64_t>(g_plaintext_modulus);
         decrypted_plain_mod_t[i] = static_cast<U64>(decoded);
     }
     if (decrypted_plain_mod_t != expected_plain_mod_t) {
@@ -1603,19 +1600,19 @@ void generate(const std::filesystem::path& output_root,
     std::vector<U64> words;
     append_words(words, ct_a[0]); append_words(words, ct_a[1]);
     add_artifact(artifacts, "input/ct_a_q.bin", "ciphertext A, coefficient domain",
-                 {2, kNumQ, kN}, std::move(words),
+                 {2, g_num_q, g_n}, std::move(words),
                  {"component[c0,c1]", "basis_q", "coefficient"});
     words.clear(); append_words(words, ct_b[0]); append_words(words, ct_b[1]);
     add_artifact(artifacts, "input/ct_b_q.bin", "ciphertext B, coefficient domain",
-                 {2, kNumQ, kN}, std::move(words),
+                 {2, g_num_q, g_n}, std::move(words),
                  {"component[c0,c1]", "basis_q", "coefficient"});
     words.clear(); append_words(words, secret_q);
     add_artifact(artifacts, "input/secret_key_q.bin", "test-only secret key",
-                 {kNumQ, kN}, std::move(words), {"basis_q", "coefficient"});
+                 {g_num_q, g_n}, std::move(words), {"basis_q", "coefficient"});
     add_artifact(artifacts, "input/message_a_mod_t.bin", "plaintext A",
-                 {kN}, encode_signed(message_a, kPlainModulus));
+                 {g_n}, encode_signed(message_a, g_plaintext_modulus));
     add_artifact(artifacts, "input/message_b_mod_t.bin", "plaintext B",
-                 {kN}, encode_signed(message_b, kPlainModulus));
+                 {g_n}, encode_signed(message_b, g_plaintext_modulus));
 
     words.clear();
     for (const auto& digit : rlk_ntt) {
@@ -1623,53 +1620,53 @@ void generate(const std::filesystem::path& output_root,
     }
     add_artifact(artifacts, "constants/relinearization_key_ntt_qp.bin",
                  "rlk[digit][component][Q then P][coefficient]",
-                 {kDnum, 2, kNumQ + kNumP, kN}, std::move(words),
+                 {g_dnum, 2, g_num_q + g_num_p, g_n}, std::move(words),
                  {"digit", "component[ks0,ks1]", "basis_q_then_p", "coefficient"});
 
     words.clear(); append_words(words, ct_a_ntt[0]); append_words(words, ct_a_ntt[1]);
     append_words(words, ct_b_ntt[0]); append_words(words, ct_b_ntt[1]);
     add_artifact(artifacts, "expected/inputs_ntt_q.bin", "NTT(A0,A1,B0,B1)",
-                 {4, kNumQ, kN}, std::move(words),
+                 {4, g_num_q, g_n}, std::move(words),
                  {"input_component[A0,A1,B0,B1]", "basis_q", "coefficient"});
     words.clear();
     for (const BasisPoly& component : tensor_ntt) append_words(words, component);
     add_artifact(artifacts, "expected/tensor_ntt_q.bin", "t0,t1,t2 in NTT domain",
-                 {3, kNumQ, kN}, std::move(words),
+                 {3, g_num_q, g_n}, std::move(words),
                  {"tensor_component[t0,t1,t2]", "basis_q", "coefficient"});
     words.clear();
     for (const BasisPoly& component : tensor) append_words(words, component);
     add_artifact(artifacts, "expected/tensor_coeff_q.bin", "t0,t1,t2 in coefficient domain",
-                 {3, kNumQ, kN}, std::move(words),
+                 {3, g_num_q, g_n}, std::move(words),
                  {"tensor_component[t0,t1,t2]", "basis_q", "coefficient"});
     words.clear(); for (const BasisPoly& digit : modup_coeff) append_words(words, digit);
     add_artifact(artifacts, "expected/modup_t2_coeff_qp.bin", "ModUp(t2 digit) coefficient domain",
-                 {kDnum, kNumQ + kNumP, kN}, std::move(words),
+                 {g_dnum, g_num_q + g_num_p, g_n}, std::move(words),
                  {"digit", "basis_q_then_p", "coefficient"});
     words.clear(); for (const BasisPoly& digit : modup_ntt) append_words(words, digit);
     add_artifact(artifacts, "expected/modup_t2_ntt_qp.bin", "ModUp(t2 digit) NTT domain",
-                 {kDnum, kNumQ + kNumP, kN}, std::move(words),
+                 {g_dnum, g_num_q + g_num_p, g_n}, std::move(words),
                  {"digit", "basis_q_then_p", "coefficient"});
     words.clear(); append_words(words, keyswitch_ntt[0]); append_words(words, keyswitch_ntt[1]);
     add_artifact(artifacts, "expected/keyswitch_accum_ntt_qp.bin", "key-switch accumulators, NTT domain",
-                 {2, kNumQ + kNumP, kN}, std::move(words),
+                 {2, g_num_q + g_num_p, g_n}, std::move(words),
                  {"component[ks0,ks1]", "basis_q_then_p", "coefficient"});
     words.clear(); append_words(words, keyswitch_qp[0]); append_words(words, keyswitch_qp[1]);
     add_artifact(artifacts, "expected/keyswitch_coeff_qp.bin", "key-switch accumulators, coefficient domain",
-                 {2, kNumQ + kNumP, kN}, std::move(words),
+                 {2, g_num_q + g_num_p, g_n}, std::move(words),
                  {"component[ks0,ks1]", "basis_q_then_p", "coefficient"});
     words.clear(); append_words(words, keyswitch_q[0]); append_words(words, keyswitch_q[1]);
     add_artifact(artifacts, "expected/keyswitch_moddown_q.bin", "ModDown key-switch result",
-                 {2, kNumQ, kN}, std::move(words),
+                 {2, g_num_q, g_n}, std::move(words),
                  {"component[ks0,ks1]", "basis_q", "coefficient"});
     words.clear(); append_words(words, output[0]); append_words(words, output[1]);
     add_artifact(artifacts, "expected/ciphertext_out_q.bin", "relinearized ciphertext output",
-                 {2, kNumQ, kN}, std::move(words),
+                 {2, g_num_q, g_n}, std::move(words),
                  {"component[c0,c1]", "basis_q", "coefficient"});
     words.clear(); append_words(words, output_decrypted);
     add_artifact(artifacts, "expected/decrypted_ring_q.bin", "test-only decrypted ring product",
-                 {kNumQ, kN}, std::move(words), {"basis_q", "coefficient"});
+                 {g_num_q, g_n}, std::move(words), {"basis_q", "coefficient"});
     add_artifact(artifacts, "expected/plaintext_product_mod_t.bin", "expected plaintext product",
-                 {kN}, std::move(expected_plain_mod_t));
+                 {g_n}, std::move(expected_plain_mod_t));
 
     for (Artifact& artifact : artifacts) {
         write_binary(output_root / artifact.path, artifact.words);
@@ -1682,13 +1679,14 @@ void generate(const std::filesystem::path& output_root,
            << "  \"format_version\": 1,\n"
            << "  \"algorithm\": \"RLWE-RNS hybrid relinearization\",\n"
            << "  \"ring\": \"Z_m[x]/(x^N+1)\",\n"
-           << "  \"N\": " << kN << ",\n"
-           << "  \"num_q\": " << kNumQ << ",\n"
-           << "  \"num_p\": " << kNumP << ",\n"
-           << "  \"dnum\": " << kDnum << ",\n"
-           << "  \"plaintext_modulus\": " << kPlainModulus << ",\n"
-           << "  \"seed\": \"" << hex64(kSeed) << "\",\n"
-           << "  \"basis_order\": \"Q[0..3],P[0..2]\",\n"
+           << "  \"N\": " << g_n << ",\n"
+           << "  \"num_q\": " << g_num_q << ",\n"
+           << "  \"num_p\": " << g_num_p << ",\n"
+           << "  \"dnum\": " << g_dnum << ",\n"
+           << "  \"plaintext_modulus\": " << g_plaintext_modulus << ",\n"
+           << "  \"seed\": \"" << hex64(g_seed) << "\",\n"
+           << "  \"basis_order\": \"Q[0.." << (g_num_q - 1)
+           << "],P[0.." << (g_num_p - 1) << "]\",\n"
            << "  \"coefficient_encoding\": \"uint64 little-endian canonical residue\",\n"
            << "  \"hardware_coefficient_encoding\": \"uint32 little-endian, 64 words per 256-byte line\",\n"
            << "  \"hardware_package\": \"hardware/\",\n"
@@ -1736,33 +1734,38 @@ void generate(const std::filesystem::path& output_root,
         "output,dstore,ciphertext_out_q,coefficient,Q,READY\n";
     write_text(output_root / "dma_plan.csv", dma_plan);
 
-    const std::string readme =
-        "# Ciphertext Multiply Golden Package\n\n"
-        "This directory is generated by `hpu_reference_vectors`. It is a deterministic, "
-        "algorithm-level RLWE/RNS multiplication and hybrid relinearization fixture for "
-        "`N=4096, Q=4, P=3, dnum=2`.\n\n"
-        "Top-level binary files contain mathematical golden residues as little-endian uint64 values. Every binary "
-        "has a complete annotated `.hex.txt` view. Dimensions, readable paths, and checksums "
-        "are listed in `artifact_manifest.csv`; basis order is Q followed by P.\n\n"
-        "The independent `hardware/` tree contains uint32 hardware images, q/Barrett contexts, "
-        "physical per-stage twiddles, 256-byte line offsets/counts, and a complete HPU_MEM image/config.\n\n"
-        "The validation path is: encrypt two test messages, NTT, three-component tensor "
-        "product, INTT, digit ModUp to Q union P, NTT, multiply by the relinearization key, "
-        "INTT, ModDown by P, compose the two-component ciphertext, decrypt, and compare with "
-        "negacyclic plaintext multiplication modulo t.\n\n"
-        "The key and ciphertext use zero test noise and a P-divisible functional evaluation "
-        "key so failures are bit-exact and easy to localize. They are not security test vectors. "
-        "`memory_map.json` points to the generated uint32/256-byte host-memory layout. "
-        "Custom1 line sideband semantics, CSR offsets, Bank 5/mod-table mapping, and physical "
-        "NTT/INTT out-of-place behavior are frozen. The generated hpu_program_* C entry "
-        "accepts one concrete line offset/count span per DMA; the Nexus-AM hpu-it runtime "
-        "resolves the full layout, configures cache/CSR/fault/interrupt handling, and emits "
-        "a row-by-row relocation manifest. Target RTL evidence remains a qualification step.\n";
-    write_text(output_root / "README.md", readme);
-    write_text(output_root / "VALIDATION.txt",
-               "PASS\nrelinearized_decryption == tensor_decryption\n"
-               "rescale_moddown == direct_rounded_CRT_division\n"
-               "decoded_plaintext == negacyclic(message_a * message_b) mod 257\n");
+    std::ostringstream readme;
+    readme
+        << "# Ciphertext Multiply Golden Package\n\n"
+        << "This directory is generated by `hpu_reference_vectors`. It is a deterministic, "
+        << "algorithm-level RLWE/RNS multiplication and hybrid relinearization fixture for "
+        << "`N=" << g_n << ", Q=" << g_num_q << ", P=" << g_num_p
+        << ", dnum=" << g_dnum << "`.\n\n"
+        << "Top-level binary files contain mathematical golden residues as little-endian uint64 values. Every binary "
+        << "has a complete annotated `.hex.txt` view. Dimensions, readable paths, and checksums "
+        << "are listed in `artifact_manifest.csv`; basis order is Q followed by P.\n\n"
+        << "The independent `hardware/` tree contains uint32 hardware images, q/Barrett contexts, "
+        << "physical per-stage twiddles, 256-byte line offsets/counts, and a complete HPU_MEM image/config.\n\n"
+        << "The validation path is: encrypt two test messages, NTT, three-component tensor "
+        << "product, INTT, digit ModUp to Q union P, NTT, multiply by the relinearization key, "
+        << "INTT, ModDown by P, compose the two-component ciphertext, decrypt, and compare with "
+        << "negacyclic plaintext multiplication modulo t.\n\n"
+        << "The key and ciphertext use zero test noise and a P-divisible functional evaluation "
+        << "key so failures are bit-exact and easy to localize. They are not security test vectors. "
+        << "`memory_map.json` points to the generated uint32/256-byte host-memory layout. "
+        << "Custom1 line sideband semantics, CSR offsets, Bank 5/mod-table mapping, and physical "
+        << "NTT/INTT out-of-place behavior are frozen. The generated hpu_program_* C entry "
+        << "accepts one concrete line offset/count span per DMA; the Nexus-AM hpu-it runtime "
+        << "resolves the full layout, configures cache/CSR/fault/interrupt handling, and emits "
+        << "a row-by-row relocation manifest. Target RTL evidence remains a qualification step.\n";
+    write_text(output_root / "README.md", readme.str());
+
+    std::ostringstream validation;
+    validation << "PASS\nrelinearized_decryption == tensor_decryption\n"
+               << "rescale_moddown == direct_rounded_CRT_division\n"
+               << "decoded_plaintext == negacyclic(message_a * message_b) mod "
+               << g_plaintext_modulus << '\n';
+    write_text(output_root / "VALIDATION.txt", validation.str());
 
     if (suite_root != nullptr) {
         const auto common_params = [&](const std::string& operation,
@@ -1771,7 +1774,7 @@ void generate(const std::filesystem::path& output_root,
                                        const std::vector<U64>& moduli) {
             std::ostringstream out;
             out << "{\n  \"format_version\": 1,\n  \"operation\": \"" << operation
-                << "\",\n  \"N\": " << kN << ",\n  \"input_domain\": \""
+                << "\",\n  \"N\": " << g_n << ",\n  \"input_domain\": \""
                 << input_domain << "\",\n  \"output_domain\": \"" << output_domain
                 << "\",\n  \"layout\": \"row-major, coefficient last, little-endian uint64\",\n"
                 << "  \"hardware_layout\": \"hardware/: little-endian uint32, 64 words per 256-byte line\",\n"
@@ -1785,9 +1788,9 @@ void generate(const std::filesystem::path& output_root,
 
         std::vector<Artifact> case_artifacts;
         add_artifact(case_artifacts, "input.bin", "NTT input, coefficient domain",
-                     {kN}, ct_a[0][0]);
+                     {g_n}, ct_a[0][0]);
         add_artifact(case_artifacts, "expected.bin", "NTT expected output, NTT domain",
-                     {kN}, ct_a_ntt[0][0]);
+                     {g_n}, ct_a_ntt[0][0]);
         write_case_package(*suite_root, "ntt",
                            common_params("ntt", "coefficient", "NTT", {q_moduli[0]}),
                            std::move(case_artifacts),
@@ -1795,9 +1798,9 @@ void generate(const std::filesystem::path& output_root,
 
         case_artifacts.clear();
         add_artifact(case_artifacts, "input.bin", "INTT input, NTT domain",
-                     {kN}, ct_a_ntt[0][0]);
+                     {g_n}, ct_a_ntt[0][0]);
         add_artifact(case_artifacts, "expected.bin", "INTT expected output, coefficient domain",
-                     {kN}, ct_a[0][0]);
+                     {g_n}, ct_a[0][0]);
         write_case_package(*suite_root, "intt",
                            common_params("intt", "NTT", "coefficient", {q_moduli[0]}),
                            std::move(case_artifacts),
@@ -1807,12 +1810,12 @@ void generate(const std::filesystem::path& output_root,
         words.clear(); append_words(words, plaintext_b_q);
         add_artifact(case_artifacts, "input_coeff_q.bin",
                      "host signed-to-RNS plaintext, coefficient domain",
-                     {kNumQ, kN}, std::move(words),
+                     {g_num_q, g_n}, std::move(words),
                      {"basis_q", "coefficient"});
         words.clear(); append_words(words, plaintext_b_ntt);
         add_artifact(case_artifacts, "expected_ntt_q.bin",
                      "encoded plaintext ready for PMult, NTT domain",
-                     {kNumQ, kN}, std::move(words),
+                     {g_num_q, g_n}, std::move(words),
                      {"basis_q", "coefficient"});
         write_case_package(*suite_root, "encode",
                            common_params("encode",
@@ -1824,42 +1827,42 @@ void generate(const std::filesystem::path& output_root,
         words.clear(); append_words(words, ct_a[0]); append_words(words, ct_a[1]);
         add_artifact(case_artifacts, "input_q.bin",
                      "two-component ciphertext before rounded level drop",
-                     {2, kNumQ, kN}, std::move(words),
+                     {2, g_num_q, g_n}, std::move(words),
                      {"component[c0,c1]", "basis_q", "coefficient"});
 
-        BasisPoly half_constants(kNumQ, Poly(kN));
+        BasisPoly half_constants(g_num_q, Poly(g_n));
         const U64 dropped_modulus = q_moduli.back();
         const U64 half = dropped_modulus / 2;
-        for (std::size_t basis = 0; basis < kNumQ; ++basis) {
+        for (std::size_t basis = 0; basis < g_num_q; ++basis) {
             std::fill(half_constants[basis].begin(), half_constants[basis].end(),
                       half % q_moduli[basis]);
         }
         words.clear(); append_words(words, half_constants);
         add_artifact(case_artifacts, "constants/q_last_half_mod_q.bin",
                      "floor(q_last/2) reduced in every Q context",
-                     {kNumQ, kN}, std::move(words),
+                     {g_num_q, g_n}, std::move(words),
                      {"basis_q", "coefficient"});
 
         add_artifact(case_artifacts, "constants/qhat_inv_drop.bin",
                      "single-source BConv qhat inverse (all ones)",
-                     {1, kN}, Poly(kN, 1),
+                     {1, g_n}, Poly(g_n, 1),
                      {"source_basis", "coefficient"});
-        BasisPoly qhat_mod_qprime(kNumQ - 1, Poly(kN, 1));
+        BasisPoly qhat_mod_qprime(g_num_q - 1, Poly(g_n, 1));
         words.clear(); append_words(words, qhat_mod_qprime);
         add_artifact(case_artifacts, "constants/qhat_mod_qprime.bin",
                      "single-source BConv qhat residues (all ones)",
-                     {kNumQ - 1, kN}, std::move(words),
+                     {g_num_q - 1, g_n}, std::move(words),
                      {"target_basis_qprime", "coefficient"});
 
-        BasisPoly dropped_inverse(kNumQ - 1, Poly(kN));
-        for (std::size_t basis = 0; basis + 1 < kNumQ; ++basis) {
+        BasisPoly dropped_inverse(g_num_q - 1, Poly(g_n));
+        for (std::size_t basis = 0; basis + 1 < g_num_q; ++basis) {
             std::fill(dropped_inverse[basis].begin(), dropped_inverse[basis].end(),
                       inverse_mod(dropped_modulus % q_moduli[basis], q_moduli[basis]));
         }
         words.clear(); append_words(words, dropped_inverse);
         add_artifact(case_artifacts, "constants/q_last_inv_mod_qprime.bin",
                      "q_last inverse in every retained Q context",
-                     {kNumQ - 1, kN}, std::move(words),
+                     {g_num_q - 1, g_n}, std::move(words),
                      {"basis_qprime", "coefficient"});
 
         words.clear();
@@ -1867,7 +1870,7 @@ void generate(const std::filesystem::path& output_root,
         append_words(words, rescaled_ct_a[1]);
         add_artifact(case_artifacts, "expected_qprime.bin",
                      "rounded ciphertext after dropping q_last",
-                     {2, kNumQ - 1, kN}, std::move(words),
+                     {2, g_num_q - 1, g_n}, std::move(words),
                      {"component[c0,c1]", "basis_qprime", "coefficient"});
         write_case_package(*suite_root, "rescale",
                            common_params("rescale",
@@ -1876,24 +1879,24 @@ void generate(const std::filesystem::path& output_root,
                            std::move(case_artifacts), q_moduli, q_roots);
 
         case_artifacts.clear();
-        add_artifact(case_artifacts, "input_a.bin", "left polynomial", {kN}, ct_a_ntt[0][0]);
-        add_artifact(case_artifacts, "input_b.bin", "right polynomial", {kN}, ct_b_ntt[0][0]);
-        add_artifact(case_artifacts, "expected.bin", "pointwise product", {kN}, tensor_ntt[0][0]);
+        add_artifact(case_artifacts, "input_a.bin", "left polynomial", {g_n}, ct_a_ntt[0][0]);
+        add_artifact(case_artifacts, "input_b.bin", "right polynomial", {g_n}, ct_b_ntt[0][0]);
+        add_artifact(case_artifacts, "expected.bin", "pointwise product", {g_n}, tensor_ntt[0][0]);
         write_case_package(*suite_root, "mm",
                            common_params("mm", "NTT", "NTT", {q_moduli[0]}),
                            std::move(case_artifacts),
                            {q_moduli[0]}, {q_roots[0]});
 
         case_artifacts.clear();
-        add_artifact(case_artifacts, "input_q.bin", "single Q limb", {kN}, tensor[2][0]);
+        add_artifact(case_artifacts, "input_q.bin", "single Q limb", {g_n}, tensor[2][0]);
         const BasisPoly bconv_source{tensor[2][0]};
-        add_artifact(case_artifacts, "expected_p.bin", "Q0 to P0 basis conversion", {kN},
+        add_artifact(case_artifacts, "expected_p.bin", "Q0 to P0 basis conversion", {g_n},
                      bconv_to_target(bconv_source, {q_moduli[0]}, p_moduli[0]));
         write_case_package(*suite_root, "bconv",
                            common_params("bconv", "coefficient/Q0", "coefficient/P0",
                                          {q_moduli[0], p_moduli[0]}),
                            std::move(case_artifacts),
-                           {q_moduli[0], p_moduli[0]}, {q_roots[0], all_roots[kNumQ]});
+                           {q_moduli[0], p_moduli[0]}, {q_roots[0], all_roots[g_num_q]});
 
         case_artifacts.clear();
         words.clear();
@@ -1901,11 +1904,11 @@ void generate(const std::filesystem::path& output_root,
             append_words(words, tensor[2][i]);
         }
         add_artifact(case_artifacts, "input_digit_q.bin", "Q digit input for ModUp",
-                     {digit_size, kN}, std::move(words),
+                     {digit_size, g_n}, std::move(words),
                      {"basis_q_digit", "coefficient"});
         words.clear(); append_words(words, modup_coeff[0]);
         add_artifact(case_artifacts, "expected_qp.bin", "complete Q union P ModUp output",
-                     {kNumQ + kNumP, kN}, std::move(words),
+                     {g_num_q + g_num_p, g_n}, std::move(words),
                      {"basis_q_then_p", "coefficient"});
         write_case_package(*suite_root, "modup",
                            common_params("modup", "coefficient/Q_digit0", "coefficient/QP",
@@ -1916,14 +1919,14 @@ void generate(const std::filesystem::path& output_root,
         case_artifacts.clear();
         words.clear(); append_words(words, ct_a_ntt[0]); append_words(words, ct_a_ntt[1]);
         add_artifact(case_artifacts, "ciphertext_ntt_q.bin", "input ciphertext",
-                     {2, kNumQ, kN}, std::move(words),
+                     {2, g_num_q, g_n}, std::move(words),
                      {"component[c0,c1]", "basis_q", "coefficient"});
         words.clear(); append_words(words, plaintext_b_ntt);
         add_artifact(case_artifacts, "plaintext_ntt_q.bin", "input plaintext",
-                     {kNumQ, kN}, std::move(words), {"basis_q", "coefficient"});
+                     {g_num_q, g_n}, std::move(words), {"basis_q", "coefficient"});
         words.clear(); append_words(words, pmult_ntt[0]); append_words(words, pmult_ntt[1]);
         add_artifact(case_artifacts, "expected_ntt_q.bin", "plaintext-ciphertext product",
-                     {2, kNumQ, kN}, std::move(words),
+                     {2, g_num_q, g_n}, std::move(words),
                      {"component[c0,c1]", "basis_q", "coefficient"});
         write_case_package(*suite_root, "pmult",
                            common_params("pmult", "NTT/Q", "NTT/Q", q_moduli),
@@ -1934,11 +1937,11 @@ void generate(const std::filesystem::path& output_root,
         words.clear(); append_words(words, ct_a_ntt[0]); append_words(words, ct_a_ntt[1]);
         append_words(words, ct_b_ntt[0]); append_words(words, ct_b_ntt[1]);
         add_artifact(case_artifacts, "input_ntt_q.bin", "A0,A1,B0,B1",
-                     {4, kNumQ, kN}, std::move(words),
+                     {4, g_num_q, g_n}, std::move(words),
                      {"input_component[A0,A1,B0,B1]", "basis_q", "coefficient"});
         words.clear(); for (const BasisPoly& component : tensor_ntt) append_words(words, component);
         add_artifact(case_artifacts, "expected_ntt_q.bin", "t0,t1,t2",
-                     {3, kNumQ, kN}, std::move(words),
+                     {3, g_num_q, g_n}, std::move(words),
                      {"tensor_component[t0,t1,t2]", "basis_q", "coefficient"});
         write_case_package(*suite_root, "cmult",
                            common_params("cmult", "NTT/Q", "NTT/Q", q_moduli),
@@ -1948,11 +1951,11 @@ void generate(const std::filesystem::path& output_root,
         case_artifacts.clear();
         words.clear(); append_words(words, keyswitch_qp[0]);
         add_artifact(case_artifacts, "input_qp.bin", "key-switch component before ModDown",
-                     {kNumQ + kNumP, kN}, std::move(words),
+                     {g_num_q + g_num_p, g_n}, std::move(words),
                      {"basis_q_then_p", "coefficient"});
         words.clear(); append_words(words, keyswitch_q[0]);
         add_artifact(case_artifacts, "expected_q.bin", "key-switch component after ModDown",
-                     {kNumQ, kN}, std::move(words), {"basis_q", "coefficient"});
+                     {g_num_q, g_n}, std::move(words), {"basis_q", "coefficient"});
         write_case_package(*suite_root, "moddown",
                            common_params("moddown", "coefficient/QP", "coefficient/Q", all_moduli),
                            std::move(case_artifacts),
@@ -1961,18 +1964,18 @@ void generate(const std::filesystem::path& output_root,
         case_artifacts.clear();
         words.clear(); append_words(words, tensor[0]);
         add_artifact(case_artifacts, "input_base_q.bin", "KeySwitch base component t0",
-                     {kNumQ, kN}, std::move(words), {"basis_q", "coefficient"});
+                     {g_num_q, g_n}, std::move(words), {"basis_q", "coefficient"});
         words.clear(); append_words(words, tensor[2]);
         add_artifact(case_artifacts, "input_t2_q.bin", "KeySwitch switching component t2",
-                     {kNumQ, kN}, std::move(words), {"basis_q", "coefficient"});
+                     {g_num_q, g_n}, std::move(words), {"basis_q", "coefficient"});
         words.clear();
         for (const auto& digit : rlk_ntt) { append_words(words, digit[0]); append_words(words, digit[1]); }
         add_artifact(case_artifacts, "rlk_ntt_qp.bin", "relinearization key",
-                     {kDnum, 2, kNumQ + kNumP, kN}, std::move(words),
+                     {g_dnum, 2, g_num_q + g_num_p, g_n}, std::move(words),
                      {"digit", "component[ks0,ks1]", "basis_q_then_p", "coefficient"});
         words.clear(); append_words(words, keyswitch_output[0]); append_words(words, keyswitch_output[1]);
         add_artifact(case_artifacts, "expected_q.bin", "KeySwitch(t0, t2) output",
-                     {2, kNumQ, kN}, std::move(words),
+                     {2, g_num_q, g_n}, std::move(words),
                      {"component[t0_plus_ks0,ks1]", "basis_q", "coefficient"});
         write_case_package(*suite_root, "keyswitch",
                            common_params("keyswitch", "base/Q + switching_component/Q + rlk/NTT/QP",
@@ -1984,16 +1987,16 @@ void generate(const std::filesystem::path& output_root,
         words.clear();
         for (const BasisPoly& component : tensor) append_words(words, component);
         add_artifact(case_artifacts, "input_tensor_q.bin", "tensor ciphertext t0,t1,t2",
-                     {3, kNumQ, kN}, std::move(words),
+                     {3, g_num_q, g_n}, std::move(words),
                      {"tensor_component[t0,t1,t2]", "basis_q", "coefficient"});
         words.clear();
         for (const auto& digit : rlk_ntt) { append_words(words, digit[0]); append_words(words, digit[1]); }
         add_artifact(case_artifacts, "rlk_ntt_qp.bin", "relinearization key",
-                     {kDnum, 2, kNumQ + kNumP, kN}, std::move(words),
+                     {g_dnum, 2, g_num_q + g_num_p, g_n}, std::move(words),
                      {"digit", "component[ks0,ks1]", "basis_q_then_p", "coefficient"});
         words.clear(); append_words(words, output[0]); append_words(words, output[1]);
         add_artifact(case_artifacts, "expected_q.bin", "relinearized ciphertext",
-                     {2, kNumQ, kN}, std::move(words),
+                     {2, g_num_q, g_n}, std::move(words),
                      {"component[t0_plus_ks0,t1_plus_ks1]", "basis_q", "coefficient"});
         write_case_package(*suite_root, "relinearization",
                            common_params("relinearization",
@@ -2008,7 +2011,7 @@ void generate(const std::filesystem::path& output_root,
         append_words(words, auto_rotated[1]);
         add_artifact(case_artifacts, "input_rotated_q.bin",
                      "CPU-applied negacyclic x->x^3 ciphertext",
-                     {2, kNumQ, kN}, std::move(words),
+                     {2, g_num_q, g_n}, std::move(words),
                      {"component[c0,c1]", "basis_q", "coefficient"});
         words.clear();
         for (const auto& digit : galois_key_ntt) {
@@ -2017,7 +2020,7 @@ void generate(const std::filesystem::path& output_root,
         }
         add_artifact(case_artifacts, "galois_key_ntt_qp.bin",
                      "Galois key switching sigma_3(s) back to s",
-                     {kDnum, 2, kNumQ + kNumP, kN}, std::move(words),
+                     {g_dnum, 2, g_num_q + g_num_p, g_n}, std::move(words),
                      {"digit", "component[ks0,ks1]", "basis_q_then_p",
                       "coefficient"});
         words.clear();
@@ -2025,7 +2028,7 @@ void generate(const std::filesystem::path& output_root,
         append_words(words, auto_output[1]);
         add_artifact(case_artifacts, "expected_q.bin",
                      "automorphed and Galois-key-switched ciphertext",
-                     {2, kNumQ, kN}, std::move(words),
+                     {2, g_num_q, g_n}, std::move(words),
                      {"component[c0,c1]", "basis_q", "coefficient"});
         write_case_package(*suite_root, "auto",
                            common_params("auto",
@@ -2034,7 +2037,7 @@ void generate(const std::filesystem::path& output_root,
                            std::move(case_artifacts), all_moduli, all_roots);
         write_text(*suite_root / "auto" / "test_data" / "AUTO_LAYOUT.json",
                    "{\n"
-                   "  \"auto_index\": " + std::to_string(kAutoIndex) + ",\n"
+                   "  \"auto_index\": " + std::to_string(g_auto_index) + ",\n"
                    "  \"galois_element\": " + std::to_string(kAutoGaloisElement) + ",\n"
                    "  \"coefficient_map\": \"dst=(src*galois_element) mod 2N; negate when dst>=N\",\n"
                    "  \"cpu_preprocess\": true,\n"
@@ -2056,13 +2059,46 @@ void generate(const std::filesystem::path& output_root,
 int main(int argc, char* argv[])
 {
     try {
-        const std::filesystem::path output = argc > 1
-            ? std::filesystem::path(argv[1])
+        std::filesystem::path config_path = hpu::test::default_fhe_test_config_path();
+        std::vector<std::filesystem::path> positional;
+        for (int index = 1; index < argc; ++index) {
+            const std::string argument = argv[index];
+            if (argument == "--config") {
+                if (++index >= argc) {
+                    throw std::runtime_error("--config requires a path");
+                }
+                config_path = argv[index];
+            } else if (argument.rfind("--", 0) == 0) {
+                throw std::runtime_error("unknown argument: " + argument);
+            } else {
+                positional.emplace_back(argument);
+            }
+        }
+        if (positional.size() > 2) {
+            throw std::runtime_error(
+                "usage: hpu_reference_vectors [output-root] [suite-root] [--config path]");
+        }
+
+        const hpu::test::FheTestConfig config =
+            hpu::test::load_fhe_test_config(config_path);
+        g_n = config.N;
+        g_num_q = config.num_q;
+        g_num_p = config.num_p;
+        g_dnum = config.dnum;
+        g_auto_index = config.auto_index;
+        g_plaintext_modulus = config.plaintext_modulus;
+        g_seed = config.seed;
+
+        const std::filesystem::path output = !positional.empty()
+            ? positional[0]
             : std::filesystem::path("outputs/ciphertext_multiply/test_data");
-        const std::filesystem::path suite = argc > 2
-            ? std::filesystem::path(argv[2])
+        const std::filesystem::path suite = positional.size() > 1
+            ? positional[1]
             : std::filesystem::path();
-        generate(output, argc > 2 ? &suite : nullptr);
+        std::cout << "Loaded shared FHE config from " << config_path
+                  << " (N=" << g_n << ", Q=" << g_num_q
+                  << ", P=" << g_num_p << ", dnum=" << g_dnum << ")\n";
+        generate(output, positional.size() > 1 ? &suite : nullptr);
         return 0;
     } catch (const std::exception& exception) {
         std::cerr << "Reference generation failed: " << exception.what() << '\n';

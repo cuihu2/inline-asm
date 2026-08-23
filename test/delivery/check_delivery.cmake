@@ -2,6 +2,49 @@ if(NOT DEFINED ROOT)
     message(FATAL_ERROR "ROOT is required")
 endif()
 
+set(FHE_PARAMS_PATH "${ROOT}/outputs/ciphertext_multiply/test_data/params.json")
+if(NOT EXISTS "${FHE_PARAMS_PATH}")
+    message(FATAL_ERROR "Missing delivery artifact: outputs/ciphertext_multiply/test_data/params.json")
+endif()
+file(READ "${FHE_PARAMS_PATH}" FHE_PARAMS)
+
+function(read_json_integer JSON_TEXT KEY OUTPUT_VARIABLE)
+    string(REGEX MATCH
+        "\"${KEY}\"[ \t\r\n]*:[ \t\r\n]*([0-9]+)"
+        JSON_MATCH
+        "${JSON_TEXT}")
+    if(NOT JSON_MATCH)
+        message(FATAL_ERROR "Missing integer ${KEY} in ciphertext_multiply params.json")
+    endif()
+    set(${OUTPUT_VARIABLE} "${CMAKE_MATCH_1}" PARENT_SCOPE)
+endfunction()
+
+read_json_integer("${FHE_PARAMS}" "N" FHE_N)
+read_json_integer("${FHE_PARAMS}" "num_q" FHE_NUM_Q)
+read_json_integer("${FHE_PARAMS}" "num_p" FHE_NUM_P)
+read_json_integer("${FHE_PARAMS}" "dnum" FHE_DNUM)
+math(EXPR FHE_Q_PRIME "${FHE_NUM_Q} - 1")
+math(EXPR FHE_Q_PRIME_MINUS_ONE "${FHE_Q_PRIME} - 1")
+math(EXPR FHE_LAST_CONTEXT "${FHE_NUM_Q} + ${FHE_NUM_P} - 1")
+math(EXPR FHE_STAGE_WORDS "${FHE_N} / 2")
+math(EXPR FHE_STAGE_LINES "(${FHE_STAGE_WORDS} + 63) / 64")
+
+set(FHE_STAGE_COUNT 0)
+set(FHE_STAGE_LENGTH 1)
+while(FHE_STAGE_LENGTH LESS FHE_N)
+    math(EXPR FHE_STAGE_LENGTH "${FHE_STAGE_LENGTH} * 2")
+    math(EXPR FHE_STAGE_COUNT "${FHE_STAGE_COUNT} + 1")
+endwhile()
+if(NOT FHE_STAGE_LENGTH EQUAL FHE_N)
+    message(FATAL_ERROR "Configured N is not a power of two: ${FHE_N}")
+endif()
+math(EXPR FHE_LAST_STAGE "${FHE_STAGE_COUNT} - 1")
+if(FHE_LAST_STAGE LESS 10)
+    set(FHE_LAST_STAGE_NAME "0${FHE_LAST_STAGE}")
+else()
+    set(FHE_LAST_STAGE_NAME "${FHE_LAST_STAGE}")
+endif()
+
 set(REQUIRED_FILES
     "output/ciphertext_multiply.asm"
     "output/relinearization.asm"
@@ -31,8 +74,8 @@ set(REQUIRED_FILES
     "outputs/ciphertext_multiply/test_data/hardware/mod_ctx_map.csv"
     "outputs/ciphertext_multiply/test_data/hardware/constants/mod_ctx.u32.bin"
     "outputs/ciphertext_multiply/test_data/hardware/twiddle_map.csv"
-    "outputs/ciphertext_multiply/test_data/hardware/constants/twiddle/ntt/basis_00/stage_11.u32.bin"
-    "outputs/ciphertext_multiply/test_data/hardware/constants/twiddle/intt/basis_00/stage_11.u32.bin"
+    "outputs/ciphertext_multiply/test_data/hardware/constants/twiddle/ntt/basis_00/stage_${FHE_LAST_STAGE_NAME}.u32.bin"
+    "outputs/ciphertext_multiply/test_data/hardware/constants/twiddle/intt/basis_00/stage_${FHE_LAST_STAGE_NAME}.u32.bin"
     "outputs/rv_interface_smoke/rv_interface_smoke.asm"
     "outputs/rv_interface_smoke/rv_interface_smoke.inst32"
     "outputs/rv_interface_smoke/rv_interface_smoke.cmd26"
@@ -149,11 +192,13 @@ endif()
 if(NOT HARDWARE_ABI MATCHES "\"reserved_bits\": 48")
     message(FATAL_ERROR "Hardware ABI does not describe the 48 reserved context bits")
 endif()
-if(NOT HARDWARE_ABI MATCHES "\"stage_payload_words\": 2048")
+if(NOT HARDWARE_ABI MATCHES
+        "\"stage_payload_words\": ${FHE_STAGE_WORDS}")
     message(FATAL_ERROR "Hardware ABI does not provide N/2 physical twiddles per stage")
 endif()
-if(NOT HARDWARE_ABI MATCHES "\"stage_payload_lines\": 32")
-    message(FATAL_ERROR "Hardware ABI stage twiddles do not occupy N/128 HPU lines")
+if(NOT HARDWARE_ABI MATCHES
+        "\"stage_payload_lines\": ${FHE_STAGE_LINES}")
+    message(FATAL_ERROR "Hardware ABI stage twiddle line count is not ceil((N/2)/64)")
 endif()
 if(NOT HARDWARE_ABI MATCHES "\"pre_twist_execution\": \"explicit PMUL")
     message(FATAL_ERROR "Hardware ABI does not explicitly execute the negacyclic pre-twist")
@@ -187,18 +232,18 @@ file(READ "${ROOT}/outputs/ciphertext_multiply/test_data/hardware/twiddle_map.cs
 file(STRINGS "${ROOT}/outputs/ciphertext_multiply/test_data/hardware/twiddle_map.csv"
     TWIDDLE_ROWS)
 foreach(DIRECTION ntt intt)
-    foreach(STAGE RANGE 0 11)
+    foreach(STAGE RANGE 0 ${FHE_LAST_STAGE})
         set(STAGE_FOUND 0)
         foreach(TWIDDLE_ROW IN LISTS TWIDDLE_ROWS)
             if(TWIDDLE_ROW MATCHES
-                    "^${DIRECTION},0,[0-9]+,butterfly,${STAGE},2048,"
-                    AND TWIDDLE_ROW MATCHES ",32$")
+                    "^${DIRECTION},0,[0-9]+,butterfly,${STAGE},${FHE_STAGE_WORDS},"
+                    AND TWIDDLE_ROW MATCHES ",${FHE_STAGE_LINES}$")
                 set(STAGE_FOUND 1)
             endif()
         endforeach()
         if(NOT STAGE_FOUND)
             message(FATAL_ERROR
-                "Hardware twiddle map does not provide 2048 words/32 lines for ${DIRECTION} stage ${STAGE}")
+                "Hardware twiddle map does not provide ${FHE_STAGE_WORDS} words/${FHE_STAGE_LINES} lines for ${DIRECTION} stage ${STAGE}")
         endif()
     endforeach()
 endforeach()
@@ -278,8 +323,7 @@ file(READ "${ROOT}/output/modup.asm" MODUP_ASM)
 foreach(MARKER
         "MODUP: Q_digit -> full Q union P"
         "Copy Q context 0"
-        "Copy Q context 1"
-        "Target context 6")
+        "Target context ${FHE_LAST_CONTEXT}")
     string(FIND "${MODUP_ASM}" "${MARKER}" POSITION)
     if(POSITION EQUAL -1)
         message(FATAL_ERROR "Unified ModUp stream is missing marker: ${MARKER}")
@@ -329,15 +373,17 @@ if(NOT ENCODE_PARAMS MATCHES
     message(FATAL_ERROR "Encode package does not freeze the host signed-to-RNS boundary")
 endif()
 file(READ "${ROOT}/outputs/encode/test_data/artifact_manifest.csv" ENCODE_MANIFEST)
-if(NOT ENCODE_MANIFEST MATCHES "expected_ntt_q.bin[^\n]*4x4096")
-    message(FATAL_ERROR "Encode expected output does not contain four Q limbs")
+if(NOT ENCODE_MANIFEST MATCHES
+        "expected_ntt_q.bin[^\n]*${FHE_NUM_Q}x${FHE_N}")
+    message(FATAL_ERROR
+        "Encode expected output does not match Q=${FHE_NUM_Q}, N=${FHE_N}")
 endif()
 
 file(READ "${ROOT}/output/rescale.asm" RESCALE_ASM)
 foreach(MARKER
-        "RESCALE: rounded drop-last q_3 for 2 component(s)"
+        "RESCALE: rounded drop-last q_${FHE_Q_PRIME} for 2 component(s)"
         "add floor(q_last/2) in every Q context"
-        "reuse ModDown with Q'=q_0..q_2 and P={q_3}"
+        "reuse ModDown with Q'=q_0..q_${FHE_Q_PRIME_MINUS_ONE} and P={q_${FHE_Q_PRIME}}"
         "MODDOWN stage-1: BConv P -> Q")
     string(FIND "${RESCALE_ASM}" "${MARKER}" POSITION)
     if(POSITION EQUAL -1)
@@ -356,8 +402,10 @@ if(NOT RESCALE_PARAMS MATCHES
     message(FATAL_ERROR "Rescale package does not describe the dropped output basis")
 endif()
 file(READ "${ROOT}/outputs/rescale/test_data/artifact_manifest.csv" RESCALE_MANIFEST)
-if(NOT RESCALE_MANIFEST MATCHES "expected_qprime.bin[^\n]*2x3x4096")
-    message(FATAL_ERROR "Rescale expected output is not two components over three retained Q limbs")
+if(NOT RESCALE_MANIFEST MATCHES
+        "expected_qprime.bin[^\n]*2x${FHE_Q_PRIME}x${FHE_N}")
+    message(FATAL_ERROR
+        "Rescale expected output does not match two components over ${FHE_Q_PRIME} retained Q limbs")
 endif()
 
 string(FIND "${CIPHERTEXT_ASM}" "pfree p" PFREE_POSITION)
@@ -513,8 +561,8 @@ endforeach()
 
 file(STRINGS "${ROOT}/outputs/ciphertext_multiply/ciphertext_multiply.inst32" INST32_LINES)
 list(LENGTH INST32_LINES INST32_COUNT)
-if(INST32_COUNT LESS 2000)
-    message(FATAL_ERROR "Ciphertext multiply instruction stream is unexpectedly short")
+if(INST32_COUNT EQUAL 0)
+    message(FATAL_ERROR "Ciphertext multiply instruction stream is empty")
 endif()
 file(STRINGS "${ROOT}/outputs/ciphertext_multiply/ciphertext_multiply.cmd26" CMD26_LINES)
 list(LENGTH CMD26_LINES CMD26_COUNT)
@@ -524,8 +572,8 @@ endif()
 
 file(STRINGS "${ROOT}/outputs/relinearization/relinearization.inst32" RELIN_INST32_LINES)
 list(LENGTH RELIN_INST32_LINES RELIN_INST32_COUNT)
-if(RELIN_INST32_COUNT LESS 1000)
-    message(FATAL_ERROR "Relinearization instruction stream is unexpectedly short")
+if(RELIN_INST32_COUNT EQUAL 0)
+    message(FATAL_ERROR "Relinearization instruction stream is empty")
 endif()
 file(STRINGS "${ROOT}/outputs/relinearization/relinearization.cmd26" RELIN_CMD26_LINES)
 list(LENGTH RELIN_CMD26_LINES RELIN_CMD26_COUNT)
@@ -537,7 +585,7 @@ file(STRINGS "${ROOT}/outputs/encode/encode.inst32" ENCODE_INST32_LINES)
 list(LENGTH ENCODE_INST32_LINES ENCODE_INST32_COUNT)
 file(STRINGS "${ROOT}/outputs/encode/encode.cmd26" ENCODE_CMD26_LINES)
 list(LENGTH ENCODE_CMD26_LINES ENCODE_CMD26_COUNT)
-if(ENCODE_INST32_COUNT LESS 100 OR NOT ENCODE_CMD26_COUNT EQUAL ENCODE_INST32_COUNT)
+if(ENCODE_INST32_COUNT EQUAL 0 OR NOT ENCODE_CMD26_COUNT EQUAL ENCODE_INST32_COUNT)
     message(FATAL_ERROR "Encode instruction/precode stream is missing or inconsistent")
 endif()
 
@@ -545,7 +593,7 @@ file(STRINGS "${ROOT}/outputs/rescale/rescale.inst32" RESCALE_INST32_LINES)
 list(LENGTH RESCALE_INST32_LINES RESCALE_INST32_COUNT)
 file(STRINGS "${ROOT}/outputs/rescale/rescale.cmd26" RESCALE_CMD26_LINES)
 list(LENGTH RESCALE_CMD26_LINES RESCALE_CMD26_COUNT)
-if(RESCALE_INST32_COUNT LESS 100 OR NOT RESCALE_CMD26_COUNT EQUAL RESCALE_INST32_COUNT)
+if(RESCALE_INST32_COUNT EQUAL 0 OR NOT RESCALE_CMD26_COUNT EQUAL RESCALE_INST32_COUNT)
     message(FATAL_ERROR "Rescale instruction/precode stream is missing or inconsistent")
 endif()
 
@@ -558,6 +606,10 @@ endif()
 
 file(WRITE "${ROOT}/outputs/DELIVERY_REPORT.txt"
     "SOFTWARE_DELIVERY=PASS\n"
+    "FHE_N=${FHE_N}\n"
+    "FHE_NUM_Q=${FHE_NUM_Q}\n"
+    "FHE_NUM_P=${FHE_NUM_P}\n"
+    "FHE_DNUM=${FHE_DNUM}\n"
     "FHE_REFERENCE=PASS\n"
     "ASM_ENCODING=PASS\n"
     "PRECODE_CMD26=PASS\n"

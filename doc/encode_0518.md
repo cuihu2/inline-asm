@@ -143,12 +143,16 @@ outputs/<case>/
 
 ## 6. 参数配置
 
-参数目前来自两处源配置：
+参数只来自 `config/fhe_test.conf`。指令流生成器和 FHE reference 使用同一个
+`hpu_test_config` 解析库；`hpu_delivery` 通过 CMake cache 变量 `HPU_TEST_CONFIG`
+将同一路径显式传给二者。`outputs/*/test_data/params.json` 是生成结果，不是输入
+配置，重新生成时会覆盖。
 
-- `src/main.cpp`：HPU 指令流生成参数。
-- `test/reference/main.cpp`：FHE reference 和测试向量参数。
-
-`outputs/*/test_data/params.json` 是生成结果，不是输入配置，重新生成时会覆盖。修改 `N/Q/P/dnum` 时需同步修改上述两处，并满足 `N` 为 2 的幂、`num_q % dnum == 0`、`num_q + num_p <= 256`、所有 RNS 模数不超过 32 bit 等当前实现约束。8 个逻辑对象槽位与 8-bit `MOD_ID` 编码空间是独立资源；Bank 5 为 32 line、固定基址 `0x1400`，物理可放 512 个 context，但 `MOD_ID` 最多寻址 256 个。默认完整乘法参数为 `N=4096, Q=4, P=3, dnum=2`。
+配置需要满足 `N` 为不小于 2 的 2 次幂、`ceil(N/64) <= 1024`、
+`num_q >= 2`、`num_q % dnum == 0`、`num_q + num_p <= 256`，且当前仅支持
+`auto_index=1`。8 个逻辑对象槽位与 8-bit `MOD_ID` 编码空间是独立资源；Bank 5
+为 32 line、固定基址 `0x1400`，物理可放 512 个 context，但 `MOD_ID` 最多寻址
+256 个。默认完整乘法参数为 `N=4096, Q=4, P=3, dnum=2`。
 
 ## 7. 当前交付边界
 

@@ -11,6 +11,23 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_subdirectory(encode)
 
+set(HPU_TEST_CONFIG
+        "${CMAKE_CURRENT_SOURCE_DIR}/config/fhe_test.conf"
+        CACHE FILEPATH
+        "Shared HPU instruction/reference test configuration")
+
+add_library(hpu_test_config STATIC
+        src/config/fhe_test_config.cpp
+)
+target_include_directories(hpu_test_config
+        PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_definitions(hpu_test_config
+        PRIVATE
+        HPU_DEFAULT_TEST_CONFIG_PATH="${HPU_TEST_CONFIG}"
+)
+
 add_executable(inline_asm_codegen
         src/main.cpp
         src/util/ntt.cpp
@@ -32,6 +49,7 @@ target_include_directories(inline_asm_codegen
         PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+target_link_libraries(inline_asm_codegen PRIVATE hpu_test_config)
 
 add_subdirectory(test/encode)
 add_subdirectory(test/reference)
@@ -42,11 +60,14 @@ if(BUILD_TESTING)
 endif()
 
 add_custom_target(hpu_delivery
-        COMMAND $<TARGET_FILE:inline_asm_codegen> both
+        COMMAND $<TARGET_FILE:inline_asm_codegen>
+                both
+                --config ${HPU_TEST_CONFIG}
         COMMAND $<TARGET_FILE:inline_asm_encode_outputs>
         COMMAND $<TARGET_FILE:hpu_reference_vectors>
                 ${CMAKE_CURRENT_SOURCE_DIR}/outputs/ciphertext_multiply/test_data
                 ${CMAKE_CURRENT_SOURCE_DIR}/outputs
+                --config ${HPU_TEST_CONFIG}
         COMMAND ${CMAKE_COMMAND}
                 -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/test/delivery/check_delivery.cmake
