@@ -2,7 +2,8 @@
 
 > 2026-08-21 注：本文是修复前审计，其中 `x0/x0` DMA 结论已失效。
 > 当前生成入口固定使用 `x10/x11`，并由类型化 span 与 Nexus-AM resolved
-> manifest 绑定具体 line offset/count。
+> manifest 绑定具体 line offset/count；DLOAD 和 DSTORE 均从 span 装载非零
+> line count，不再使用旧的 DSTORE `x11=0` 约定。
 
 审计日期：2026-08-18
 

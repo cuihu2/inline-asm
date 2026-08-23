@@ -490,6 +490,10 @@ foreach(CASE_NAME ntt intt encode rescale mm bconv pmult cmult modup moddown aut
                 AND NOT CASE_NAME STREQUAL "mm")
             message(FATAL_ERROR "${EXECUTABLE_FILE}: executable backend does not bind x11")
         endif()
+        if(EXECUTABLE_SOURCE MATCHES "hpu_rs2 __asm__\\(\"x11\"\\) = 0;")
+            message(FATAL_ERROR
+                "${EXECUTABLE_FILE}: zero-length DMA sideband violates DLOAD/DSTORE ABI")
+        endif()
         if(NOT EXECUTABLE_SOURCE MATCHES "__asm__ volatile\\(\".word 0x[0-9A-F]+")
             message(FATAL_ERROR "${EXECUTABLE_FILE}: executable backend has no fixed .word")
         endif()

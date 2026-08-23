@@ -149,9 +149,13 @@ int main()
             throw std::runtime_error("executable fixed word mismatch");
         if (executable.find("spans[3].line_offset") == std::string::npos)
             throw std::runtime_error("executable DSTORE relocation mismatch");
-        if (executable.find("hpu_rs2 __asm__(\"x11\") = 0;")
+        if (executable.find(
+                "hpu_rs2 __asm__(\"x11\") = (uintptr_t)spans[3].line_count;")
             == std::string::npos)
-            throw std::runtime_error("executable DSTORE x11 ABI mismatch");
+            throw std::runtime_error("executable DSTORE x11/count ABI mismatch");
+        if (executable.find("hpu_rs2 __asm__(\"x11\") = 0;")
+            != std::string::npos)
+            throw std::runtime_error("executable contains zero-length DMA sideband");
         if (header.find("HPU_PROGRAM_SMOKE_DMA_COUNT = 4") == std::string::npos)
             throw std::runtime_error("executable header mismatch");
         if (manifest.find("7,3,dstore,2,1,0,x10,x11,0x00B5542B")

@@ -205,7 +205,7 @@ relocation manifest、line map 与 HPU_MEM 镜像。
 - `ciphertext_multiply/test_data` 已由软件 reference 自动生成；二进制格式、shape 和校验值见其中的 `params.json` 与 `artifact_manifest.csv`
 - 顶层 `.bin` 是 `uint64` 数学 golden；真正面向 HPU 加载的是 `test_data/hardware/` 下按 256B line 补齐的 `.u32.bin`
 - `hardware/line_map.csv` 给出每个对象的 byte address、line offset 和 line count；custom1 固定使用 `GPR[rs1]=line_offset`、`GPR[rs2]=line_count`（256B line 单位），`hpu_mem_config.json` 给出 HPU_MEM window 值和 `0x00..0x18` CSR 编程顺序
-- 生成的 `hpu_program_*` 入口接收与 DMA 指令等长的 `hpu_dma_span_t[]`；每条 custom1 发射前固定把 line offset/count 装入 `x10/x11`，DSTORE 按冻结 ABI 将 `x11` 置零。`nexus-am/tests/hpu-it` 根据硬件布局生成逐行可审计的 resolved relocation manifest。
+- 生成的 `hpu_program_*` 入口接收与 DMA 指令等长的 `hpu_dma_span_t[]`；每条 DLOAD/DSTORE custom1 发射前都把非零 line offset/count 装入 `x10/x11`。`nexus-am/tests/hpu-it` 根据硬件布局生成逐行可审计的 resolved relocation manifest。
 
 ---
 

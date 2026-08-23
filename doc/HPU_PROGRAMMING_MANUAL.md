@@ -629,7 +629,8 @@ on completion:
 `GPR[rs1]=HPU_MEM line offset`、`GPR[rs2]=line count`，单位均为 256B；
 不存在另一套 DTLB descriptor 解释。生成的 `hpu_program_*` 入口逐条消费
 `hpu_dma_span_t`，在 custom1 发射前把 line offset/count 装入固定的
-`x10/x11`；DSTORE 的长度由对象记录决定，按冻结 ABI 将 `x11` 置零。
+`x10/x11`；DLOAD 和 DSTORE 的 `line count` 都必须非零，DSTORE 不得把
+`x11` 置零。
 调用方必须使用与硬件布局一致、已通过范围和生命周期检查的 span 数组。
 
 **示例**

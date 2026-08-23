@@ -230,14 +230,8 @@ std::string render_executable_source(
                    << "    {\n"
                    << "        register uintptr_t hpu_rs1 __asm__(\"x10\") = "
                    << "(uintptr_t)spans[" << dma_index << "].line_offset;\n"
-                   << "        register uintptr_t hpu_rs2 __asm__(\"x11\") = ";
-            if (instruction.mnemonic == Mnemonic::kDload) {
-                output << "(uintptr_t)spans[" << dma_index << "].line_count;\n";
-            } else {
-                // The frozen RTL contract obtains DSTORE length from the object
-                // record; the relocation retains line_count for validation/audit.
-                output << "0;\n";
-            }
+                   << "        register uintptr_t hpu_rs2 __asm__(\"x11\") = "
+                   << "(uintptr_t)spans[" << dma_index << "].line_count;\n";
             output << "        __asm__ volatile(\".word " << hex_word(item.word)
                    << "\" : : \"r\"(hpu_rs1), \"r\"(hpu_rs2) : \"memory\");\n"
                    << "    }\n"
