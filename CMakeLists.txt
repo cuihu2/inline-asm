@@ -72,6 +72,11 @@ add_subdirectory(test/encode)
 add_subdirectory(test/reference)
 
 if(BUILD_TESTING)
+    find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
+    add_subdirectory(test/semantic)
+endif()
+
+if(BUILD_TESTING)
     add_test(
             NAME hpu_reference_rejects_noninvertible_plaintext_modulus
             COMMAND hpu_reference_vectors
