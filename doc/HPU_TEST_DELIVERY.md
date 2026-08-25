@@ -33,6 +33,11 @@ MOD_TABLE_BASE_0X1400=PASS
 STAGE_TWIDDLE_LAYOUT=PASS
 NEGACYCLIC_FACTORS_EXPLICIT=PASS
 NTT_PHYSICAL_OUT_OF_PLACE=PASS
+CKKS_RESCALE_ROUNDED_DROP_LAST=PASS
+CKKS_MULTIPLY_RELINEARIZE_RESCALE=PASS
+BGV_MULTIPLY_CORRECTION_FACTOR=PASS
+BGV_MODSWITCH_DROP_LAST=PASS
+BGV_CONTEXT_ORDER_Q_P_T=PASS
 TEST_VECTOR_SCOPE=FUNCTIONAL_ONLY
 HARDWARE_EXECUTION=CONDITIONAL
 PENDING=target RTL/board execution and external monitor evidence
@@ -45,13 +50,13 @@ Nexus-AM host 用例属于 `PASS_PROBE` 自检：非 RISC-V 分支把嵌入镜�
 `qualification-pending/Skipped`。它可以证明测试程序和数据组织自洽，但不能作为
 HPU 算术通过证据。目标证据必须来自 RISC-V 分支真正发出的 HPU 程序。
 
-### 1.1 2026-08-21 审计基线
+### 1.1 2026-08-24 审计基线
 
 | 检查项 | 结果 |
 | --- | --- |
-| 算子数据包 | 14 个：NTT、INTT、Encode、Rescale、MM、BConv、PMULT、CMULT、ModUp、ModDown、Auto、KeySwitch、Relinearization、CiphertextMultiply |
+| 算子数据包 | 17 个：12 个公共/多项式算子包，以及 CKKS Rescale、CKKS CiphertextMultiply、BGV CiphertextMultiply、BGV ModSwitch、公共 CiphertextMultiply |
 | 数学与硬件文件 | 所有 manifest 路径、字节数、FNV-1a、256B line geometry、主镜像切片和连续 line map 均通过 |
-| Nexus-AM 同步副本 | 14 份完整 `outputs/` 与当前生成结果一致 |
+| Nexus-AM 同步副本 | 需在本次 17 包重新生成后同步；旧 14 包统计不作为本版签字依据 |
 | 生成算子 relocation | 11 份 manifest 的源/解析行数一致，全部 `RESOLVED`；最大 `end_line_exclusive=19137 < 19201` |
 | 本仓库自检 | reference/encode 共 2 项通过 |
 | Nexus-AM host 自检 | 53 项无内部失败，但 53 项均按 `PASS_PROBE` 标为 `qualification-pending/Skipped` |
@@ -74,7 +79,8 @@ generated-operator relocation manifest；这不影响其独立数据包交付，
 
 `config/fhe_test.conf` 是唯一的参数输入。HPU 指令生成器和软件 reference 通过
 `hpu_test_config` 共享解析库读取同一份 `N/num_q/num_p/dnum/auto_index`；reference
-还从该文件读取 `plaintext_modulus/seed`。顶层 `hpu_delivery` 显式向两个程序传递
+还从该文件读取 `plaintext_modulus/seed`。默认 `plaintext_modulus=65537`，供 BGV
+以 `Q|P|t` 顺序安装到 `MOD_ID=num_q+num_p`。顶层 `hpu_delivery` 显式向两个程序传递
 CMake cache 变量 `HPU_TEST_CONFIG` 指向的同一路径，避免指令流与数据来自不同参数。
 
 `outputs/*/test_data/params.json` 是 reference 写出的结果清单，不是配置入口。修改
@@ -114,7 +120,13 @@ Encrypt(ctA, ctB)
   -> Decrypt and compare with mA * mB in Z_t[x]/(x^N+1)
 ```
 
-默认配置为 `N=4096`、`num_q=4`、`num_p=3`、`dnum=2`。数据使用确定性、无噪声、P 可整除的功能测试评估密钥，以获得逐位可比结果；它用于 UT/IT 定位，不代表生产密钥安全性。
+默认配置为 `N=4096`、`num_q=4`、`num_p=3`、`dnum=2`、`t=65537`。数据使用确定性、无噪声、P 可整除的功能测试评估密钥，以获得逐位可比结果；它用于 UT/IT 定位，不代表生产密钥安全性。
+
+公共乘法之后还生成两条方案闭环：CKKS 执行 rounded Rescale 并验证
+`scale_out=scale_a*scale_b/q_last` 与近似误差；BGV 使用 correction factor `3`、`5`
+执行乘法，再按 `u=-c_last*q_last^-1 mod t` 降层并验证
+`cf_out=cf_in*q_last^-1 mod t`。BFV 不生成指令，原因见
+`HPU_PROGRAMMING_MANUAL.md` 第 8.8 节。
 
 生成器和 reference 共同检查 `N` 为 2 的幂且 `ceil(N/64) <= 1024`，对应当前普通 bank 的最大可承载次数 `N=65536`。`dload load_type` 只接受 `0=seg`、`1=poly`、`2=mod_ctx`；编码值 3 为保留值并纳入 RV 负例。
 
@@ -144,10 +156,13 @@ Encrypt(ctA, ctB)
 | `hpu_mem_image.u32.bin` | 可整体装入 HPU_MEM window 的连续 `uint32` 镜像 |
 | `images/**/*.u32.bin` | 输入、常量、期望结果的独立 256B-line-padded 镜像 |
 | `line_map.csv` | 每个对象的 byte address、line offset、line count、payload/padded 大小 |
-| `constants/mod_ctx.u32.bin` / `mod_ctx_map.csv` | 每个 Q/P 模数的 q 与 `floor(2^64/q)` Barrett mu 物理记录 |
+| `constants/mod_ctx.u32.bin` / `mod_ctx_map.csv` | 每个 Q/P/t 模数的 q 与 `floor(2^64/q)` Barrett mu 物理记录；非 BGV 包不含 t |
 | `constants/twiddle/**/*.u32.bin` / `twiddle_map.csv` | 每个 basis、方向、phase、stage 的物理 twiddle 和 line 位置 |
 | `hpu_mem_config.json` | HPU_MEM base/size、256B line 参数、`0x00..0x18` CSR 偏移和编程顺序 |
 | `abi.json` | `uint32`、小端、Bank 5、mod context word 布局和 NTT/INTT twiddle 约定 |
+
+四个方案用例均独立生成 `dma_plan.csv`。BGV ModSwitch 将 `q_last -> t`
+和面向 `Q'` 的 BConv target 常量拆成不同文件，runtime 不应跨目标基复用其物理 span。
 
 硬件模上下文 V1 每条记录占 128 bit，按低位到高位为
 `{q[31:0], mu[47:0], reserved[47:0]}`，其中
@@ -167,6 +182,12 @@ twiddle。最终显式执行物理顺序的 `PMUL (N^-1 * psi^-i)`，不依赖 P
 归一化或 twist。每个 stage 固定 `N/2` 个 `uint32`、`N/128` 条 256B line；
 默认 `N=4096` 时为 2048 words、32 line。
 
+硬件组原始 round-trip 自测只能证明 PNTT/PINTT 互逆，不能证明逐点乘对应 FHE
+卷积；自然顺序输入曾出现 round-trip 通过而卷积失败。当前 reference 因此额外检查
+`PNTT(a) * PNTT(b) -> PINTT` 的 negacyclic convolution，并逐项对照 coefficient
+image、NTT image、pre/post factor 和全部 stage twiddle。默认 Q0 的冻结结果为
+`AUTOTEST_ORACLE=PASS q=50061313 N=4096 ntt_stages=12 intt_stages=12`。
+
 ## 5. 失败定位
 
 | 首个失败检查点 | 优先排查模块 |
@@ -178,15 +199,18 @@ twiddle。最终显式执行物理顺序的 `PMUL (N^-1 * psi^-i)`，不依赖 P
 | `keyswitch_accum_ntt_qp` | rlk 布局、digit/component/basis 步长、PMAC 累加 |
 | `keyswitch_moddown_q` | P->Q BConv、`P^-1 mod q_i`、减法方向 |
 | `ciphertext_out_q` | 最终 `padd`、输出 component 顺序 |
+| `ckks_ciphertext_multiply/.../ciphertext_out_qprime` | CKKS Rescale、level 与 scale 处理 |
+| `bgv_modswitch/intermediate/u_mod_t` | `q_last -> t` BConv、模 t 取负和逆元 |
+| `bgv_modswitch/expected_qprime` | BGV delta 符号、`q_last^-1`、correction factor |
 | 最终解密 | 上述节点均通过时再检查方案参数和 host 数据解释 |
 
-同一 reference 还会拆分到 `outputs/{ntt,intt,encode,rescale,mm,bconv,modup,pmult,cmult,moddown,keyswitch,relinearization,auto}/test_data/`。每个目录均包含独立 `params.json`、数学输入/期望输出、checksum，以及完整的 `hardware/` 镜像、上下文、twiddle 和 line map，可直接交给对应模块负责人跑 UT。Encode 的宿主 signed-to-RNS 边界和 Rescale 的 rounded drop-last 语义分别冻结在各自 `params.json` 与 `doc/dload_instructions.md` 中。
+同一 reference 还会拆分到 `outputs/{ntt,intt,encode,ckks_rescale,ckks_ciphertext_multiply,bgv_ciphertext_multiply,bgv_modswitch,mm,bconv,modup,pmult,cmult,moddown,keyswitch,relinearization,auto}/test_data/`。每个目录均包含独立 `params.json`、数学输入/期望输出、checksum，以及完整的 `hardware/` 镜像、上下文、twiddle 和 line map，可直接交给对应模块负责人跑 UT。Encode 的 signed-to-RNS 边界、方案元数据和逐算子 DLOAD/DSTORE 绑定分别冻结在各自 `params.json` 与 `HPU_PROGRAMMING_MANUAL.md` 附录 C 中。
 
 ## 6. RV 接口用例
 
 `outputs/rv_interface_smoke/` 包含：
 
-- `rv_interface_smoke.asm`：覆盖 11 条体系结构指令、四种 DLoad type、DStore retain/release 和最大合法字段。
+- `rv_interface_smoke.asm`：覆盖 11 条体系结构指令、三种合法 DLoad type、DStore retain/release 和最大合法字段；type 3 作为 reserved 负例。
 - `rv_interface_smoke.inst32`：对应 32-bit 指令流。
 - `rv_interface_smoke.cmd26`：对应控制逻辑的 26-bit 命令流。
 - `test_data/expected_decode.csv`：逐条期望 word、command26、`custom0/custom1` 路由和归一化汇编。

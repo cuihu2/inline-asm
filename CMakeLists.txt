@@ -42,7 +42,10 @@ add_executable(inline_asm_codegen
         src/operator/relinearization.cpp
         src/operator/ciphertext_multiply.cpp
         src/operator/encode.cpp
-        src/operator/rescale.cpp
+        src/scheme/ckks/rescale.cpp
+        src/scheme/ckks/ciphertext_multiply.cpp
+        src/scheme/bgv/ciphertext_multiply.cpp
+        src/scheme/bgv/modswitch.cpp
 )
 
 target_include_directories(inline_asm_codegen
@@ -51,8 +54,34 @@ target_include_directories(inline_asm_codegen
 )
 target_link_libraries(inline_asm_codegen PRIVATE hpu_test_config)
 
+if(BUILD_TESTING)
+    foreach(INVALID_CONFIG invalid_context_overflow invalid_num_q invalid_plaintext_modulus)
+        add_test(
+                NAME hpu_config_rejects_${INVALID_CONFIG}
+                COMMAND inline_asm_codegen
+                        asm
+                        --config ${CMAKE_CURRENT_SOURCE_DIR}/test/config/${INVALID_CONFIG}.conf
+        )
+        set_tests_properties(
+                hpu_config_rejects_${INVALID_CONFIG}
+                PROPERTIES WILL_FAIL TRUE)
+    endforeach()
+endif()
+
 add_subdirectory(test/encode)
 add_subdirectory(test/reference)
+
+if(BUILD_TESTING)
+    add_test(
+            NAME hpu_reference_rejects_noninvertible_plaintext_modulus
+            COMMAND hpu_reference_vectors
+                    ${CMAKE_CURRENT_BINARY_DIR}/noninvertible_reference_test_data
+                    --config ${CMAKE_CURRENT_SOURCE_DIR}/test/config/noninvertible_plaintext_modulus.conf
+    )
+    set_tests_properties(
+            hpu_reference_rejects_noninvertible_plaintext_modulus
+            PROPERTIES WILL_FAIL TRUE TIMEOUT 120)
+endif()
 
 set(HPU_DELIVERY_TEST_DEPENDENCIES)
 if(BUILD_TESTING)

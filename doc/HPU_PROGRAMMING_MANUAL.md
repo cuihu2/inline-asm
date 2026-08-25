@@ -767,6 +767,92 @@ for each modulus context i:
 
 不能在一次 `pmodld` 后混合处理不同模数的数据。
 
+### 8.5 公共算子层与方案算子层
+
+`util`、`poly` 和 `operator` 提供方案无关的 RNS、NTT、KeySwitch、
+Relinearization 和原始 CiphertextMultiply。`scheme/ckks` 与 `scheme/bgv`
+位于其上，只组合方案特有步骤并维护软件元数据。方案层当前统一采用系数域输入、
+系数域输出边界；内部 NTT/INTT 仍由公共算子生成。
+
+通用 `operator/encode` 只表示“宿主 signed-to-RNS，HPU 执行负循环 NTT”的边界，
+不得把它解释成 CKKS FFT Encoder 或 BGV BatchEncoder。
+
+### 8.6 CKKS Rescale 与完整乘法
+
+CKKS Rescale 对每个密文分量执行：
+
+```text
+rounded_i = x_i + floor(q_last/2) mod q_i
+out_i = (rounded_i - BConv_q_last_to_q_i(rounded_last))
+        * q_last^-1 mod q_i
+```
+
+输出基为 `Q_without_last`，level 减一。HPU 指令不携带浮点 scale；调用方必须使用
+`multiply_scale(scale_a, scale_b)` 和 `rescale_scale(product_scale, q_last)` 更新
+软件元数据。`ckks_ciphertext_multiply` 的固定顺序是公共 tensor product、
+重线形化、CKKS Rescale，最终只发出一次 `psync`。
+
+### 8.7 BGV 乘法和 ModSwitch
+
+BGV 固定模上下文顺序为：
+
+```text
+MOD_ID 0 .. num_q-1              : Q
+MOD_ID num_q .. num_q+num_p-1    : P
+MOD_ID num_q+num_p               : plaintext modulus t
+```
+
+因此配置必须满足 `num_q + num_p + 1 <= 256`。当前默认 `t=65537`，可作为
+`q32+mu48` 模上下文由 `dload type=2, flag[0]=1` 安装。BGV 乘法复用公共
+CiphertextMultiply，软件同时更新：
+
+```text
+correction_factor_out = correction_factor_a * correction_factor_b mod t
+```
+
+BGV ModSwitch 对每个分量先用单源 BConv 得到 `c_last mod t`，然后计算：
+
+```text
+u = -c_last * q_last^-1 mod t
+delta_i = c_last + q_last * u mod q_i
+c_i' = (c_i - delta_i) * q_last^-1 mod q_i
+```
+
+`c_last` 和 `u` 分别通过单源 BConv 从 `q_last`/`t` 提升到各个保留的 `q_i`。
+输出仍为系数域，level 减一，软件元数据更新为：
+
+```text
+correction_factor_out = correction_factor_in * q_last^-1 mod t
+```
+
+该流程不需要比较或条件选择，但要求 `gcd(q_last,t)=1`。完整中间值和常量位于
+`outputs/bgv_modswitch/test_data/`。
+
+### 8.8 当前未生成的方案流
+
+| 方案能力 | 状态 | 当前边界 |
+| --- | --- | --- |
+| CKKS Rescale / Multiply | 已实现 | 系数域算子；不包含复数槽位 FFT Encoder |
+| BGV Multiply / ModSwitch | 已实现 | 系数明文；不包含 BatchEncoder |
+| BFV BEHZ Multiply | 未生成 | ISA 缺少 centered correction 所需的比较和条件选择 |
+
+BFV BEHZ 的 `SM-MRQ` 需要根据 `r_m_tilde >= m_tilde/2` 决定是否减去
+`m_tilde`，`fastbconv_sk` 也需要根据 `alpha_sk > m_sk/2` 选择校正路径。
+当前 11 条指令没有逐 lane 比较、符号提取、掩码生成、条件选择或已定义的
+centered-reduction 复合操作，因此不能为任意合法输入生成正确的纯 HPU 流。
+软件不会用固定分支或受限 golden 伪造 BFV 正向用例。
+
+BFV 只有在硬件提供 compare+mask/select、centered reduction 指令，或冻结由控制器
+选择算术路径的接口后才能启用；届时还需明确 `Bsk/m_sk/m_tilde` 的选取、容量和
+MOD_ID 布局，并覆盖阈值两侧及边界值。算法参考为
+[Microsoft SEAL evaluator](https://github.com/microsoft/SEAL/blob/main/native/src/seal/evaluator.cpp)
+和 [RNS implementation](https://raw.githubusercontent.com/microsoft/SEAL/main/native/src/seal/util/rns.cpp)。
+
+另外，CKKS FFT 编解码、BGV batching、生产密钥生成、安全参数选择、随机数接口、
+多 level 模数链以及噪声/精度预算仍属于后续 host runtime/compiler 工作。当前测试
+使用确定性零噪声、P 可整除的功能 fixture，必须标记为
+`TEST_VECTOR_SCOPE=FUNCTIONAL_ONLY`。
+
 ## 9. 汇编器检查和错误
 
 当前汇编器在编码前检查：
@@ -833,4 +919,217 @@ ctest --test-dir build --output-on-failure
 3. RTL 是否按 `autotest` 的 batch/lane、P/P^-1 次序消费 twiddle，并按 out-of-place 协议提交各 stage 新 base。
 4. cache maintenance、中断和 fault 的 runtime 实现。
 
-上述列表是尚未实现的 runtime/RTL 行为，不是这些ABI 的备选解释。
+这些事项不由指令编码器证明；当前软件完成度与剩余 RTL/板级签字项以
+`HPU_TEST_DELIVERY.md` 为准，它们不是 ABI 的备选解释。
+
+## 附录 C：DLOAD/DSTORE 数据绑定
+
+### C.1 通用规则
+
+- `dload/dstore` 固定编码 `x10/x11`；runtime 在发射前写入当前对象的 256B line
+  offset/count，权威物理位置来自各用例的 `hardware/line_map.csv`。
+- `dload type=2, flag[0]=1` 把模表对象分配到 small Bank 5；随后由
+  `pmodld MOD_ID` 选择上下文。模表顺序必须与 MOD_ID 一致。
+- `dstore rel=1` 在写回后释放对象；只读对象最后一次使用后由 `pfree` 释放。
+- 组合算子 body 不发 `psync`，只有最外层完整程序在末尾发出一次。
+- NTT stage 0 前显式加载并乘 `pre_twist`；INTT 结束后显式加载并乘
+  `post_untwist_scale`。每个 stage 都重新加载该 stage 的 twiddle。
+
+| 槽位 | 当前生成器的常见角色 |
+| --- | --- |
+| `p0` | 当前输入 limb 或工作对象 A |
+| `p1` | 第二输入、预计算常量或评估密钥 |
+| `p2` | 累加器和输出对象 |
+| `p3` | 复合算子 twiddle 或临时标量；独立 NTT/INTT 的 twiddle 使用 `p1` |
+| `p4` | 模表逻辑对象，物理分配到 small Bank 5 |
+| `p5..p7` | 当前生成器未固定占用，不能假设其中已有 live 对象 |
+
+### C.2 BConv、ModUp 与 ModDown
+
+#### BConv
+
+`generate_hpu_bconv_contexts_body_asm` 的输入基和目标基均由 MOD_ID 列表显式给出。
+运行时必须按以下出现顺序为每条 DMA 绑定数据：
+
+| 阶段 | MOD_ID | 目标槽位 | dload 数据 | dstore 数据 |
+| --- | --- | --- | --- | --- |
+| 开始 | - | `p4` | 完整 source/target 模表，`type=2,flag[0]=1` | - |
+| Stage 1，每个 source `j` | `source_contexts[j]` | `p0` | source limb `a_j` | - |
+| Stage 1，每个 source `j` | 同上 | `p1` | `qhat_inv_j` | - |
+| Stage 1，每个 source `j` | 同上 | `p0` | - | `x_j=a_j*qhat_inv_j mod source_j` |
+| Stage 2，每个 target `i`、source `j` | `target_contexts[i]` | `p0` | Stage 1 的 `x_j` | - |
+| Stage 2，每个 target `i`、source `j` | 同上 | `p1` | `qhat_j mod target_i` | - |
+| Stage 2，每个 target `i` | 同上 | `p2` | - | `sum_j(x_j*qhat_j) mod target_i` |
+
+`p2` 是 `pmul/pmac` 累加目标，不需要在首个 source 前加载；非首项使用 `pmac`。
+
+#### ModUp
+
+ModUp 把一个 Q digit 扩展到完整 `Q union P`：
+
+1. 对 digit 内每个已有 Q limb，`dload p0` 后立即 `dstore p0,rel=1`，原样保留。
+2. 以该 digit 为 BConv source，以 `Q_without_digit union P` 为 target，按上一表加载
+   source limb、`qhat_inv` 和 target residues。
+3. 原样保留的 limb 与 `p2` 写出的 BConv target limbs 共同组成完整基。
+
+#### ModDown
+
+ModDown 的 source context 是 P，target context 是 Q：
+
+| 阶段 | 目标槽位 | dload 数据 | dstore 数据 |
+| --- | --- | --- | --- |
+| Stage 1 | `p0/p1/p2/p4` | 按 BConv 规则加载 `P -> Q` 数据和常量 | Q 基 correction |
+| Stage 2 开始 | `p4` | 完整 `Q|P` 模表 | - |
+| Stage 2，每个 `q_i` | `p0` | 当前 Q limb | - |
+| Stage 2，每个 `q_i` | `p1` | Stage 1 correction limb | - |
+| Stage 2，每个 `q_i` | `p2` | `P^-1 mod q_i` | - |
+| Stage 2，每个 `q_i` | `p0` | - | `(q-correction)*P^-1 mod q_i` |
+
+### C.3 NTT、INTT 与 Encode
+
+NTT/INTT body 假定数据对象和活动模上下文已由外层准备。独立用例使用 `p0` 作为
+数据、`p1` 作为 twiddle；复合算子使用 `p0` 和 `p3`。
+
+| 顺序 | NTT dload | INTT dload | 使用后动作 |
+| --- | --- | --- | --- |
+| 1 | `pre_twist=psi^i` | stage 0 twiddle | `pmul` / `pintt` 后 `pfree twiddle` |
+| 2..logN | 当前 stage twiddle | 后续每个 stage twiddle | 每 stage 后 `pfree twiddle` |
+| 最后 | - | `post_untwist_scale=N^-1*psi^-i` | `pmul` 后 `pfree twiddle` |
+
+每个 stage 都重新执行一次 twiddle `dload`，不会由硬件从上一 stage 自动更新。
+每份 stage 表固定包含 `N/2` 个 `uint32`。数据对象 `p0` 跨 stage 保持同一逻辑
+OBJ_ID，但控制器可按 out-of-place 协议提交新的物理 base。
+
+Encode 的逻辑输入不是单份 `mod t` 数据，而是宿主已经完成 signed-to-RNS 的
+`[num_q,N]` 系数域 limbs。顺序为：加载 `p4=Q table`；对每个 `q_i` 执行
+`pmodld i`、`dload p0=input_coeff_q[i]`、按上表加载 `p3` twiddle 并完成 NTT，
+最后 `dstore p0=expected_ntt_q[i],rel=1`。
+
+### C.4 PMULT 与 CMULT
+
+`generate_hpu_mm_body_asm` 本身不包含 DMA，只对调用方已经置为 live 的对象执行
+`pmul`；独立 MM wrapper 才负责加载模表和输入。PMULT/CMULT 在其上定义如下顺序。
+
+PMULT 对每个 `q_i` 的 DMA 顺序固定为：
+
+```text
+dload p4 = Q mod table                    # 整个算子只加载一次
+pmodld i
+dload p0 = ct0[i]
+dload p1 = plaintext[i]
+pmul p2,p0,p1
+dstore p2 = out0[i], rel=1
+dload p0 = ct1[i]                         # p1 仍保持 live
+pmul p2,p0,p1
+dstore p2 = out1[i], rel=1
+```
+
+plaintext `p1` 在两次乘法之间不能被 runtime 替换，第二次乘法后才 `pfree p1`。
+
+CMULT 输入必须已经处于 NTT/evaluation domain。对每个 `q_i`，DLoad 顺序为：
+
+| 输出 | 依次加载到 `p0/p1` | 计算与写回 |
+| --- | --- | --- |
+| `t0` | `a0,b0` | `p2=a0*b0`，随后 dstore `t0` |
+| `t1` | `a0,b1`，再加载 `a1,b0` | 先 `pmul p2`，再 `pmac p2`，随后 dstore `t1` |
+| `t2` | `a1,b1` | `p2=a1*b1`，随后 dstore `t2` |
+
+### C.5 KeySwitch、Relinearization 与完整乘法
+
+KeySwitch 接口语义是
+`KeySwitch(base,switching_component,evk)->(base+ks0,ks1)`。对每个 digit 执行：
+
+| 步骤 | dload 绑定 | dstore 结果 |
+| --- | --- | --- |
+| 1. ModUp | 当前 `switching_component` digit、BConv 常量、`p4=Q|P table` | 完整 QP digit |
+| 2. NTT | `p0=QP digit limb,p3=pre/stage twiddle` | NTT 域 QP digit |
+| 3. EVK 乘加 | `p0=digit NTT,p1=evk[d][v][basis]`；非首 digit 另加载 `p2=previous accumulator` | `p2=accumulator[v][basis]` |
+| 4. INTT | `p0=accumulator,p3=stage/post twiddle,p4=Q|P table` | 系数域 QP accumulator |
+| 5. ModDown | 两个 accumulator 分别按 C.2 执行 | Q 基 `ks0/ks1` |
+| 6. 合并 base | `p0=ks0,p1=base,p4=Q table` | `p2=base+ks0` |
+
+Relinearization 把 `t0` 绑定为 base、`t2` 绑定为 switching component、`rlk` 绑定为
+EVK。KeySwitch 输出第一分量后，对每个 `q_i` 再加载 `p0=t1`、`p1=ks1`，以
+`p2=t1+ks1` 写回第二分量。
+
+完整 CiphertextMultiply 的外存阶段顺序是：
+
+```text
+ctA[0],ctA[1] coefficient/Q -> NTT
+ctB[0],ctB[1] coefficient/Q -> NTT
+CMULT -> t0,t1,t2 NTT/Q
+t0,t1,t2 -> INTT -> coefficient/Q
+KeySwitch(base=t0,switching=t2,evk=rlk)
+merge t1+ks1
+dstore ciphertext_out_q[0], ciphertext_out_q[1]
+```
+
+Auto 的 HPU 侧绑定与 KeySwitch 相同；差异是 host 先对两个输入分量执行负循环
+`X->X^3`，随后以旋转后的 `c0` 为 base、旋转后的 `c1` 为 switching component，
+EVK 使用 Galois key。
+
+### C.6 CKKS 方案算子
+
+CKKS Rescale 输入为 `[component,Q,coefficient]`。对每个 component：
+
+| 阶段 | dload 绑定 | dstore 结果 |
+| --- | --- | --- |
+| 舍入预处理 | `p4=Q table`；每个 `q_i` 加载 `p0=input_q[component][i]`、`p1=floor(q_last/2) mod q_i` | `p0=rounded_numerator[i]` |
+| 单源 BConv | source 为 rounded `q_last` limb；加载值为 1 的 `qhat_inv`/target residues | Q' correction |
+| 除以 `q_last` | `p0=rounded Q' limb,p1=correction,p2=q_last^-1 mod q_i` | `expected_qprime[component][i]` |
+
+最终计算为：
+
+```text
+((x + floor(q_last/2)) - BConv_q_last(x + floor(q_last/2)))
+    * q_last^-1 mod q_i
+```
+
+CKKS CiphertextMultiply 先完整执行 C.5 的公共乘法，再把两个 Q 分量按本节顺序
+Rescale。只有最外层发出 `psync`；scale 和 level 不通过 DMA 进入 HPU，由软件更新为
+`scale_out=scale_a*scale_b/q_last`、`level_out=level_in-1`。
+
+### C.7 BGV 方案算子
+
+BGV Multiply 的 DMA 次序与公共 CiphertextMultiply 相同，但模表镜像顺序固定为
+`Q|P|t`。`t` 不参与乘法指令；软件在成功后更新
+`factor_out=factor_a*factor_b mod t`。
+
+BGV ModSwitch 对每个 component 依次执行：
+
+| 阶段 | dload 绑定 | dstore 结果 |
+| --- | --- | --- |
+| `q_last -> t` | 单源 BConv：`c_last`、`bconv_qhat_inv`、`bconv_qhat_target_t`、`p4=Q|P|t table` | `c_last_mod_t` |
+| 计算 `u` | `p0=zero,p1=c_last_mod_t,p3=q_last^-1 mod t` | `p0=u_mod_t` |
+| `q_last -> Q'` | 单源 BConv：`c_last` 和面向 Q' 的 target constants | `c_last_mod_qprime` |
+| `t -> Q'` | 单源 BConv：`u_mod_t` 和面向 Q' 的 target constants | `u_mod_qprime` |
+| 最终校正 | `p0=c_i,p1=c_last_mod_q_i,p2=u_mod_q_i,p3=q_last mod q_i`；运算后再加载 `p3=q_last^-1 mod q_i` | `p0=c_i'` |
+
+最终校正执行：
+
+```text
+p2 = p2 * p3
+p1 = p1 + p2
+p0 = p0 - p1
+p0 = p0 * q_last^-1
+```
+
+对应 `c_i'=(c_i-c_last-q_last*u)*q_last^-1 mod q_i`。软件同时更新
+`factor_out=factor_in*q_last^-1 mod t`。
+
+### C.8 物理 span 与数据文件
+
+本附录定义每条 DMA 的逻辑数据身份和先后顺序，不硬编码外存地址。生成包中的文件
+共同构成最终绑定契约：
+
+| 文件 | 权威内容 |
+| --- | --- |
+| `dma_plan.csv` | 算法阶段、逻辑对象、域和基 |
+| `artifact_manifest.csv` | `uint64` 数学 golden 的 path、shape 和 checksum |
+| `hardware/hardware_manifest.csv` | 独立 `uint32` 硬件镜像及 checksum |
+| `hardware/line_map.csv` | 每个对象的 byte address、line offset/count 和 padding |
+| `hardware/mod_ctx_map.csv` | Q/P/t 的 MOD_ID 与 Bank 5 记录位置 |
+| `hardware/twiddle_map.csv` | phase/stage twiddle 的物理位置与 line 数 |
+
+runtime 必须按照生成 ASM 中 custom1 的出现顺序消费 relocation/span 记录。不能只凭
+槽位号推断数据，因为同一个 `p0` 会在不同阶段依次表示输入 limb、scratch 和输出。

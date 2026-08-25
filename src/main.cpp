@@ -17,7 +17,10 @@
 #include "operator/relinearization.hpp"
 #include "operator/ciphertext_multiply.hpp"
 #include "operator/encode.hpp"
-#include "operator/rescale.hpp"
+#include "scheme/bgv/ciphertext_multiply.hpp"
+#include "scheme/bgv/modswitch.hpp"
+#include "scheme/ckks/ciphertext_multiply.hpp"
+#include "scheme/ckks/rescale.hpp"
 
 namespace {
 
@@ -115,6 +118,12 @@ struct RescaleConfig {
 	int num_components;
 };
 
+struct BgvModswitchConfig {
+	int num_q;
+	int num_p;
+	int num_components;
+};
+
 NttConfig g_ntt_cfg{};
 constexpr MmConfig kMmCfg{0, 1, 2, 3};
 // 为了缩短独立 BConv 示例，采用 num_q = num_p = 1；模上下文使用独立 8-bit MOD_ID
@@ -126,6 +135,7 @@ AutoConfig g_auto_cfg{};
 CiphertextMultiplyConfig g_ciphertext_multiply_cfg{};
 EncodeConfig g_encode_cfg{};
 RescaleConfig g_rescale_cfg{};
+BgvModswitchConfig g_bgv_modswitch_cfg{};
 
 void configure_generators(const hpu::test::FheTestConfig& config)
 {
@@ -143,6 +153,7 @@ void configure_generators(const hpu::test::FheTestConfig& config)
 	g_ciphertext_multiply_cfg = {N, num_q, num_p, dnum};
 	g_encode_cfg = {N, num_q};
 	g_rescale_cfg = {num_q, 2};
+	g_bgv_modswitch_cfg = {num_q, num_p, 2};
 }
 
 void test_encode_codegen()
@@ -160,20 +171,93 @@ void test_encode_codegen()
 	}
 }
 
-void test_rescale_codegen()
+void test_ckks_rescale_codegen()
 {
 	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
-		std::ofstream("output/rescale.cpp")
-			<< generate_hpu_rescale_asm(
+		std::ofstream("output/ckks_rescale.cpp")
+			<< hpu::scheme::ckks::generate_rescale_asm(
 				g_rescale_cfg.num_q, g_rescale_cfg.num_components, true);
-		std::cout << "Saved rescale ASM to output/rescale.cpp\n";
+		std::cout << "Saved CKKS Rescale ASM to output/ckks_rescale.cpp\n";
 	}
 
 	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
-		std::ofstream("output/rescale.asm")
-			<< generate_hpu_rescale_body_asm(
+		std::ofstream("output/ckks_rescale.asm")
+			<< hpu::scheme::ckks::generate_rescale_body_asm(
 				g_rescale_cfg.num_q, g_rescale_cfg.num_components, true);
-		std::cout << "Saved rescale body ASM to output/rescale.asm\n";
+		std::cout << "Saved CKKS Rescale body ASM to output/ckks_rescale.asm\n";
+	}
+}
+
+void test_ckks_ciphertext_multiply_codegen()
+{
+	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
+		std::ofstream("output/ckks_ciphertext_multiply.cpp")
+			<< hpu::scheme::ckks::generate_ciphertext_multiply_asm(
+				g_ciphertext_multiply_cfg.N,
+				g_ciphertext_multiply_cfg.num_q,
+				g_ciphertext_multiply_cfg.num_p,
+				g_ciphertext_multiply_cfg.dnum,
+				true);
+		std::cout << "Saved CKKS ciphertext multiply ASM to output/ckks_ciphertext_multiply.cpp\n";
+	}
+
+	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
+		std::ofstream("output/ckks_ciphertext_multiply.asm")
+			<< hpu::scheme::ckks::generate_ciphertext_multiply_body_asm(
+				g_ciphertext_multiply_cfg.N,
+				g_ciphertext_multiply_cfg.num_q,
+				g_ciphertext_multiply_cfg.num_p,
+				g_ciphertext_multiply_cfg.dnum,
+				true);
+		std::cout << "Saved CKKS ciphertext multiply body ASM to output/ckks_ciphertext_multiply.asm\n";
+	}
+}
+
+void test_bgv_ciphertext_multiply_codegen()
+{
+	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
+		std::ofstream("output/bgv_ciphertext_multiply.cpp")
+			<< hpu::scheme::bgv::generate_ciphertext_multiply_asm(
+				g_ciphertext_multiply_cfg.N,
+				g_ciphertext_multiply_cfg.num_q,
+				g_ciphertext_multiply_cfg.num_p,
+				g_ciphertext_multiply_cfg.dnum,
+				true);
+		std::cout << "Saved BGV ciphertext multiply ASM to output/bgv_ciphertext_multiply.cpp\n";
+	}
+
+	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
+		std::ofstream("output/bgv_ciphertext_multiply.asm")
+			<< hpu::scheme::bgv::generate_ciphertext_multiply_body_asm(
+				g_ciphertext_multiply_cfg.N,
+				g_ciphertext_multiply_cfg.num_q,
+				g_ciphertext_multiply_cfg.num_p,
+				g_ciphertext_multiply_cfg.dnum,
+				true);
+		std::cout << "Saved BGV ciphertext multiply body ASM to output/bgv_ciphertext_multiply.asm\n";
+	}
+}
+
+void test_bgv_modswitch_codegen()
+{
+	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
+		std::ofstream("output/bgv_modswitch.cpp")
+			<< hpu::scheme::bgv::generate_modswitch_asm(
+				g_bgv_modswitch_cfg.num_q,
+				g_bgv_modswitch_cfg.num_p,
+				g_bgv_modswitch_cfg.num_components,
+				true);
+		std::cout << "Saved BGV ModSwitch ASM to output/bgv_modswitch.cpp\n";
+	}
+
+	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
+		std::ofstream("output/bgv_modswitch.asm")
+			<< hpu::scheme::bgv::generate_modswitch_body_asm(
+				g_bgv_modswitch_cfg.num_q,
+				g_bgv_modswitch_cfg.num_p,
+				g_bgv_modswitch_cfg.num_components,
+				true);
+		std::cout << "Saved BGV ModSwitch body ASM to output/bgv_modswitch.asm\n";
 	}
 }
 
@@ -500,10 +584,12 @@ int main(int argc, char* argv[])
 			<< ", P=" << config.num_p << ", dnum=" << config.dnum << ")\n";
 
 		std::filesystem::create_directory("output");
+		std::filesystem::remove("output/rescale.asm");
+		std::filesystem::remove("output/rescale.cpp");
 		test_ntt_codegen();
 		test_intt_codegen();
 		test_encode_codegen();
-		test_rescale_codegen();
+		test_ckks_rescale_codegen();
 		test_mm_codegen();
 		test_bconv_codegen();
 		test_pmult_codegen();
@@ -514,6 +600,9 @@ int main(int argc, char* argv[])
 		test_keyswitch_codegen();
 		test_relinearization_codegen();
 		test_ciphertext_multiply_codegen();
+		test_ckks_ciphertext_multiply_codegen();
+		test_bgv_ciphertext_multiply_codegen();
+		test_bgv_modswitch_codegen();
 		return 0;
 	} catch (const std::exception& exception) {
 		std::cerr << "Instruction generation failed: " << exception.what() << '\n';

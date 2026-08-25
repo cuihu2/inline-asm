@@ -23,9 +23,15 @@ read_json_integer("${FHE_PARAMS}" "N" FHE_N)
 read_json_integer("${FHE_PARAMS}" "num_q" FHE_NUM_Q)
 read_json_integer("${FHE_PARAMS}" "num_p" FHE_NUM_P)
 read_json_integer("${FHE_PARAMS}" "dnum" FHE_DNUM)
+read_json_integer("${FHE_PARAMS}" "plaintext_modulus" FHE_PLAINTEXT_MODULUS)
+if(NOT FHE_PLAINTEXT_MODULUS EQUAL 65537)
+    message(FATAL_ERROR
+        "BGV hardware test requires plaintext_modulus=65537, found ${FHE_PLAINTEXT_MODULUS}")
+endif()
 math(EXPR FHE_Q_PRIME "${FHE_NUM_Q} - 1")
 math(EXPR FHE_Q_PRIME_MINUS_ONE "${FHE_Q_PRIME} - 1")
 math(EXPR FHE_LAST_CONTEXT "${FHE_NUM_Q} + ${FHE_NUM_P} - 1")
+math(EXPR FHE_T_CONTEXT "${FHE_NUM_Q} + ${FHE_NUM_P}")
 math(EXPR FHE_STAGE_WORDS "${FHE_N} / 2")
 math(EXPR FHE_STAGE_LINES "(${FHE_STAGE_WORDS} + 63) / 64")
 
@@ -89,13 +95,30 @@ set(REQUIRED_FILES
     "outputs/intt/test_data/expected.hex.txt"
     "outputs/encode/test_data/input_coeff_q.bin"
     "outputs/encode/test_data/expected_ntt_q.bin"
-    "outputs/rescale/test_data/input_q.bin"
-    "outputs/rescale/test_data/constants/q_last_half_mod_q.bin"
-    "outputs/rescale/test_data/constants/q_last_inv_mod_qprime.bin"
-    "outputs/rescale/test_data/expected_qprime.bin"
+    "outputs/ckks_rescale/test_data/input_q.bin"
+    "outputs/ckks_rescale/test_data/constants/q_last_half_mod_q.bin"
+    "outputs/ckks_rescale/test_data/constants/q_last_inv_mod_qprime.bin"
+    "outputs/ckks_rescale/test_data/expected_qprime.bin"
+    "outputs/ckks_rescale/test_data/dma_plan.csv"
+    "outputs/ckks_ciphertext_multiply/test_data/SCHEME_VALIDATION.txt"
+    "outputs/ckks_ciphertext_multiply/test_data/dma_plan.csv"
+    "outputs/ckks_ciphertext_multiply/test_data/expected/ciphertext_out_qprime.bin"
+    "outputs/bgv_ciphertext_multiply/test_data/SCHEME_VALIDATION.txt"
+    "outputs/bgv_ciphertext_multiply/test_data/dma_plan.csv"
+    "outputs/bgv_ciphertext_multiply/test_data/expected/plaintext_product_mod_t.bin"
+    "outputs/bgv_modswitch/test_data/SCHEME_VALIDATION.txt"
+    "outputs/bgv_modswitch/test_data/dma_plan.csv"
+    "outputs/bgv_modswitch/test_data/constants/bconv_qhat_target_t.bin"
+    "outputs/bgv_modswitch/test_data/constants/q_last_inv_mod_t.bin"
+    "outputs/bgv_modswitch/test_data/constants/q_last_mod_qprime.bin"
+    "outputs/bgv_modswitch/test_data/constants/q_last_inv_mod_qprime.bin"
+    "outputs/bgv_modswitch/test_data/intermediate/u_mod_t.bin"
+    "outputs/bgv_modswitch/test_data/expected_qprime.bin"
 )
 
-foreach(CASE_NAME ntt intt encode rescale mm bconv modup pmult cmult moddown keyswitch relinearization)
+foreach(CASE_NAME ntt intt encode ckks_rescale ckks_ciphertext_multiply
+        bgv_ciphertext_multiply bgv_modswitch mm bconv modup pmult cmult
+        moddown keyswitch relinearization)
     list(APPEND REQUIRED_FILES
         "outputs/${CASE_NAME}/test_data/params.json"
         "outputs/${CASE_NAME}/test_data/artifact_manifest.csv"
@@ -108,6 +131,12 @@ foreach(CASE_NAME ntt intt encode rescale mm bconv modup pmult cmult moddown key
         "outputs/${CASE_NAME}/${CASE_NAME}.cmd26")
 endforeach()
 list(APPEND REQUIRED_FILES "outputs/auto/test_data/STATUS.md")
+
+if(EXISTS "${ROOT}/output/rescale.asm"
+        OR EXISTS "${ROOT}/output/rescale.cpp"
+        OR EXISTS "${ROOT}/outputs/rescale")
+    message(FATAL_ERROR "Legacy rescale artifacts remain after direct CKKS migration")
+endif()
 
 foreach(RELATIVE_PATH IN LISTS REQUIRED_FILES)
     set(PATH "${ROOT}/${RELATIVE_PATH}")
@@ -396,9 +425,9 @@ if(NOT ENCODE_MANIFEST MATCHES
         "Encode expected output does not match Q=${FHE_NUM_Q}, N=${FHE_N}")
 endif()
 
-file(READ "${ROOT}/output/rescale.asm" RESCALE_ASM)
+file(READ "${ROOT}/output/ckks_rescale.asm" RESCALE_ASM)
 foreach(MARKER
-        "RESCALE: rounded drop-last q_${FHE_Q_PRIME} for 2 component(s)"
+        "CKKS RESCALE: rounded drop-last q_${FHE_Q_PRIME} for 2 component(s)"
         "add floor(q_last/2) in every Q context"
         "reuse ModDown with Q'=q_0..q_${FHE_Q_PRIME_MINUS_ONE} and P={q_${FHE_Q_PRIME}}"
         "MODDOWN stage-1: BConv P -> Q")
@@ -407,22 +436,88 @@ foreach(MARKER
         message(FATAL_ERROR "Rescale stream is missing marker: ${MARKER}")
     endif()
 endforeach()
-file(READ "${ROOT}/src/operator/rescale.cpp" RESCALE_SOURCE)
+file(READ "${ROOT}/src/scheme/ckks/rescale.cpp" RESCALE_SOURCE)
 string(FIND "${RESCALE_SOURCE}"
     "generate_hpu_moddown_body_asm" RESCALE_MODDOWN_POSITION)
 if(RESCALE_MODDOWN_POSITION EQUAL -1)
     message(FATAL_ERROR "Rescale does not reuse the shared ModDown generator")
 endif()
-file(READ "${ROOT}/outputs/rescale/test_data/params.json" RESCALE_PARAMS)
+file(READ "${ROOT}/outputs/ckks_rescale/test_data/params.json" RESCALE_PARAMS)
+if(NOT RESCALE_PARAMS MATCHES "\"scheme\": \"CKKS\"")
+    message(FATAL_ERROR "CKKS Rescale package does not declare its scheme")
+endif()
 if(NOT RESCALE_PARAMS MATCHES
         "\"output_domain\": \"ciphertext/coefficient/Q_without_last\"")
     message(FATAL_ERROR "Rescale package does not describe the dropped output basis")
 endif()
-file(READ "${ROOT}/outputs/rescale/test_data/artifact_manifest.csv" RESCALE_MANIFEST)
+file(READ "${ROOT}/outputs/ckks_rescale/test_data/artifact_manifest.csv" RESCALE_MANIFEST)
 if(NOT RESCALE_MANIFEST MATCHES
         "expected_qprime.bin[^\n]*2x${FHE_Q_PRIME}x${FHE_N}")
     message(FATAL_ERROR
         "Rescale expected output does not match two components over ${FHE_Q_PRIME} retained Q limbs")
+endif()
+
+file(READ "${ROOT}/output/ckks_ciphertext_multiply.asm" CKKS_MULTIPLY_ASM)
+foreach(MARKER
+        "CKKS MULTIPLY: common tensor/relinearization followed by rounded Rescale"
+        "CIPHERTEXT MULTIPLY"
+        "CKKS RESCALE")
+    string(FIND "${CKKS_MULTIPLY_ASM}" "${MARKER}" POSITION)
+    if(POSITION EQUAL -1)
+        message(FATAL_ERROR "CKKS multiply stream is missing marker: ${MARKER}")
+    endif()
+endforeach()
+file(READ "${ROOT}/outputs/ckks_ciphertext_multiply/test_data/params.json" CKKS_MULTIPLY_PARAMS)
+if(NOT CKKS_MULTIPLY_PARAMS MATCHES "\"scheme\": \"CKKS\""
+        OR NOT CKKS_MULTIPLY_PARAMS MATCHES "\"level_delta\": -1"
+        OR NOT CKKS_MULTIPLY_PARAMS MATCHES "\"max_abs_decode_error\": [0-9]+")
+    message(FATAL_ERROR "CKKS multiply metadata is incomplete")
+endif()
+
+file(READ "${ROOT}/output/bgv_ciphertext_multiply.asm" BGV_MULTIPLY_ASM)
+string(FIND "${BGV_MULTIPLY_ASM}"
+    "correction_factor_out = factor_a * factor_b mod t"
+    BGV_MULTIPLY_CORRECTION_POSITION)
+if(NOT BGV_MULTIPLY_ASM MATCHES "BGV MULTIPLY: common tensor product and relinearization"
+        OR BGV_MULTIPLY_CORRECTION_POSITION EQUAL -1)
+    message(FATAL_ERROR "BGV multiply stream does not freeze correction-factor semantics")
+endif()
+file(READ "${ROOT}/outputs/bgv_ciphertext_multiply/test_data/params.json" BGV_MULTIPLY_PARAMS)
+string(FIND "${BGV_MULTIPLY_PARAMS}" "\"context_order\": \"Q|P|t\"" BGV_CONTEXT_ORDER_POSITION)
+if(BGV_CONTEXT_ORDER_POSITION EQUAL -1
+        OR NOT BGV_MULTIPLY_PARAMS MATCHES "\"t_mod_id\": ${FHE_T_CONTEXT}"
+        OR NOT BGV_MULTIPLY_PARAMS MATCHES "\"correction_factor_out\": 15")
+    message(FATAL_ERROR "BGV multiply metadata/context layout is incomplete")
+endif()
+
+file(READ "${ROOT}/output/bgv_modswitch.asm" BGV_MODSWITCH_ASM)
+foreach(MARKER
+        "BGV MODSWITCH: coefficient/Q -> coefficient/Q_without_last"
+        "stage-1: exact single-source BConv q_last -> t"
+        "stage-2: u = -c_last * q_last^-1 mod t"
+        "stage-3a: exact single-source BConv c_last: q_last -> Q'"
+        "stage-3b: exact single-source BConv u: t -> Q'"
+        "stage-4: subtract correction and divide by q_last in Q'")
+    string(FIND "${BGV_MODSWITCH_ASM}" "${MARKER}" POSITION)
+    if(POSITION EQUAL -1)
+        message(FATAL_ERROR "BGV ModSwitch stream is missing marker: ${MARKER}")
+    endif()
+endforeach()
+string(FIND "${BGV_MODSWITCH_ASM}" "pmodld ${FHE_T_CONTEXT}" BGV_T_CONTEXT_POSITION)
+if(BGV_T_CONTEXT_POSITION EQUAL -1)
+    message(FATAL_ERROR "BGV ModSwitch does not select the Q|P|t plaintext context")
+endif()
+file(READ "${ROOT}/outputs/bgv_modswitch/test_data/params.json" BGV_MODSWITCH_PARAMS)
+string(FIND "${BGV_MODSWITCH_PARAMS}"
+    "\"correction_factor_rule\": \"cf_out=cf_in*q_last^-1 mod t\""
+    BGV_CORRECTION_RULE_POSITION)
+if(NOT BGV_MODSWITCH_PARAMS MATCHES "\"t_mod_id\": ${FHE_T_CONTEXT}"
+        OR BGV_CORRECTION_RULE_POSITION EQUAL -1)
+    message(FATAL_ERROR "BGV ModSwitch metadata is incomplete")
+endif()
+file(READ "${ROOT}/outputs/bgv_modswitch/test_data/hardware/mod_ctx_map.csv" BGV_MOD_CTX_MAP)
+if(NOT BGV_MOD_CTX_MAP MATCHES "${FHE_T_CONTEXT},65537,0x00010001")
+    message(FATAL_ERROR "BGV hardware package does not install t=65537 at the Q|P|t MOD_ID")
 endif()
 
 string(FIND "${CIPHERTEXT_ASM}" "pfree p" PFREE_POSITION)
@@ -495,7 +590,9 @@ function(CHECK_OBJECT_LIFECYCLE RELATIVE_PATH)
     endforeach()
 endfunction()
 
-foreach(CASE_NAME ntt intt encode rescale mm bconv pmult cmult modup moddown auto keyswitch relinearization ciphertext_multiply)
+foreach(CASE_NAME ntt intt encode ckks_rescale ckks_ciphertext_multiply
+        bgv_ciphertext_multiply bgv_modswitch mm bconv pmult cmult modup
+        moddown auto keyswitch relinearization ciphertext_multiply)
     CHECK_OBJECT_LIFECYCLE("output/${CASE_NAME}.asm")
 endforeach()
 
@@ -511,7 +608,9 @@ function(CHECK_MOD_CONTEXT_LOAD RELATIVE_PATH)
     endforeach()
 endfunction()
 
-foreach(CASE_NAME ntt intt encode rescale bconv pmult cmult modup moddown auto keyswitch relinearization ciphertext_multiply)
+foreach(CASE_NAME ntt intt encode ckks_rescale ckks_ciphertext_multiply
+        bgv_ciphertext_multiply bgv_modswitch bconv pmult cmult modup
+        moddown auto keyswitch relinearization ciphertext_multiply)
     CHECK_MOD_CONTEXT_LOAD("output/${CASE_NAME}.asm")
 endforeach()
 
@@ -537,12 +636,16 @@ function(CHECK_TERMINAL_PSYNC RELATIVE_PATH)
     endif()
 endfunction()
 
-foreach(CASE_NAME ntt intt encode rescale mm bconv pmult cmult modup moddown auto keyswitch relinearization ciphertext_multiply)
+foreach(CASE_NAME ntt intt encode ckks_rescale ckks_ciphertext_multiply
+        bgv_ciphertext_multiply bgv_modswitch mm bconv pmult cmult modup
+        moddown auto keyswitch relinearization ciphertext_multiply)
     CHECK_TERMINAL_PSYNC("output/${CASE_NAME}.asm")
 endforeach()
 CHECK_TERMINAL_PSYNC("outputs/rv_interface_smoke/rv_interface_smoke.asm")
 
-foreach(CASE_NAME ntt intt encode rescale mm bconv pmult cmult modup moddown auto keyswitch relinearization ciphertext_multiply)
+foreach(CASE_NAME ntt intt encode ckks_rescale ckks_ciphertext_multiply
+        bgv_ciphertext_multiply bgv_modswitch mm bconv pmult cmult modup
+        moddown auto keyswitch relinearization ciphertext_multiply)
     foreach(EXECUTABLE_FILE
             "output/${CASE_NAME}.cpp"
             "outputs/${CASE_NAME}/${CASE_NAME}.cpp")
@@ -606,13 +709,25 @@ if(ENCODE_INST32_COUNT EQUAL 0 OR NOT ENCODE_CMD26_COUNT EQUAL ENCODE_INST32_COU
     message(FATAL_ERROR "Encode instruction/precode stream is missing or inconsistent")
 endif()
 
-file(STRINGS "${ROOT}/outputs/rescale/rescale.inst32" RESCALE_INST32_LINES)
+file(STRINGS "${ROOT}/outputs/ckks_rescale/ckks_rescale.inst32" RESCALE_INST32_LINES)
 list(LENGTH RESCALE_INST32_LINES RESCALE_INST32_COUNT)
-file(STRINGS "${ROOT}/outputs/rescale/rescale.cmd26" RESCALE_CMD26_LINES)
+file(STRINGS "${ROOT}/outputs/ckks_rescale/ckks_rescale.cmd26" RESCALE_CMD26_LINES)
 list(LENGTH RESCALE_CMD26_LINES RESCALE_CMD26_COUNT)
 if(RESCALE_INST32_COUNT EQUAL 0 OR NOT RESCALE_CMD26_COUNT EQUAL RESCALE_INST32_COUNT)
     message(FATAL_ERROR "Rescale instruction/precode stream is missing or inconsistent")
 endif()
+
+foreach(SCHEME_CASE ckks_ciphertext_multiply bgv_ciphertext_multiply bgv_modswitch)
+    file(STRINGS "${ROOT}/outputs/${SCHEME_CASE}/${SCHEME_CASE}.inst32" SCHEME_INST32_LINES)
+    file(STRINGS "${ROOT}/outputs/${SCHEME_CASE}/${SCHEME_CASE}.cmd26" SCHEME_CMD26_LINES)
+    list(LENGTH SCHEME_INST32_LINES SCHEME_INST32_COUNT)
+    list(LENGTH SCHEME_CMD26_LINES SCHEME_CMD26_COUNT)
+    if(SCHEME_INST32_COUNT EQUAL 0 OR NOT SCHEME_CMD26_COUNT EQUAL SCHEME_INST32_COUNT)
+        message(FATAL_ERROR "${SCHEME_CASE} instruction/precode stream is missing or inconsistent")
+    endif()
+    string(TOUPPER "${SCHEME_CASE}" SCHEME_CASE_UPPER)
+    set(${SCHEME_CASE_UPPER}_INST32_COUNT ${SCHEME_INST32_COUNT})
+endforeach()
 
 file(SHA256 "${ROOT}/outputs/relinearization/test_data/expected_q.bin" RELIN_EXPECTED_HASH)
 file(SHA256 "${ROOT}/outputs/ciphertext_multiply/test_data/expected/ciphertext_out_q.bin"
@@ -649,9 +764,16 @@ file(WRITE "${ROOT}/outputs/DELIVERY_REPORT.txt"
     "NEGACYCLIC_FACTORS_EXPLICIT=PASS\n"
     "NTT_PHYSICAL_OUT_OF_PLACE=PASS\n"
     "ENCODE_HOST_RNS_BOUNDARY=PASS\n"
-    "RESCALE_ROUNDED_DROP_LAST=PASS\n"
+    "CKKS_RESCALE_ROUNDED_DROP_LAST=PASS\n"
+    "CKKS_MULTIPLY_RELINEARIZE_RESCALE=PASS\n"
+    "BGV_MULTIPLY_CORRECTION_FACTOR=PASS\n"
+    "BGV_MODSWITCH_DROP_LAST=PASS\n"
+    "BGV_CONTEXT_ORDER_Q_P_T=PASS\n"
     "ENCODE_INST32_COUNT=${ENCODE_INST32_COUNT}\n"
-    "RESCALE_INST32_COUNT=${RESCALE_INST32_COUNT}\n"
+    "CKKS_RESCALE_INST32_COUNT=${RESCALE_INST32_COUNT}\n"
+    "CKKS_CIPHERTEXT_MULTIPLY_INST32_COUNT=${CKKS_CIPHERTEXT_MULTIPLY_INST32_COUNT}\n"
+    "BGV_CIPHERTEXT_MULTIPLY_INST32_COUNT=${BGV_CIPHERTEXT_MULTIPLY_INST32_COUNT}\n"
+    "BGV_MODSWITCH_INST32_COUNT=${BGV_MODSWITCH_INST32_COUNT}\n"
     "RELINEARIZATION_REUSES_KEYSWITCH=PASS\n"
     "RELINEARIZATION_INST32_COUNT=${RELIN_INST32_COUNT}\n"
     "CIPHERTEXT_MULTIPLY_INST32_COUNT=${INST32_COUNT}\n"

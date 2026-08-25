@@ -68,17 +68,15 @@ cmd26[24:0] = control payload
 
 `pfree` 对象已移动到原始 custom0 `PSRC/OBJ_ID=[24:22]`；其他载荷位为 0。`psync` 语法为无操作数、所有载荷位为 0；根据 2026-08-18 硬件负责人确认，它只作为完整程序最后一条指令通知 CPU，不再作为统一 inflight 或 DMA 屏障使用。
 
-### A4. 当前 `.inst32` 不是硬件可执行 DMA 流（P0）
+### A4. DMA line sideband 与 relocation（已修复，2026-08-21）
 
-本地证据：`src/operator/ciphertext_multiply.cpp` 和各算子生成器全部输出 `dload/dstore x0, x0`；`output/ciphertext_multiply.asm` 因而没有真实 line offset/count。
+文档来源：《HPU 集成与编程手册》3.3、5.2.2、9.1。`rs1/rs2` sideband 给出
+256B line offset 和非零 line count；长度为 0 或越界会触发 fault。
 
-文档来源：《HPU 集成与编程手册》3.3、5.2.2、9.1。`rs1/rs2` sideband 应给出 256B line offset 和非零 line count；长度为 0 或越界会触发 fault。
-
-修改建议：
-
-1. 增加指令流 relocation/scheduling 阶段，读取 `line_map.csv` 并为每条 DMA 指令绑定 offset/count。
-2. 输出可直接运行的 host harness：装载寄存器、发射 `.inst32`、等待完成、检查 fault。
-3. 将“所有 DMA 使用 x0/x0”改成 delivery 失败条件；仅显式 `--symbolic-dma` 模式允许占位符。
+当前 custom1 固定编码 `x10/x11`。生成的可执行 C 入口在每条 DMA 前从类型化
+`hpu_dma_span_t[]` 装载实际 offset/count，Nexus-AM 再由 `line_map.csv` 生成逐条
+resolved relocation manifest。交付门禁拒绝 `x0/x0`、零 line count、未解析记录和
+HPU_MEM 越界，因此旧的“只有占位 `.inst32`”问题已经关闭。
 
 ### A5. stage twiddle 物理布局与硬件执行模型不一致（已修复，2026-08-23）
 
@@ -234,7 +232,6 @@ type 3，并将其加入 parser/encoder 和 delivery 负例。原始 TYPE2 位�
 ## 5. 建议实施顺序
 
 1. C1-C5 均已冻结，并写入 machine-readable target ABI；持续回归其 delivery 检查。
-2. A1/A2/A3 已完成，持续用 RV smoke 的 32/26-bit 期望表回归。
-3. 完成 A4、A10：生成真实 DMA relocation/GPR 装载、CSR runtime 和可运行 host harness；A6 的数字 CSR 表已完成。
-4. 继续完成 A8 的峰值驻留/scratch 校验和 A9 的 PE bit-exact UT；N/line 容量校验已完成。
-5. 将 `.inst32 + cmd26 + HPU_MEM image + CSR sequence + expected checkpoints` 一起接入 RTL IT；只有该流程通过后，才能把 `HARDWARE_EXECUTION` 从 `CONDITIONAL` 改为 `PASS`。
+2. 持续用 RV smoke 回归 32/26-bit 编码、DMA relocation、CSR 和生命周期协议。
+3. 补齐 A8 的片上对象峰值驻留资格验证和 A9 的 PE bit-exact corner UT。
+4. 将指令、HPU_MEM image、CSR sequence 和 checkpoints 一起接入 RTL/FPGA；取得外部证据后才能把 `HARDWARE_EXECUTION` 改为 `PASS`。

@@ -72,6 +72,7 @@ void validate(const FheTestConfig& config)
     constexpr std::size_t kWordsPerLine = 64;
     constexpr std::size_t kRegularBankLines = 1024;
     constexpr std::size_t kMaxModContexts = 256;
+    constexpr std::uint64_t kMinPeModulus = 65537;
 
     if (config.N < 128 || (config.N & (config.N - 1)) != 0) {
         throw std::runtime_error(
@@ -90,15 +91,20 @@ void validate(const FheTestConfig& config)
         throw std::runtime_error("dnum must be positive and divide num_q");
     }
     if (config.num_q > kMaxModContexts
-        || config.num_p > kMaxModContexts - config.num_q) {
-        throw std::runtime_error("num_q + num_p exceeds the 8-bit MOD_ID space");
+        || config.num_p >= kMaxModContexts - config.num_q) {
+        throw std::runtime_error(
+            "num_q + num_p + plaintext context exceeds the 8-bit MOD_ID space");
     }
     if (config.auto_index != 1) {
         throw std::runtime_error("auto_index must be 1; only Galois element 3 is frozen");
     }
-    if (config.plaintext_modulus < 2
+    if (config.plaintext_modulus < kMinPeModulus
         || config.plaintext_modulus > std::numeric_limits<std::uint32_t>::max()) {
-        throw std::runtime_error("plaintext_modulus must fit uint32 and be at least 2");
+        throw std::runtime_error(
+            "plaintext_modulus must satisfy the PE range 65537 <= t <= 2^32-1");
+    }
+    if ((config.plaintext_modulus & 1U) == 0) {
+        throw std::runtime_error("plaintext_modulus must be odd for BGV");
     }
 }
 

@@ -15,7 +15,10 @@ const std::vector<std::string> kEncodableOutputs{
     "ntt",
     "intt",
     "encode",
-    "rescale",
+    "ckks_rescale",
+    "ckks_ciphertext_multiply",
+    "bgv_ciphertext_multiply",
+    "bgv_modswitch",
     "mm",
     "bconv",
     "pmult",
@@ -32,7 +35,10 @@ const std::vector<std::string> kAllOutputs{
     "ntt",
     "intt",
     "encode",
-    "rescale",
+    "ckks_rescale",
+    "ckks_ciphertext_multiply",
+    "bgv_ciphertext_multiply",
+    "bgv_modswitch",
     "mm",
     "bconv",
     "pmult",
@@ -256,6 +262,7 @@ int main() {
     try {
         const std::filesystem::path source_root{"output"};
         const std::filesystem::path outputs_root{"outputs"};
+        std::filesystem::remove_all(outputs_root / "rescale");
 
         for (const auto& stem : kAllOutputs) {
             package_case(source_root, outputs_root, stem);

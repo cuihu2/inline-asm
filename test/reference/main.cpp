@@ -27,6 +27,7 @@ using Poly = std::vector<U64>;
 using BasisPoly = std::vector<Poly>;
 using Ciphertext = std::array<BasisPoly, 2>;
 using TensorCiphertext = std::array<BasisPoly, 3>;
+using EvaluationKey = std::vector<std::array<BasisPoly, 2>>;
 
 std::size_t g_n = 0;
 std::size_t g_num_q = 0;
@@ -354,6 +355,45 @@ Ciphertext encrypt_test_message(const std::vector<std::int64_t>& message,
     return ciphertext;
 }
 
+Ciphertext encrypt_bgv_test_message(
+    const std::vector<std::int64_t>& message,
+    U64 correction_factor,
+    U64 plaintext_modulus,
+    const BasisPoly& secret,
+    const std::vector<U64>& moduli,
+    const std::vector<U64>& roots,
+    std::mt19937_64& rng)
+{
+    Ciphertext ciphertext;
+    ciphertext[0].resize(moduli.size());
+    ciphertext[1].resize(moduli.size());
+    Poly encoded_t(message.size());
+    for (std::size_t i = 0; i < message.size(); ++i) {
+        const std::int64_t reduced =
+            ((message[i] % static_cast<std::int64_t>(plaintext_modulus))
+             + static_cast<std::int64_t>(plaintext_modulus))
+            % static_cast<std::int64_t>(plaintext_modulus);
+        encoded_t[i] = mul_mod(
+            static_cast<U64>(reduced), correction_factor, plaintext_modulus);
+    }
+    for (std::size_t basis = 0; basis < moduli.size(); ++basis) {
+        const U64 modulus = moduli[basis];
+        Poly a(g_n);
+        for (U64& value : a) {
+            value = rng() % modulus;
+        }
+        const Poly product = negacyclic_mul(
+            a, secret[basis], modulus, roots[basis]);
+        Poly encoded_q(g_n);
+        for (std::size_t i = 0; i < g_n; ++i) {
+            encoded_q[i] = encoded_t[i] % modulus;
+        }
+        ciphertext[0][basis] = sub_poly(encoded_q, product, modulus);
+        ciphertext[1][basis] = std::move(a);
+    }
+    return ciphertext;
+}
+
 Poly bconv_to_target(const BasisPoly& source,
                      const std::vector<U64>& source_moduli,
                      U64 target_modulus)
@@ -586,6 +626,247 @@ BasisPoly decrypt_tensor(const TensorCiphertext& tensor,
                               moduli[basis]);
     }
     return out;
+}
+
+void verify_equal(
+    const BasisPoly& left,
+    const BasisPoly& right,
+    const std::string& label);
+
+struct SchemeMultiplyTrace {
+    Ciphertext left_ntt;
+    Ciphertext right_ntt;
+    TensorCiphertext tensor_ntt;
+    TensorCiphertext tensor_coeff;
+    std::vector<BasisPoly> modup_coeff;
+    std::vector<BasisPoly> modup_ntt;
+    std::array<BasisPoly, 2> keyswitch_accum_ntt;
+    std::array<BasisPoly, 2> keyswitch_accum_coeff;
+    std::array<BasisPoly, 2> keyswitch_q;
+};
+
+Ciphertext multiply_and_relinearize(
+    const Ciphertext& left,
+    const Ciphertext& right,
+    const BasisPoly& secret_q,
+    const EvaluationKey& rlk_ntt,
+    const std::vector<U64>& q_moduli,
+    const std::vector<U64>& p_moduli,
+    const std::vector<U64>& all_moduli,
+    const std::vector<U64>& q_roots,
+    const std::vector<U64>& all_roots,
+    SchemeMultiplyTrace* trace = nullptr)
+{
+    if (rlk_ntt.size() != g_dnum || g_num_q % g_dnum != 0) {
+        throw std::runtime_error("invalid evaluation key for scheme multiply");
+    }
+
+    Ciphertext left_ntt;
+    Ciphertext right_ntt;
+    for (std::size_t component = 0; component < 2; ++component) {
+        left_ntt[component] = transform_basis(left[component], q_moduli, q_roots, false);
+        right_ntt[component] = transform_basis(right[component], q_moduli, q_roots, false);
+    }
+
+    TensorCiphertext tensor_ntt;
+    for (BasisPoly& component : tensor_ntt) {
+        component.resize(g_num_q);
+    }
+    for (std::size_t basis = 0; basis < g_num_q; ++basis) {
+        const U64 modulus = q_moduli[basis];
+        tensor_ntt[0][basis] = pointwise_mul(
+            left_ntt[0][basis], right_ntt[0][basis], modulus);
+        tensor_ntt[1][basis] = add_poly(
+            pointwise_mul(left_ntt[0][basis], right_ntt[1][basis], modulus),
+            pointwise_mul(left_ntt[1][basis], right_ntt[0][basis], modulus),
+            modulus);
+        tensor_ntt[2][basis] = pointwise_mul(
+            left_ntt[1][basis], right_ntt[1][basis], modulus);
+    }
+
+    TensorCiphertext tensor;
+    for (std::size_t component = 0; component < 3; ++component) {
+        tensor[component] = transform_basis(
+            tensor_ntt[component], q_moduli, q_roots, true);
+    }
+
+    const std::size_t digit_size = g_num_q / g_dnum;
+    std::vector<BasisPoly> modup_coeff(g_dnum);
+    std::vector<BasisPoly> modup_ntt(g_dnum);
+    std::array<BasisPoly, 2> accum_ntt;
+    for (BasisPoly& component : accum_ntt) {
+        component.assign(all_moduli.size(), Poly(g_n, 0));
+    }
+    for (std::size_t digit = 0; digit < g_dnum; ++digit) {
+        modup_coeff[digit] = modup(
+            tensor[2], q_moduli, all_moduli, digit * digit_size, digit_size);
+        modup_ntt[digit] = transform_basis(
+            modup_coeff[digit], all_moduli, all_roots, false);
+        for (std::size_t component = 0; component < 2; ++component) {
+            for (std::size_t basis = 0; basis < all_moduli.size(); ++basis) {
+                accum_ntt[component][basis] = add_poly(
+                    accum_ntt[component][basis],
+                    pointwise_mul(modup_ntt[digit][basis],
+                                  rlk_ntt[digit][component][basis],
+                                  all_moduli[basis]),
+                    all_moduli[basis]);
+            }
+        }
+    }
+
+    std::array<BasisPoly, 2> accum_coeff;
+    std::array<BasisPoly, 2> keyswitch_q;
+    for (std::size_t component = 0; component < 2; ++component) {
+        accum_coeff[component] = transform_basis(
+            accum_ntt[component], all_moduli, all_roots, true);
+        keyswitch_q[component] = moddown(
+            accum_coeff[component], q_moduli, p_moduli);
+    }
+
+    Ciphertext output;
+    for (std::size_t basis = 0; basis < g_num_q; ++basis) {
+        output[0].push_back(add_poly(
+            tensor[0][basis], keyswitch_q[0][basis], q_moduli[basis]));
+        output[1].push_back(add_poly(
+            tensor[1][basis], keyswitch_q[1][basis], q_moduli[basis]));
+    }
+    verify_equal(
+        decrypt_tensor(tensor, secret_q, q_moduli, q_roots),
+        decrypt_ciphertext(output, secret_q, q_moduli, q_roots),
+        "scheme multiply relinearization");
+    if (trace != nullptr) {
+        trace->left_ntt = std::move(left_ntt);
+        trace->right_ntt = std::move(right_ntt);
+        trace->tensor_ntt = std::move(tensor_ntt);
+        trace->tensor_coeff = std::move(tensor);
+        trace->modup_coeff = std::move(modup_coeff);
+        trace->modup_ntt = std::move(modup_ntt);
+        trace->keyswitch_accum_ntt = std::move(accum_ntt);
+        trace->keyswitch_accum_coeff = std::move(accum_coeff);
+        trace->keyswitch_q = std::move(keyswitch_q);
+    }
+    return output;
+}
+
+struct BgvModswitchTrace {
+    BasisPoly output;
+    Poly c_last_mod_t;
+    Poly u_mod_t;
+    BasisPoly c_last_mod_qprime;
+    BasisPoly u_mod_qprime;
+};
+
+BgvModswitchTrace bgv_modswitch_drop_last(
+    const BasisPoly& input_q,
+    const std::vector<U64>& q_moduli,
+    U64 plaintext_modulus)
+{
+    if (q_moduli.size() < 2 || input_q.size() != q_moduli.size()) {
+        throw std::runtime_error("BGV ModSwitch requires matching Q with at least two limbs");
+    }
+    const U64 q_last = q_moduli.back();
+    const U64 q_last_inverse_t = inverse_mod(q_last % plaintext_modulus, plaintext_modulus);
+    BgvModswitchTrace trace;
+    trace.c_last_mod_t.resize(g_n);
+    trace.u_mod_t.resize(g_n);
+    trace.output.assign(q_moduli.size() - 1, Poly(g_n));
+    trace.c_last_mod_qprime.assign(q_moduli.size() - 1, Poly(g_n));
+    trace.u_mod_qprime.assign(q_moduli.size() - 1, Poly(g_n));
+
+    for (std::size_t coefficient = 0; coefficient < g_n; ++coefficient) {
+        trace.c_last_mod_t[coefficient] =
+            input_q.back()[coefficient] % plaintext_modulus;
+        trace.u_mod_t[coefficient] = mul_mod(
+            sub_mod(0, trace.c_last_mod_t[coefficient], plaintext_modulus),
+            q_last_inverse_t,
+            plaintext_modulus);
+    }
+    for (std::size_t basis = 0; basis + 1 < q_moduli.size(); ++basis) {
+        const U64 modulus = q_moduli[basis];
+        const U64 q_last_mod_qi = q_last % modulus;
+        const U64 q_last_inverse_qi = inverse_mod(q_last_mod_qi, modulus);
+        for (std::size_t coefficient = 0; coefficient < g_n; ++coefficient) {
+            const U64 c_last_qi = input_q.back()[coefficient] % modulus;
+            const U64 u_qi = trace.u_mod_t[coefficient] % modulus;
+            trace.c_last_mod_qprime[basis][coefficient] = c_last_qi;
+            trace.u_mod_qprime[basis][coefficient] = u_qi;
+            const U64 delta = add_mod(
+                c_last_qi, mul_mod(q_last_mod_qi, u_qi, modulus), modulus);
+            trace.output[basis][coefficient] = mul_mod(
+                sub_mod(input_q[basis][coefficient], delta, modulus),
+                q_last_inverse_qi,
+                modulus);
+        }
+    }
+    return trace;
+}
+
+std::vector<I128> exact_rns_to_centered(const BasisPoly& input,
+                                        const std::vector<U64>& moduli)
+{
+    if (input.empty() || input.size() != moduli.size()) {
+        throw std::runtime_error("centered RNS reconstruction requires a matching basis");
+    }
+    U128 basis_product = 1;
+    for (U64 modulus : moduli) {
+        if (basis_product > std::numeric_limits<U128>::max() / modulus) {
+            throw std::runtime_error("centered RNS basis product exceeds uint128");
+        }
+        basis_product *= modulus;
+    }
+
+    std::vector<I128> output(g_n);
+    for (std::size_t coefficient = 0; coefficient < g_n; ++coefficient) {
+        U128 value = 0;
+        U128 product = 1;
+        for (std::size_t basis = 0; basis < moduli.size(); ++basis) {
+            const U64 modulus = moduli[basis];
+            const U64 digit = mul_mod(
+                sub_mod(input[basis][coefficient],
+                        static_cast<U64>(value % modulus),
+                        modulus),
+                inverse_mod(static_cast<U64>(product % modulus), modulus),
+                modulus);
+            value += product * digit;
+            product *= modulus;
+        }
+        output[coefficient] = value > basis_product / 2
+            ? static_cast<I128>(value - basis_product)
+            : static_cast<I128>(value);
+    }
+    return output;
+}
+
+Poly centered_rns_to_modulus(const BasisPoly& input,
+                             const std::vector<U64>& moduli,
+                             U64 target_modulus)
+{
+    const auto centered = exact_rns_to_centered(input, moduli);
+    Poly output(centered.size());
+    for (std::size_t i = 0; i < centered.size(); ++i) {
+        I128 reduced = centered[i] % static_cast<I128>(target_modulus);
+        if (reduced < 0) {
+            reduced += static_cast<I128>(target_modulus);
+        }
+        output[i] = static_cast<U64>(reduced);
+    }
+    return output;
+}
+
+std::vector<std::int64_t> scale_signed_message(
+    const std::vector<std::int64_t>& input,
+    U64 factor)
+{
+    std::vector<std::int64_t> output(input.size());
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        const I128 scaled = static_cast<I128>(input[i]) * factor;
+        if (scaled < std::numeric_limits<std::int64_t>::min()
+            || scaled > std::numeric_limits<std::int64_t>::max()) {
+            throw std::runtime_error("scaled test message exceeds int64");
+        }
+        output[i] = static_cast<std::int64_t>(scaled);
+    }
+    return output;
 }
 
 std::vector<std::int64_t> plaintext_product(const std::vector<std::int64_t>& left,
@@ -884,6 +1165,102 @@ void add_artifact(std::vector<Artifact>& artifacts,
         0};
     artifact.checksum = fnv1a_words(artifact.words);
     artifacts.push_back(std::move(artifact));
+}
+
+void add_scheme_multiply_artifacts(
+    std::vector<Artifact>& artifacts,
+    const Ciphertext& left,
+    const Ciphertext& right,
+    const SchemeMultiplyTrace& trace,
+    const EvaluationKey& rlk_ntt,
+    const Ciphertext& output)
+{
+    std::vector<U64> words;
+    append_words(words, left[0]);
+    append_words(words, left[1]);
+    add_artifact(artifacts, "input/ct_a_q.bin", "left ciphertext, coefficient domain",
+                 {2, g_num_q, g_n}, std::move(words),
+                 {"component[c0,c1]", "basis_q", "coefficient"});
+    words.clear();
+    append_words(words, right[0]);
+    append_words(words, right[1]);
+    add_artifact(artifacts, "input/ct_b_q.bin", "right ciphertext, coefficient domain",
+                 {2, g_num_q, g_n}, std::move(words),
+                 {"component[c0,c1]", "basis_q", "coefficient"});
+    words.clear();
+    for (const auto& digit : rlk_ntt) {
+        append_words(words, digit[0]);
+        append_words(words, digit[1]);
+    }
+    add_artifact(artifacts, "constants/relinearization_key_ntt_qp.bin",
+                 "relinearization key",
+                 {g_dnum, 2, g_num_q + g_num_p, g_n}, std::move(words),
+                 {"digit", "component[ks0,ks1]", "basis_q_then_p", "coefficient"},
+                 HardwareDomain::kNtt);
+    words.clear();
+    append_words(words, trace.left_ntt[0]);
+    append_words(words, trace.left_ntt[1]);
+    append_words(words, trace.right_ntt[0]);
+    append_words(words, trace.right_ntt[1]);
+    add_artifact(artifacts, "expected/inputs_ntt_q.bin", "NTT inputs A0,A1,B0,B1",
+                 {4, g_num_q, g_n}, std::move(words),
+                 {"input_component[A0,A1,B0,B1]", "basis_q", "coefficient"},
+                 HardwareDomain::kNtt);
+    words.clear();
+    for (const BasisPoly& component : trace.tensor_ntt) {
+        append_words(words, component);
+    }
+    add_artifact(artifacts, "expected/tensor_ntt_q.bin", "tensor t0,t1,t2, NTT domain",
+                 {3, g_num_q, g_n}, std::move(words),
+                 {"tensor_component[t0,t1,t2]", "basis_q", "coefficient"},
+                 HardwareDomain::kNtt);
+    words.clear();
+    for (const BasisPoly& component : trace.tensor_coeff) {
+        append_words(words, component);
+    }
+    add_artifact(artifacts, "expected/tensor_coeff_q.bin", "tensor t0,t1,t2, coefficient domain",
+                 {3, g_num_q, g_n}, std::move(words),
+                 {"tensor_component[t0,t1,t2]", "basis_q", "coefficient"});
+    words.clear();
+    for (const BasisPoly& digit : trace.modup_coeff) {
+        append_words(words, digit);
+    }
+    add_artifact(artifacts, "expected/modup_t2_coeff_qp.bin", "digit ModUp output",
+                 {g_dnum, g_num_q + g_num_p, g_n}, std::move(words),
+                 {"digit", "basis_q_then_p", "coefficient"});
+    words.clear();
+    for (const BasisPoly& digit : trace.modup_ntt) {
+        append_words(words, digit);
+    }
+    add_artifact(artifacts, "expected/modup_t2_ntt_qp.bin", "digit ModUp output, NTT domain",
+                 {g_dnum, g_num_q + g_num_p, g_n}, std::move(words),
+                 {"digit", "basis_q_then_p", "coefficient"}, HardwareDomain::kNtt);
+    words.clear();
+    append_words(words, trace.keyswitch_accum_ntt[0]);
+    append_words(words, trace.keyswitch_accum_ntt[1]);
+    add_artifact(artifacts, "expected/keyswitch_accum_ntt_qp.bin", "key-switch accumulators",
+                 {2, g_num_q + g_num_p, g_n}, std::move(words),
+                 {"component[ks0,ks1]", "basis_q_then_p", "coefficient"},
+                 HardwareDomain::kNtt);
+    words.clear();
+    append_words(words, trace.keyswitch_accum_coeff[0]);
+    append_words(words, trace.keyswitch_accum_coeff[1]);
+    add_artifact(artifacts, "expected/keyswitch_accum_coeff_qp.bin",
+                 "key-switch accumulators, coefficient domain",
+                 {2, g_num_q + g_num_p, g_n}, std::move(words),
+                 {"component[ks0,ks1]", "basis_q_then_p", "coefficient"});
+    words.clear();
+    append_words(words, trace.keyswitch_q[0]);
+    append_words(words, trace.keyswitch_q[1]);
+    add_artifact(artifacts, "expected/keyswitch_moddown_q.bin", "ModDown key-switch result",
+                 {2, g_num_q, g_n}, std::move(words),
+                 {"component[ks0,ks1]", "basis_q", "coefficient"});
+    words.clear();
+    append_words(words, output[0]);
+    append_words(words, output[1]);
+    add_artifact(artifacts, "expected/ciphertext_out_q.bin", "relinearized ciphertext",
+                 {2, g_num_q, g_n}, std::move(words),
+                 {"component[c0,c1]", "basis_q", "coefficient"});
 }
 
 std::filesystem::path readable_path(const std::filesystem::path& binary_path)
@@ -1235,7 +1612,8 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
                             const std::vector<U64>& roots)
 {
     if (moduli.empty() || moduli.size() != roots.size()) {
-        throw std::runtime_error("hardware package requires one primitive root per modulus");
+        throw std::runtime_error(
+            "hardware package requires one root entry per modulus; zero marks no NTT tables");
     }
     if (moduli.size() > kMaxModContexts) {
         throw std::runtime_error("mod contexts exceed the 8-bit MOD_ID address space");
@@ -1283,6 +1661,9 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
     for (std::size_t basis = 0; basis < moduli.size(); ++basis) {
         const U64 modulus = moduli[basis];
         const U64 psi = roots[basis];
+        if (psi == 0) {
+            continue;
+        }
         if (pow_mod(psi, static_cast<U64>(g_n), modulus) != modulus - 1) {
             throw std::runtime_error("root is not a primitive 2N-th root for hardware twiddles");
         }
@@ -1645,11 +2026,22 @@ void generate(const std::filesystem::path& output_root,
 
     std::vector<U64> all_moduli = q_moduli;
     all_moduli.insert(all_moduli.end(), p_moduli.begin(), p_moduli.end());
+    for (U64 modulus : all_moduli) {
+        if (std::gcd(modulus, g_plaintext_modulus) != 1) {
+            throw std::runtime_error(
+                "plaintext modulus must be coprime with every Q/P modulus");
+        }
+    }
     std::vector<U64> all_roots;
     for (U64 modulus : all_moduli) {
         all_roots.push_back(find_primitive_2n_root(modulus, g_n));
     }
     const std::vector<U64> q_roots(all_roots.begin(), all_roots.begin() + g_num_q);
+    std::vector<U64> bgv_moduli = all_moduli;
+    bgv_moduli.push_back(g_plaintext_modulus);
+    std::vector<U64> bgv_roots = all_roots;
+    // BGV ModSwitch uses t only for coefficient-wise modular arithmetic.
+    bgv_roots.push_back(0);
 
     std::mt19937_64 rng(g_seed);
     std::vector<std::int64_t> secret_small(g_n);
@@ -1914,6 +2306,113 @@ void generate(const std::filesystem::path& output_root,
         throw std::runtime_error("plaintext multiplication check failed");
     }
 
+    const std::vector<U64> retained_q_moduli(
+        q_moduli.begin(), q_moduli.end() - 1);
+    const std::vector<U64> retained_q_roots(
+        q_roots.begin(), q_roots.end() - 1);
+
+    // CKKS functional fixture: encode integer coefficients at scale q_last,
+    // multiply/relinearize, then apply the rounded coefficient-domain Rescale.
+    const U64 ckks_input_scale = q_moduli.back();
+    const U64 ckks_product_scale = static_cast<U64>(
+        static_cast<U128>(ckks_input_scale) * ckks_input_scale);
+    const U64 ckks_output_scale = ckks_product_scale / q_moduli.back();
+    const auto ckks_message_a = scale_signed_message(message_a, ckks_input_scale);
+    const auto ckks_message_b = scale_signed_message(message_b, ckks_input_scale);
+    const Ciphertext ckks_ct_a = encrypt_test_message(
+        ckks_message_a, secret_q, q_moduli, q_roots, rng);
+    const Ciphertext ckks_ct_b = encrypt_test_message(
+        ckks_message_b, secret_q, q_moduli, q_roots, rng);
+    SchemeMultiplyTrace ckks_multiply_trace;
+    const Ciphertext ckks_product_q = multiply_and_relinearize(
+        ckks_ct_a, ckks_ct_b, secret_q, rlk_ntt,
+        q_moduli, p_moduli, all_moduli, q_roots, all_roots,
+        &ckks_multiply_trace);
+    Ciphertext ckks_product_qprime;
+    for (std::size_t component = 0; component < 2; ++component) {
+        ckks_product_qprime[component] = rescale_drop_last(
+            ckks_product_q[component], q_moduli);
+        verify_equal(
+            ckks_product_qprime[component],
+            direct_rounded_divide_last(ckks_product_q[component], q_moduli),
+            "CKKS multiply Rescale direct CRT check");
+    }
+    const BasisPoly secret_qprime(secret_q.begin(), secret_q.end() - 1);
+    const BasisPoly ckks_decrypted_qprime = decrypt_ciphertext(
+        ckks_product_qprime, secret_qprime, retained_q_moduli, retained_q_roots);
+    const auto ckks_centered = exact_rns_to_centered(
+        ckks_decrypted_qprime, retained_q_moduli);
+    const auto ckks_ideal = scale_signed_message(expected_plain, ckks_input_scale);
+    U64 ckks_max_abs_error = 0;
+    for (std::size_t i = 0; i < g_n; ++i) {
+        const I128 error = ckks_centered[i] - static_cast<I128>(ckks_ideal[i]);
+        const U128 magnitude = error < 0
+            ? static_cast<U128>(-error)
+            : static_cast<U128>(error);
+        ckks_max_abs_error = std::max(
+            ckks_max_abs_error, static_cast<U64>(magnitude));
+    }
+    const U64 ckks_error_bound = static_cast<U64>(2 * g_n);
+    if (ckks_max_abs_error > ckks_error_bound) {
+        throw std::runtime_error("CKKS decoded Rescale error exceeds functional bound");
+    }
+    const BasisPoly ckks_ideal_qprime = encode_basis(
+        ckks_ideal, retained_q_moduli);
+
+    // BGV fixture: correction factors are intentionally non-trivial so both
+    // multiplication and modulus-switch metadata are observable.
+    constexpr U64 kBgvFactorA = 3;
+    constexpr U64 kBgvFactorB = 5;
+    const U64 bgv_multiply_factor = mul_mod(
+        kBgvFactorA, kBgvFactorB, g_plaintext_modulus);
+    const Ciphertext bgv_ct_a = encrypt_bgv_test_message(
+        message_a, kBgvFactorA, g_plaintext_modulus,
+        secret_q, q_moduli, q_roots, rng);
+    const Ciphertext bgv_ct_b = encrypt_bgv_test_message(
+        message_b, kBgvFactorB, g_plaintext_modulus,
+        secret_q, q_moduli, q_roots, rng);
+    SchemeMultiplyTrace bgv_multiply_trace;
+    const Ciphertext bgv_product_q = multiply_and_relinearize(
+        bgv_ct_a, bgv_ct_b, secret_q, rlk_ntt,
+        q_moduli, p_moduli, all_moduli, q_roots, all_roots,
+        &bgv_multiply_trace);
+    const BasisPoly bgv_decrypted_q = decrypt_ciphertext(
+        bgv_product_q, secret_q, q_moduli, q_roots);
+    const Poly bgv_phase_mod_t = centered_rns_to_modulus(
+        bgv_decrypted_q, q_moduli, g_plaintext_modulus);
+    const U64 bgv_multiply_factor_inverse = inverse_mod(
+        bgv_multiply_factor, g_plaintext_modulus);
+    for (std::size_t i = 0; i < g_n; ++i) {
+        if (mul_mod(bgv_phase_mod_t[i], bgv_multiply_factor_inverse,
+                    g_plaintext_modulus) != expected_plain_mod_t[i]) {
+            throw std::runtime_error("BGV multiply correction-factor decode failed");
+        }
+    }
+
+    std::array<BgvModswitchTrace, 2> bgv_modswitch_trace;
+    Ciphertext bgv_product_qprime;
+    for (std::size_t component = 0; component < 2; ++component) {
+        bgv_modswitch_trace[component] = bgv_modswitch_drop_last(
+            bgv_product_q[component], q_moduli, g_plaintext_modulus);
+        bgv_product_qprime[component] = bgv_modswitch_trace[component].output;
+    }
+    const U64 q_last_inverse_t = inverse_mod(
+        q_moduli.back() % g_plaintext_modulus, g_plaintext_modulus);
+    const U64 bgv_modswitch_factor = mul_mod(
+        bgv_multiply_factor, q_last_inverse_t, g_plaintext_modulus);
+    const U64 bgv_modswitch_factor_inverse = inverse_mod(
+        bgv_modswitch_factor, g_plaintext_modulus);
+    const BasisPoly bgv_decrypted_qprime = decrypt_ciphertext(
+        bgv_product_qprime, secret_qprime, retained_q_moduli, retained_q_roots);
+    const Poly bgv_switched_phase_mod_t = centered_rns_to_modulus(
+        bgv_decrypted_qprime, retained_q_moduli, g_plaintext_modulus);
+    for (std::size_t i = 0; i < g_n; ++i) {
+        if (mul_mod(bgv_switched_phase_mod_t[i], bgv_modswitch_factor_inverse,
+                    g_plaintext_modulus) != expected_plain_mod_t[i]) {
+            throw std::runtime_error("BGV ModSwitch correction-factor decode failed");
+        }
+    }
+
     std::vector<Artifact> artifacts;
     std::vector<U64> words;
     append_words(words, ct_a[0]); append_words(words, ct_a[1]);
@@ -1989,7 +2488,7 @@ void generate(const std::filesystem::path& output_root,
     add_artifact(artifacts, "expected/decrypted_ring_q.bin", "test-only decrypted ring product",
                  {g_num_q, g_n}, std::move(words), {"basis_q", "coefficient"});
     add_artifact(artifacts, "expected/plaintext_product_mod_t.bin", "expected plaintext product",
-                 {g_n}, std::move(expected_plain_mod_t));
+                 {g_n}, expected_plain_mod_t);
 
     for (Artifact& artifact : artifacts) {
         write_binary(output_root / artifact.path, artifact.words);
@@ -2109,6 +2608,27 @@ void generate(const std::filesystem::path& output_root,
             return out.str();
         };
 
+        const auto scheme_params = [&](const std::string& scheme,
+                                       const std::string& operation,
+                                       const std::string& input_domain,
+                                       const std::string& output_domain,
+                                       const std::vector<U64>& moduli,
+                                       const std::string& metadata_fields) {
+            std::ostringstream out;
+            out << "{\n  \"format_version\": 2,\n  \"scheme\": \"" << scheme
+                << "\",\n  \"operation\": \"" << operation
+                << "\",\n  \"N\": " << g_n << ",\n  \"input_domain\": \""
+                << input_domain << "\",\n  \"output_domain\": \"" << output_domain
+                << "\",\n  \"layout\": \"row-major, coefficient last, little-endian uint64\",\n"
+                << "  \"hardware_layout\": \"hardware/: little-endian uint32; coefficient domain bit-reversed; 64 words per 256-byte line\",\n"
+                << "  \"moduli\": [";
+            for (std::size_t i = 0; i < moduli.size(); ++i) {
+                out << (i ? ", " : "") << moduli[i];
+            }
+            out << "],\n" << metadata_fields << "\n}\n";
+            return out.str();
+        };
+
         std::vector<Artifact> case_artifacts;
         add_artifact(case_artifacts, "input.bin", "NTT input, coefficient domain",
                      {g_n}, ct_a[0][0]);
@@ -2195,11 +2715,283 @@ void generate(const std::filesystem::path& output_root,
                      "rounded ciphertext after dropping q_last",
                      {2, g_num_q - 1, g_n}, std::move(words),
                      {"component[c0,c1]", "basis_qprime", "coefficient"});
-        write_case_package(*suite_root, "rescale",
-                           common_params("rescale",
-                                         "ciphertext/coefficient/Q",
-                                         "ciphertext/coefficient/Q_without_last", q_moduli),
+        write_case_package(*suite_root, "ckks_rescale",
+                           scheme_params(
+                               "CKKS",
+                               "rescale",
+                               "ciphertext/coefficient/Q",
+                               "ciphertext/coefficient/Q_without_last",
+                               q_moduli,
+                               "  \"level_delta\": -1,\n"
+                               "  \"scale_rule\": \"scale_out=scale_in/q_last\",\n"
+                               "  \"metadata_test_input_scale\": "
+                                   + std::to_string(ckks_product_scale) + ",\n"
+                               "  \"metadata_test_output_scale\": "
+                                   + std::to_string(ckks_output_scale)),
                            std::move(case_artifacts), q_moduli, q_roots);
+        write_text(
+            *suite_root / "ckks_rescale" / "test_data" / "dma_plan.csv",
+            "phase,operation,logical_object,domain,basis,status\n"
+            "input,dload,ciphertext_component,coefficient,Q,READY\n"
+            "round,padd,ciphertext_component_and_q_last_half,coefficient,Q,READY\n"
+            "scratch,dstore,rounded_numerator,coefficient,Q,READY\n"
+            "drop,bconv,rounded_q_last,coefficient,q_last_to_Qprime,READY\n"
+            "divide,psub_pmul,rounded_numerator,coefficient,Qprime,READY\n"
+            "output,dstore,ciphertext_component_out,coefficient,Qprime,READY\n");
+
+        case_artifacts.clear();
+        add_scheme_multiply_artifacts(
+            case_artifacts, ckks_ct_a, ckks_ct_b,
+            ckks_multiply_trace, rlk_ntt, ckks_product_q);
+        words.clear(); append_words(words, half_constants);
+        add_artifact(case_artifacts, "constants/q_last_half_mod_q.bin",
+                     "floor(q_last/2) reduced in every Q context",
+                     {g_num_q, g_n}, std::move(words),
+                     {"basis_q", "coefficient"});
+        add_artifact(case_artifacts, "constants/rescale_qhat_inv.bin",
+                     "single-source Rescale BConv qhat inverse",
+                     {1, g_n}, Poly(g_n, 1));
+        words.clear(); append_words(words, qhat_mod_qprime);
+        add_artifact(case_artifacts, "constants/rescale_qhat_mod_qprime.bin",
+                     "single-source Rescale BConv target residues",
+                     {g_num_q - 1, g_n}, std::move(words),
+                     {"basis_qprime", "coefficient"});
+        words.clear(); append_words(words, dropped_inverse);
+        add_artifact(case_artifacts, "constants/q_last_inv_mod_qprime.bin",
+                     "q_last inverse in every retained Q context",
+                     {g_num_q - 1, g_n}, std::move(words),
+                     {"basis_qprime", "coefficient"});
+        words.clear();
+        append_words(words, ckks_product_qprime[0]);
+        append_words(words, ckks_product_qprime[1]);
+        add_artifact(case_artifacts, "expected/ciphertext_out_qprime.bin",
+                     "CKKS multiply/relinearize/Rescale output",
+                     {2, g_num_q - 1, g_n}, std::move(words),
+                     {"component[c0,c1]", "basis_qprime", "coefficient"});
+        words.clear(); append_words(words, ckks_decrypted_qprime);
+        add_artifact(case_artifacts, "expected/decrypted_scaled_qprime.bin",
+                     "decrypted approximate scaled product",
+                     {g_num_q - 1, g_n}, std::move(words),
+                     {"basis_qprime", "coefficient"});
+        words.clear(); append_words(words, ckks_ideal_qprime);
+        add_artifact(case_artifacts, "expected/ideal_scaled_product_qprime.bin",
+                     "ideal plaintext product at output scale",
+                     {g_num_q - 1, g_n}, std::move(words),
+                     {"basis_qprime", "coefficient"});
+        write_case_package(
+            *suite_root,
+            "ckks_ciphertext_multiply",
+            scheme_params(
+                "CKKS",
+                "ciphertext_multiply_relinearize_rescale",
+                "two ciphertexts/coefficient/Q + rlk/NTT/QP",
+                "ciphertext/coefficient/Q_without_last",
+                all_moduli,
+                "  \"context_order\": \"Q|P\",\n"
+                "  \"level_delta\": -1,\n"
+                "  \"q_last\": " + std::to_string(q_moduli.back()) + ",\n"
+                "  \"input_scale_a\": " + std::to_string(ckks_input_scale) + ",\n"
+                "  \"input_scale_b\": " + std::to_string(ckks_input_scale) + ",\n"
+                "  \"product_scale\": " + std::to_string(ckks_product_scale) + ",\n"
+                "  \"output_scale\": " + std::to_string(ckks_output_scale) + ",\n"
+                "  \"max_abs_decode_error\": " + std::to_string(ckks_max_abs_error) + ",\n"
+                "  \"decode_error_bound\": " + std::to_string(ckks_error_bound)),
+            std::move(case_artifacts), all_moduli, all_roots);
+        write_text(
+            *suite_root / "ckks_ciphertext_multiply" / "test_data" / "SCHEME_VALIDATION.txt",
+            "PASS\ncommon_multiply_and_relinearize=PASS\n"
+            "rescale_direct_rounded_crt=PASS\n"
+            "scale_out=scale_a*scale_b/q_last\n"
+            "decoded_error_within_bound=PASS\n");
+        write_text(
+            *suite_root / "ckks_ciphertext_multiply" / "test_data" / "dma_plan.csv",
+            "phase,operation,logical_object,domain,basis,status\n"
+            "input,dload,ct_a_q_and_ct_b_q,coefficient,Q,READY\n"
+            "multiply,ntt_tensor_intt,t0_t1_t2,coefficient,Q,READY\n"
+            "relinearize,keyswitch_moddown,t2_and_rlk,coefficient,Q|P_to_Q,READY\n"
+            "rescale,padd_bconv_psub_pmul,c0_and_c1,coefficient,Q_to_Qprime,READY\n"
+            "output,dstore,ciphertext_out_qprime,coefficient,Qprime,READY\n");
+
+        case_artifacts.clear();
+        add_scheme_multiply_artifacts(
+            case_artifacts, bgv_ct_a, bgv_ct_b,
+            bgv_multiply_trace, rlk_ntt, bgv_product_q);
+        words.clear(); append_words(words, bgv_decrypted_q);
+        add_artifact(case_artifacts, "expected/decrypted_ring_q.bin",
+                     "BGV decrypted phase before correction-factor removal",
+                     {g_num_q, g_n}, std::move(words),
+                     {"basis_q", "coefficient"});
+        add_artifact(case_artifacts, "expected/decrypted_phase_mod_t.bin",
+                     "centered CRT phase reduced modulo t",
+                     {g_n}, bgv_phase_mod_t);
+        add_artifact(case_artifacts, "expected/plaintext_product_mod_t.bin",
+                     "decoded BGV plaintext product",
+                     {g_n}, expected_plain_mod_t);
+        write_case_package(
+            *suite_root,
+            "bgv_ciphertext_multiply",
+            scheme_params(
+                "BGV",
+                "ciphertext_multiply_relinearize",
+                "two ciphertexts/coefficient/Q + rlk/NTT/QP",
+                "ciphertext/coefficient/Q",
+                bgv_moduli,
+                "  \"context_order\": \"Q|P|t\",\n"
+                "  \"t_mod_id\": " + std::to_string(g_num_q + g_num_p) + ",\n"
+                "  \"plaintext_modulus\": " + std::to_string(g_plaintext_modulus) + ",\n"
+                "  \"correction_factor_a\": " + std::to_string(kBgvFactorA) + ",\n"
+                "  \"correction_factor_b\": " + std::to_string(kBgvFactorB) + ",\n"
+                "  \"correction_factor_out\": " + std::to_string(bgv_multiply_factor)),
+            std::move(case_artifacts), bgv_moduli, bgv_roots);
+        write_text(
+            *suite_root / "bgv_ciphertext_multiply" / "test_data" / "SCHEME_VALIDATION.txt",
+            "PASS\ncommon_multiply_and_relinearize=PASS\n"
+            "correction_factor_out=factor_a*factor_b_mod_t\n"
+            "decoded_plaintext_product_mod_t=PASS\n");
+        write_text(
+            *suite_root / "bgv_ciphertext_multiply" / "test_data" / "dma_plan.csv",
+            "phase,operation,logical_object,domain,basis,status\n"
+            "input,dload,ct_a_q_and_ct_b_q,coefficient,Q,READY\n"
+            "multiply,ntt_tensor_intt,t0_t1_t2,coefficient,Q,READY\n"
+            "relinearize,keyswitch_moddown,t2_and_rlk,coefficient,Q|P_to_Q,READY\n"
+            "metadata,host_update,correction_factor,scalar,t,READY\n"
+            "output,dstore,ciphertext_out_q,coefficient,Q,READY\n");
+
+        case_artifacts.clear();
+        words.clear();
+        append_words(words, bgv_product_q[0]);
+        append_words(words, bgv_product_q[1]);
+        add_artifact(case_artifacts, "input_q.bin",
+                     "two-component BGV ciphertext before ModSwitch",
+                     {2, g_num_q, g_n}, std::move(words),
+                     {"component[c0,c1]", "basis_q", "coefficient"});
+        BasisPoly bgv_c_last_mod_t(2);
+        BasisPoly bgv_u_mod_t(2);
+        std::vector<BasisPoly> bgv_c_last_mod_qprime(2);
+        std::vector<BasisPoly> bgv_u_mod_qprime(2);
+        for (std::size_t component = 0; component < 2; ++component) {
+            bgv_c_last_mod_t[component] = bgv_modswitch_trace[component].c_last_mod_t;
+            bgv_u_mod_t[component] = bgv_modswitch_trace[component].u_mod_t;
+            bgv_c_last_mod_qprime[component] =
+                bgv_modswitch_trace[component].c_last_mod_qprime;
+            bgv_u_mod_qprime[component] =
+                bgv_modswitch_trace[component].u_mod_qprime;
+        }
+        words.clear(); append_words(words, bgv_c_last_mod_t);
+        add_artifact(case_artifacts, "intermediate/c_last_mod_t.bin",
+                     "single-source BConv q_last to t",
+                     {2, 1, g_n}, std::move(words),
+                     {"component[c0,c1]", "basis_t", "coefficient"});
+        words.clear(); append_words(words, bgv_u_mod_t);
+        add_artifact(case_artifacts, "intermediate/u_mod_t.bin",
+                     "u=-c_last*q_last^-1 mod t",
+                     {2, 1, g_n}, std::move(words),
+                     {"component[c0,c1]", "basis_t", "coefficient"});
+        words.clear();
+        for (const BasisPoly& component : bgv_c_last_mod_qprime) {
+            append_words(words, component);
+        }
+        add_artifact(case_artifacts, "intermediate/c_last_mod_qprime.bin",
+                     "single-source BConv q_last to retained Q",
+                     {2, g_num_q - 1, g_n}, std::move(words),
+                     {"component[c0,c1]", "basis_qprime", "coefficient"});
+        words.clear();
+        for (const BasisPoly& component : bgv_u_mod_qprime) {
+            append_words(words, component);
+        }
+        add_artifact(case_artifacts, "intermediate/u_mod_qprime.bin",
+                     "single-source BConv t to retained Q",
+                     {2, g_num_q - 1, g_n}, std::move(words),
+                     {"component[c0,c1]", "basis_qprime", "coefficient"});
+        add_artifact(case_artifacts, "constants/zero_mod_t.bin",
+                     "zero polynomial for modular negation under t",
+                     {g_n}, Poly(g_n, 0));
+        add_artifact(case_artifacts, "constants/q_last_inv_mod_t.bin",
+                     "q_last inverse modulo t",
+                     {g_n}, Poly(g_n, q_last_inverse_t));
+        add_artifact(case_artifacts, "constants/bconv_qhat_inv.bin",
+                     "single-source BConv qhat inverse, reused by all three conversions",
+                     {g_n}, Poly(g_n, 1));
+        add_artifact(case_artifacts, "constants/bconv_qhat_target_t.bin",
+                     "single-source BConv target residue for q_last to t",
+                     {1, g_n}, Poly(g_n, 1),
+                     {"basis_t", "coefficient"});
+        BasisPoly bgv_bconv_target_ones(g_num_q - 1, Poly(g_n, 1));
+        words.clear(); append_words(words, bgv_bconv_target_ones);
+        add_artifact(case_artifacts, "constants/bconv_qhat_target.bin",
+                     "single-source BConv target residues",
+                     {g_num_q - 1, g_n}, std::move(words),
+                     {"basis_qprime", "coefficient"});
+        BasisPoly q_last_mod_qprime(g_num_q - 1, Poly(g_n));
+        BasisPoly q_last_inv_qprime(g_num_q - 1, Poly(g_n));
+        for (std::size_t basis = 0; basis + 1 < g_num_q; ++basis) {
+            std::fill(q_last_mod_qprime[basis].begin(),
+                      q_last_mod_qprime[basis].end(),
+                      q_moduli.back() % q_moduli[basis]);
+            std::fill(q_last_inv_qprime[basis].begin(),
+                      q_last_inv_qprime[basis].end(),
+                      inverse_mod(q_moduli.back() % q_moduli[basis], q_moduli[basis]));
+        }
+        words.clear(); append_words(words, q_last_mod_qprime);
+        add_artifact(case_artifacts, "constants/q_last_mod_qprime.bin",
+                     "q_last reduced in every retained Q context",
+                     {g_num_q - 1, g_n}, std::move(words),
+                     {"basis_qprime", "coefficient"});
+        words.clear(); append_words(words, q_last_inv_qprime);
+        add_artifact(case_artifacts, "constants/q_last_inv_mod_qprime.bin",
+                     "q_last inverse in every retained Q context",
+                     {g_num_q - 1, g_n}, std::move(words),
+                     {"basis_qprime", "coefficient"});
+        words.clear();
+        append_words(words, bgv_product_qprime[0]);
+        append_words(words, bgv_product_qprime[1]);
+        add_artifact(case_artifacts, "expected_qprime.bin",
+                     "BGV ciphertext after dropping q_last",
+                     {2, g_num_q - 1, g_n}, std::move(words),
+                     {"component[c0,c1]", "basis_qprime", "coefficient"});
+        add_artifact(case_artifacts, "expected/decrypted_phase_mod_t.bin",
+                     "switched BGV phase reduced modulo t",
+                     {g_n}, bgv_switched_phase_mod_t);
+        add_artifact(case_artifacts, "expected/plaintext_product_mod_t.bin",
+                     "decoded plaintext after correction-factor removal",
+                     {g_n}, expected_plain_mod_t);
+        write_case_package(
+            *suite_root,
+            "bgv_modswitch",
+            scheme_params(
+                "BGV",
+                "modswitch_drop_last",
+                "ciphertext/coefficient/Q",
+                "ciphertext/coefficient/Q_without_last",
+                bgv_moduli,
+                "  \"context_order\": \"Q|P|t\",\n"
+                "  \"t_mod_id\": " + std::to_string(g_num_q + g_num_p) + ",\n"
+                "  \"plaintext_modulus\": " + std::to_string(g_plaintext_modulus) + ",\n"
+                "  \"q_last\": " + std::to_string(q_moduli.back()) + ",\n"
+                "  \"correction_factor_in\": " + std::to_string(bgv_multiply_factor) + ",\n"
+                "  \"correction_factor_out\": " + std::to_string(bgv_modswitch_factor) + ",\n"
+                "  \"correction_factor_rule\": \"cf_out=cf_in*q_last^-1 mod t\",\n"
+                "  \"level_delta\": -1"),
+            std::move(case_artifacts), bgv_moduli, bgv_roots);
+        write_text(
+            *suite_root / "bgv_modswitch" / "test_data" / "SCHEME_VALIDATION.txt",
+            "PASS\nq_last_to_t_bconv=PASS\n"
+            "u=-c_last*q_last^-1_mod_t=PASS\n"
+            "coefficient_modswitch_formula=PASS\n"
+            "correction_factor_update=PASS\n"
+            "decoded_plaintext_preserved=PASS\n");
+        write_text(
+            *suite_root / "bgv_modswitch" / "test_data" / "dma_plan.csv",
+            "phase,operation,logical_object,domain,basis,status\n"
+            "input,dload,ciphertext_component,coefficient,Q,READY\n"
+            "convert,bconv,c_last,coefficient,q_last_to_t,READY\n"
+            "correction,psub_pmul,u,coefficient,t,READY\n"
+            "scratch,dstore,u,coefficient,t,READY\n"
+            "convert,bconv,c_last,coefficient,q_last_to_Qprime,READY\n"
+            "convert,bconv,u,coefficient,t_to_Qprime,READY\n"
+            "switch,pmul_padd_psub,ciphertext_component,coefficient,Qprime,READY\n"
+            "metadata,host_update,correction_factor,scalar,t,READY\n"
+            "output,dstore,ciphertext_component_out,coefficient,Qprime,READY\n");
 
         case_artifacts.clear();
         add_artifact(case_artifacts, "input_a.bin", "left polynomial", {g_n},

@@ -4,10 +4,10 @@
 
 ## 1. 项目结构
 
-代码按照功能依赖分层，并分别维护在 `include` 及 `src` 目录下，包含三大类生成模块，以及独立的编码、reference 与测试辅助模块：
+代码按照功能依赖分层，并分别维护在 `include` 及 `src` 目录下，包含四层生成模块，以及独立的编码、reference 与测试辅助模块：
 
 ### 1) 基础工具层 (`util`)
-- **`util/hpu_asm.hpp/cpp`**：基础 HPU 汇编助记符封装和生成接口，遵循《HPU_INSTRUCTION_MANUAL.md》。
+- **`util/hpu_asm.hpp/cpp`**：基础 HPU 汇编助记符封装和生成接口，遵循 `doc/HPU_PROGRAMMING_MANUAL.md`。
 - **`util/ntt.hpp/cpp`**：按 stage 推进的基于对象槽位语义的 NTT / INTT 汇编生成。
 - **`util/mm.hpp/cpp`**：对象槽位级别的四则运算，特别是逐点向量乘法、乘加积累等（`pmul` / `pmac`）。
 - **`util/bconv.hpp/cpp`**：对象槽位上带参数 `q_offset` 支持分组扩展的基础 Basis Conversion 两阶段汇编生成。
@@ -25,31 +25,37 @@
 - **`operator/relinearization.hpp/cpp`**：重线性化算子，以 `t0` 为 KeySwitch 的 base、切换 `t2`，再计算 `t1 + ks1`，输出标准二分量密文。
 - **`operator/ciphertext_multiply.hpp/cpp`**：完整密文乘法生成，执行输入分量 NTT、`cmult` 三分量张量积、INTT，并复用 `relinearization` 完成最终合成。
 - **`operator/encode.hpp/cpp`**：硬件 Encode 边界；宿主先完成有符号系数到 RNS-Q 的嵌入，HPU 再逐 Q limb 执行负循环 NTT，输出可直接供 `pmult` 使用的明文。
-- **`operator/rescale.hpp/cpp`**：系数域二分量密文的带舍入层级缩减；对各 Q limb 加 `floor(q_last/2)`，再复用 `ModDown(Q', {q_last})` 丢弃最后一个模数。
 
-### 4) 指令编码模块 (`encode`)
+### 4) FHE 方案算子层 (`scheme`)
+位于公共算子层之上，负责方案特有的组合顺序和软件元数据：
+- **`scheme/ckks/rescale.hpp/cpp`**：CKKS 系数域带舍入降层，复用 `ModDown(Q', {q_last})`，并提供 scale 更新接口。
+- **`scheme/ckks/ciphertext_multiply.hpp/cpp`**：公共密文乘法与重线形化之后继续执行 CKKS Rescale，输出 `Q_without_last`。
+- **`scheme/bgv/ciphertext_multiply.hpp/cpp`**：复用公共乘法，并提供 `correction_factor_a * correction_factor_b mod t` 元数据更新。
+- **`scheme/bgv/modswitch.hpp/cpp`**：执行 BGV `mod t and divide q_last`，输出 `Q_without_last` 并更新 correction factor。
+
+公共层不声明自己属于 CKKS、BGV 或 BFV。当前 `operator/encode` 仍只是宿主 signed-to-RNS 与 HPU NTT 的公共边界，不是 CKKS FFT Encoder 或 BGV BatchEncoder。
+
+### 5) 指令编码模块 (`encode`)
 将生成出的 HPU 汇编进一步转译为 32 位机器码文本：
 - **`encode/include/*.hpp`**：定义指令数据结构、解析、编码及组装接口。
 - **`encode/src/*.cpp`**：实现 ASM / C++ 内联汇编解析、格式归一化以及 `custom0` / `custom1` 指令编码。
 - **`hpu_encode`**：由 `encode/CMakeLists.txt` 生成的静态库，供后续测试或上层流程复用。
 
-### 5) 编码测试辅助模块 (`test/encode`)
+### 6) 编码测试辅助模块 (`test/encode`)
 用于把主生成流程输出的 ASM 继续转换为 `.inst32` 和 `.cmd26` 文件：
 - **`test/encode/main.cpp`**：读取主流程生成的 `output/<case>.cpp` 与 `output/<case>.asm`，归档到 `outputs/<case>/`，再调用 `hpu_encode` 生成 32-bit 指令和 26-bit precode 文本。
 - **`inline_asm_encode_outputs`**：构建后生成的测试编码工具。
 
-### 6) 软件 Reference (`test/reference`)
+### 7) 软件 Reference (`test/reference`)
 - **`test/reference/main.cpp`**：独立的软件算法入口，生成确定性的 RNS/RLWE 输入、重线性化密钥、完整密文乘法 golden、中间检查点和各算子 UT 数据，并执行解密一致性校验。
 - **`hpu_reference_vectors`**：构建后生成的 reference 数据工具；它不生成 HPU 指令，也不替代 `src/main.cpp`。
 
-### 7) 项目文档 (`doc`)
-- **`doc/HPU_PROGRAMMING_MANUAL.md`**：当前项目 11 条 HPU 指令的编程模型、32-bit 编码、逐指令语义和推荐序列。
-- **`doc/HPU_INSTRUCTION_MANUAL.md`**：当前 HPU 指令格式和语义说明。
-- **`doc/HPU_TEST_DELIVERY.md`**：指令流、完整密文乘法 golden、RV 接口冒烟用例、验收命令和硬件联调前置项。
+### 8) 项目文档 (`doc`)
+- **`doc/HPU_PROGRAMMING_MANUAL.md`**：11 条 HPU 指令、对象/DMA 绑定、公共与方案算子、BFV 等能力缺口。
+- **`doc/HPU_TEST_DELIVERY.md`**：生成与编码流程、测试数据、autotest 对照、验收命令和硬件联调签字项。
 - **`doc/HPU_LATEST_SPEC_AUDIT.md`**：项目与最新飞书集成/控制/RV/PE 文档的逐项符合性审计、来源和修改顺序。
-- **`doc/HPU_AUTOTEST_DELIVERY_AUDIT.md`**：硬件组 `autotest` 对照、FHE 卷积修复、reference 与最终 IT ELF 的验证证据。
 
-### 8) 三个程序入口
+### 9) 三个程序入口
 
 | 可执行文件 | 源入口 | 职责 | 主要输出 |
 | --- | --- | --- | --- |
@@ -107,7 +113,10 @@ ctest --test-dir build --output-on-failure
 - `outputs/ntt/`
 - `outputs/intt/`
 - `outputs/encode/`
-- `outputs/rescale/`
+- `outputs/ckks_rescale/`
+- `outputs/ckks_ciphertext_multiply/`
+- `outputs/bgv_ciphertext_multiply/`
+- `outputs/bgv_modswitch/`
 - `outputs/mm/`
 - `outputs/bconv/`
 - `outputs/pmult/`
@@ -160,16 +169,19 @@ relocation manifest、line map 与 HPU_MEM 镜像。
 
 配置必须满足 `N` 为不小于 128 的 2 次幂、`ceil(N/64) <= 1024`（即
 `128 <= N <= 65536`）、`num_q >= 2`、`num_q % dnum == 0`、
-`num_q + num_p <= 256`，且当前 Auto 仅支持 `auto_index=1`。默认值为
-`N=4096, Q=4, P=3, dnum=2`。small Bank 5 为 32 line，固定范围
+`num_q + num_p + 1 <= 256`，且当前 Auto 仅支持 `auto_index=1`。额外的一个
+context 用于 BGV 明文模数 `t`，固定 MOD_ID 顺序为 `Q|P|t`。`plaintext_modulus`
+必须是硬件可加载的奇数并满足 `65537 <= t <= 2^32-1`；默认值为
+`N=4096, Q=4, P=3, dnum=2, t=65537`。small Bank 5 为 32 line，固定范围
 `0x1400..0x141F`，物理可放 512 个 context；由于 `MOD_ID` 只有 8 bit，软件可
 寻址上限为 256。它与 8 个并发对象槽位是两个独立资源。
 
 `hpu_delivery` 会根据该配置生成输入、评估密钥、阶段 golden、最终输出、明文校验
 和 artifact checksum。它同时生成独立的 `uint32` HPU_MEM 镜像、q/Barrett
 上下文、逐 stage twiddle、256B line offset/count，并从同一 reference 拆分出
-NTT、INTT、Encode、Rescale、MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、
-KeySwitch 和 Relinearization 的独立 UT 数据包。
+NTT、INTT、Encode、CKKS Rescale、CKKS/BGV CiphertextMultiply、BGV ModSwitch、
+MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、KeySwitch 和 Relinearization
+的独立 UT 数据包。
 
 
 ## 4. 关键设计实现说明
@@ -189,8 +201,11 @@ KeySwitch 和 Relinearization 的独立 UT 数据包。
 - **Encode 的软硬件边界：**
   当前 reference 的 Encode 是整数明文的 signed-to-RNS 嵌入，不是 CKKS 复数槽位 FFT。冻结的 11 条 HPU ISA 没有比较或条件选择指令，无法从单份 `mod t` 规范余数恢复正负号；因此宿主负责生成 `plaintext_coeff_q[basis][coefficient]`，HPU Encode 负责逐 limb 负循环 NTT，输出 `plaintext_ntt_q`。
 
-- **Rescale 舍入语义：**
-  对 `Q={q_0,...,q_last}` 上的每个密文分量，先在每个 limb 加入 `floor(q_last/2)`，再把最后一个 context 当作单元素 P 基复用 ModDown。输出基为 `Q'={q_0,...,q_{last-1}}`，计算的是 `round(x/q_last) mod Q'`；算子只处理系数域数据，不维护上层 CKKS scale 元数据。
+- **CKKS Rescale 舍入语义：**
+  对 `Q={q_0,...,q_last}` 上的每个密文分量，先在每个 limb 加入 `floor(q_last/2)`，再把最后一个 context 当作单元素 P 基复用 ModDown。输出基为 `Q'={q_0,...,q_{last-1}}`，计算的是 `round(x/q_last) mod Q'`；指令流只处理系数域数据，方案层的 `rescale_scale` 负责计算软件元数据 `scale/q_last`。
+
+- **方案元数据与 BGV ModSwitch：**
+  CKKS 的 `scale` 和 BGV 的 `correction_factor` 不编码进 HPU 指令，由方案层 API 与未来 runtime/compiler 保存。BGV 使用 `Q|P|t` context 顺序；降层时先计算 `u=-c_last*q_last^-1 mod t`，再对每个保留 limb 计算 `(c_i-c_last-q_last*u)*q_last^-1 mod q_i`。默认 `t=65537` 可由 PE 直接加载。
 
 - **生成与编码分层解耦：**
   `inline-asm` 仍负责汇编生成，`encode` 模块则负责解析、归一化和 32 位编码。两者保留独立边界，但通过同一 CMake 工程统一构建，从而降低汇编语义更新后生成器与编码器失配的风险。
@@ -209,13 +224,13 @@ KeySwitch 和 Relinearization 的独立 UT 数据包。
 调用方需要保证：
 
 - `N` 为 2 的幂且 `128 <= N <= 65536`；下界来自 NTT 的 128-register batch，上界来自普通 bank 的 1024 line
-- ISA 提供 8 个逻辑对象号 `p0..p7`；当前复合算子最多同时使用 `p0..p4`，具体角色见 `doc/dload_instructions.md`
-- 复杂算子（Encode/Rescale/PMULT/CMULT/MODUP/MODDOWN）使用 `dload/dstore` 流式搬运，不在本地长期保留多基对象
+- ISA 提供 8 个逻辑对象号 `p0..p7`；当前复合算子最多同时使用 `p0..p4`，具体角色见 `doc/HPU_PROGRAMMING_MANUAL.md` 附录 C
+- 复杂算子（Encode/CKKS Rescale/BGV ModSwitch/PMULT/CMULT/MODUP/MODDOWN）使用 `dload/dstore` 流式搬运，不在本地长期保留多基对象
 - `dload type=2, flag[0]=1` 将模表逻辑对象分配到 small Bank 5；DMA 与后续指令的一致性由硬件维护，可直接使用 `pmodld MOD_ID` 激活表项
 - 每个可编码算子同时生成 `.inst32` 和 `.cmd26`；`cmd26[25]` 区分 custom0/custom1，custom0 直接携带 `inst[31:7]`，custom1 按控制逻辑字段重排并另带 offset/count sideband
 - `psync` 只在完整程序的最后发出，用于通知 CPU 整个 HPU 程序已经完成；不得将其插入算子内部作为 DMA 等待或阶段屏障
 - 所有 custom1 指令固定编码 `x10/x11`。可执行 runtime 必须在每条 DMA 前把当前对象的 HPU_MEM line offset/count 装入这两个寄存器；`auto` 也进入统一编码链路。
-- `cmult`、`keyswitch`、`relinearization` 与 `ciphertext_multiply` 均已进入统一 `.asm -> .inst32/.cmd26` 生成链路；后三者要求 `num_q % dnum == 0` 且 `num_q + num_p <= 256`
+- `cmult`、`keyswitch`、`relinearization`、公共/CKKS/BGV `ciphertext_multiply` 与 BGV `modswitch` 均已进入统一 `.asm -> .inst32/.cmd26` 生成链路；方案流还要求 `num_q + num_p + 1 <= 256`
 - `ciphertext_multiply/test_data` 已由软件 reference 自动生成；二进制格式、shape 和校验值见其中的 `params.json` 与 `artifact_manifest.csv`
 - 顶层 `.bin` 是 `uint64` 数学 golden；真正面向 HPU 加载的是 `test_data/hardware/` 下按 256B line 补齐的 `.u32.bin`
 - `hardware/line_map.csv` 给出每个对象的 byte address、line offset 和 line count；custom1 固定使用 `GPR[rs1]=line_offset`、`GPR[rs2]=line_count`（256B line 单位），`hpu_mem_config.json` 给出 HPU_MEM window 值和 `0x00..0x18` CSR 编程顺序
@@ -225,7 +240,7 @@ KeySwitch 和 Relinearization 的独立 UT 数据包。
 
 ## 6. 当前交付边界
 
-软件侧已完成指令生成、编码、完整密文乘法/重线性化 reference golden、独立 `uint32` 硬件镜像、`q32+mu48+reserved48` 模上下文、每 stage 固定 `N/2` 个物理 twiddle、显式 negacyclic pre/post factor、256B line 映射、类型化 DMA span、生命周期门禁和 RV 可执行后端。Nexus-AM IT runtime 已完成 HPU_MEM CSR、cache、FAULT/IRQ、scratch 与 DMA relocation 绑定；硬件 qualification 仍需目标 RTL/板级运行和外部 monitor 证据。详细签字项见 `doc/HPU_TEST_DELIVERY.md`。
+软件侧已完成公共算子以及 CKKS Rescale/Multiply、BGV Multiply/ModSwitch 的指令生成、编码、reference golden、独立 `uint32` 硬件镜像、`q32+mu48+reserved48` 模上下文、每 stage 固定 `N/2` 个物理 twiddle、显式 negacyclic pre/post factor、256B line 映射、类型化 DMA span、生命周期门禁和 RV 可执行后端。BFV 未生成指令，原因与启用条件见 `doc/HPU_PROGRAMMING_MANUAL.md` 第 8.8 节。Nexus-AM IT runtime 已完成 HPU_MEM CSR、cache、FAULT/IRQ、scratch 与 DMA relocation 绑定；硬件 qualification 仍需目标 RTL/板级运行和外部 monitor 证据。详细签字项见 `doc/HPU_TEST_DELIVERY.md`。
 
 当前 golden 使用确定性零噪声和 P 可整除的功能测试评估密钥，适合 UT/IT 的
 逐字定位，不是安全性或噪声预算测试向量。Nexus-AM 的 host 模式只验证 testcase、
