@@ -54,6 +54,13 @@ else()
     set(FHE_LAST_STAGE_NAME "${FHE_LAST_STAGE}")
 endif()
 
+set(TWIDDLE_CASES
+    ntt intt encode ckks_ciphertext_multiply bgv_ciphertext_multiply
+    keyswitch relinearization auto ciphertext_multiply)
+set(NO_TWIDDLE_CASES
+    ckks_rescale bgv_modswitch mm bconv modup pmult cmult moddown)
+set(PACKAGED_CASES ${TWIDDLE_CASES} ${NO_TWIDDLE_CASES})
+
 set(REQUIRED_FILES
     "output/ciphertext_multiply.asm"
     "output/relinearization.asm"
@@ -116,9 +123,7 @@ set(REQUIRED_FILES
     "outputs/bgv_modswitch/test_data/expected_qprime.bin"
 )
 
-foreach(CASE_NAME ntt intt encode ckks_rescale ckks_ciphertext_multiply
-        bgv_ciphertext_multiply bgv_modswitch mm bconv modup pmult cmult
-        moddown keyswitch relinearization)
+foreach(CASE_NAME IN LISTS PACKAGED_CASES)
     list(APPEND REQUIRED_FILES
         "outputs/${CASE_NAME}/test_data/params.json"
         "outputs/${CASE_NAME}/test_data/artifact_manifest.csv"
@@ -127,8 +132,11 @@ foreach(CASE_NAME ntt intt encode ckks_rescale ckks_ciphertext_multiply
         "outputs/${CASE_NAME}/test_data/hardware/hpu_mem_config.json"
         "outputs/${CASE_NAME}/test_data/hardware/line_map.csv"
         "outputs/${CASE_NAME}/test_data/hardware/mod_ctx_map.csv"
-        "outputs/${CASE_NAME}/test_data/hardware/twiddle_map.csv"
         "outputs/${CASE_NAME}/${CASE_NAME}.cmd26")
+endforeach()
+foreach(CASE_NAME IN LISTS TWIDDLE_CASES)
+    list(APPEND REQUIRED_FILES
+        "outputs/${CASE_NAME}/test_data/hardware/twiddle_map.csv")
 endforeach()
 list(APPEND REQUIRED_FILES "outputs/auto/test_data/STATUS.md")
 
@@ -146,6 +154,46 @@ foreach(RELATIVE_PATH IN LISTS REQUIRED_FILES)
     file(SIZE "${PATH}" SIZE)
     if(SIZE EQUAL 0)
         message(FATAL_ERROR "Empty delivery artifact: ${RELATIVE_PATH}")
+    endif()
+endforeach()
+
+# A package carries twiddle images exactly when its executable stream performs
+# PNTT/PINTT. Pointwise and coefficient-only operators must not inflate their
+# HPU_MEM image with constants that no DMA relocation can reference.
+foreach(CASE_NAME IN LISTS PACKAGED_CASES)
+    file(READ "${ROOT}/output/${CASE_NAME}.asm" CASE_ASM)
+    set(HARDWARE_ROOT "${ROOT}/outputs/${CASE_NAME}/test_data/hardware")
+    set(TWIDDLE_ROOT "${HARDWARE_ROOT}/constants/twiddle")
+    file(GLOB_RECURSE CASE_TWIDDLE_FILES LIST_DIRECTORIES false
+        "${TWIDDLE_ROOT}/*")
+    file(READ "${HARDWARE_ROOT}/abi.json" CASE_ABI)
+    file(READ "${HARDWARE_ROOT}/line_map.csv" CASE_LINE_MAP)
+    if(CASE_ASM MATCHES "\"p(ntt|intt) ")
+        if(NOT CASE_TWIDDLE_FILES)
+            message(FATAL_ERROR
+                "${CASE_NAME}: PNTT/PINTT stream has no packaged twiddle images")
+        endif()
+        if(NOT EXISTS "${HARDWARE_ROOT}/twiddle_map.csv")
+            message(FATAL_ERROR
+                "${CASE_NAME}: PNTT/PINTT stream has no twiddle_map.csv")
+        endif()
+        if(NOT CASE_ABI MATCHES "\"twiddle_images_included\": true")
+            message(FATAL_ERROR
+                "${CASE_NAME}: ABI does not mark required twiddle images as included")
+        endif()
+    else()
+        if(CASE_TWIDDLE_FILES OR EXISTS "${HARDWARE_ROOT}/twiddle_map.csv")
+            message(FATAL_ERROR
+                "${CASE_NAME}: non-NTT stream contains unused twiddle artifacts")
+        endif()
+        if(CASE_LINE_MAP MATCHES "constants/twiddle/")
+            message(FATAL_ERROR
+                "${CASE_NAME}: non-NTT HPU_MEM line map contains unused twiddle data")
+        endif()
+        if(NOT CASE_ABI MATCHES "\"twiddle_images_included\": false")
+            message(FATAL_ERROR
+                "${CASE_NAME}: ABI does not mark twiddle images as omitted")
+        endif()
     endif()
 endforeach()
 

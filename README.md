@@ -178,7 +178,9 @@ context 用于 BGV 明文模数 `t`，固定 MOD_ID 顺序为 `Q|P|t`。`plainte
 
 `hpu_delivery` 会根据该配置生成输入、评估密钥、阶段 golden、最终输出、明文校验
 和 artifact checksum。它同时生成独立的 `uint32` HPU_MEM 镜像、q/Barrett
-上下文、逐 stage twiddle、256B line offset/count，并从同一 reference 拆分出
+上下文、256B line offset/count，并只为实际包含 `pntt/pintt` 的算子包生成逐
+stage twiddle；MM、BConv、ModUp/ModDown、PMult/CMult、CKKS Rescale 和 BGV
+ModSwitch 的最小硬件镜像不携带 twiddle。数据从同一 reference 拆分出
 NTT、INTT、Encode、CKKS Rescale、CKKS/BGV CiphertextMultiply、BGV ModSwitch、
 MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、KeySwitch 和 Relinearization
 的独立 UT 数据包。

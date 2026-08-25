@@ -63,6 +63,11 @@ enum class HardwareDomain {
     kNtt,
 };
 
+enum class TwiddleRequirement {
+    kNone,
+    kRequired,
+};
+
 struct Artifact {
     std::string path;
     std::string role;
@@ -1618,6 +1623,8 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
     if (moduli.size() > kMaxModContexts) {
         throw std::runtime_error("mod contexts exceed the 8-bit MOD_ID address space");
     }
+    const bool includes_twiddles = std::any_of(
+        roots.begin(), roots.end(), [](U64 root) { return root != 0; });
     if (g_n < 128 || (g_n & (g_n - 1)) != 0) {
         throw std::runtime_error(
             "hardware stage twiddles require power-of-two N >= 128");
@@ -1800,20 +1807,22 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
     }
     write_text(hardware_root / "mod_ctx_map.csv", mod_map.str());
 
-    std::ostringstream twiddle_map;
-    twiddle_map << "direction,basis_index,modulus,phase,stage,value_count,batch_count,"
-                   "twiddles_per_batch,first_value,recurrence_step,path,line_offset,line_count\n";
-    for (const TwiddleMapEntry& entry : twiddle_entries) {
-        const HardwareImage& image = images[entry.image_index];
-        twiddle_map << entry.direction << ',' << entry.basis << ',' << entry.modulus << ','
-                    << entry.phase << ',' << entry.stage << ',' << entry.value_count << ','
-                    << entry.group_count << ',' << entry.twiddles_per_group << ','
-                    << hex32(checked_u32(entry.first_value, "twiddle first value")) << ','
-                    << hex32(checked_u32(entry.step, "twiddle step")) << ','
-                    << csv_field(image.path) << ',' << image.line_offset << ','
-                    << image.padded_words.size() / kHpuWordsPerLine << '\n';
+    if (includes_twiddles) {
+        std::ostringstream twiddle_map;
+        twiddle_map << "direction,basis_index,modulus,phase,stage,value_count,batch_count,"
+                       "twiddles_per_batch,first_value,recurrence_step,path,line_offset,line_count\n";
+        for (const TwiddleMapEntry& entry : twiddle_entries) {
+            const HardwareImage& image = images[entry.image_index];
+            twiddle_map << entry.direction << ',' << entry.basis << ',' << entry.modulus << ','
+                        << entry.phase << ',' << entry.stage << ',' << entry.value_count << ','
+                        << entry.group_count << ',' << entry.twiddles_per_group << ','
+                        << hex32(checked_u32(entry.first_value, "twiddle first value")) << ','
+                        << hex32(checked_u32(entry.step, "twiddle step")) << ','
+                        << csv_field(image.path) << ',' << image.line_offset << ','
+                        << image.padded_words.size() / kHpuWordsPerLine << '\n';
+        }
+        write_text(hardware_root / "twiddle_map.csv", twiddle_map.str());
     }
-    write_text(hardware_root / "twiddle_map.csv", twiddle_map.str());
 
     const U64 window_bytes = next_line * kHpuLineBytes;
     const U32 size_lines_lo = static_cast<U32>(next_line);
@@ -1904,23 +1913,29 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
         << "    \"word_2\": \"bits[15:0]=floor(2^64/q)[47:32], bits[31:16]=reserved zero\",\n"
         << "    \"word_3\": \"reserved[47:16], zero\"\n"
         << "  },\n"
-        << "  \"twiddle\": {\n"
-        << "    \"convention\": \"autotest dual schedule: 128 registers, 64 BF lanes, P after PNTT and P^-1 before PINTT\",\n"
-        << "    \"coefficient_physical_order\": \"memory[position] = coefficient[bit_reverse(position)]\",\n"
-        << "    \"ntt_physical_order\": \"memory[position] = logical_ntt[forward_layout[position]]\",\n"
-        << "    \"pre_twist_execution\": \"explicit PMUL by psi^bit_reverse(position) before PNTT stage 0\",\n"
-        << "    \"stage_payload_words\": " << g_n / 2 << ",\n"
-        << "    \"stage_payload_lines\": "
-        << (g_n / 2 + kHpuWordsPerLine - 1) / kHpuWordsPerLine << ",\n"
-        << "    \"stage_payload\": \"N/2 physical values in loader-batch then BF-lane consumption order\",\n"
-        << "    \"batch_rule\": \"N/128 batches, 64 lane twiddles per batch; labels follow every preceding P network\",\n"
-        << "    \"intt_rule\": \"reverse forward stage order, P^-1 before BF, lazy-scale w_bf=alpha/beta\",\n"
-        << "    \"stage_alignment\": \"each stage image starts at a 256-byte line\",\n"
-        << "    \"stage_pairing\": \"stream_ctrl address generation and PE lane transpose; no standalone bit-reversal command\",\n"
-        << "    \"physical_update\": \"out-of-place per stage; controller commits a new base to the same logical object id\",\n"
-        << "    \"intt_post_factor\": \"at physical position p: N^-1 * psi^-bit_reverse(p)\",\n"
-        << "    \"intt_post_execution\": \"explicit PMUL after the final PINTT stage\"\n"
-        << "  }\n}\n";
+        << "  \"twiddle_images_included\": "
+        << (includes_twiddles ? "true" : "false");
+    if (includes_twiddles) {
+        abi << ",\n"
+            << "  \"twiddle\": {\n"
+            << "    \"convention\": \"autotest dual schedule: 128 registers, 64 BF lanes, P after PNTT and P^-1 before PINTT\",\n"
+            << "    \"coefficient_physical_order\": \"memory[position] = coefficient[bit_reverse(position)]\",\n"
+            << "    \"ntt_physical_order\": \"memory[position] = logical_ntt[forward_layout[position]]\",\n"
+            << "    \"pre_twist_execution\": \"explicit PMUL by psi^bit_reverse(position) before PNTT stage 0\",\n"
+            << "    \"stage_payload_words\": " << g_n / 2 << ",\n"
+            << "    \"stage_payload_lines\": "
+            << (g_n / 2 + kHpuWordsPerLine - 1) / kHpuWordsPerLine << ",\n"
+            << "    \"stage_payload\": \"N/2 physical values in loader-batch then BF-lane consumption order\",\n"
+            << "    \"batch_rule\": \"N/128 batches, 64 lane twiddles per batch; labels follow every preceding P network\",\n"
+            << "    \"intt_rule\": \"reverse forward stage order, P^-1 before BF, lazy-scale w_bf=alpha/beta\",\n"
+            << "    \"stage_alignment\": \"each stage image starts at a 256-byte line\",\n"
+            << "    \"stage_pairing\": \"stream_ctrl address generation and PE lane transpose; no standalone bit-reversal command\",\n"
+            << "    \"physical_update\": \"out-of-place per stage; controller commits a new base to the same logical object id\",\n"
+            << "    \"intt_post_factor\": \"at physical position p: N^-1 * psi^-bit_reverse(p)\",\n"
+            << "    \"intt_post_execution\": \"explicit PMUL after the final PINTT stage\"\n"
+            << "  }";
+    }
+    abi << "\n}\n";
     write_text(hardware_root / "abi.json", abi.str());
 
     std::ostringstream memory_map;
@@ -1937,25 +1952,36 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
                << "  \"qualification_pending\": [\"target RTL execution evidence\"]\n}\n";
     write_text(test_data_root / "memory_map.json", memory_map.str());
 
-    write_text(hardware_root / "README.md",
-               "# HPU uint32 Hardware Package\n\n"
-               "`hpu_mem_image.u32.bin` is the complete contiguous HPU_MEM window image. "
-               "All words are little-endian uint32 and every object starts on a 256-byte "
-               "line. Program the frozen CSR offsets in `hpu_mem_config.json`, then use "
-               "`line_map.csv` for `cmd_mem_line_offset` and `cmd_mem_len_lines`.\n\n"
-               "`images/` contains independently loadable, line-padded hardware forms of the "
-               "uint64 mathematical golden. Coefficient-domain images use bit-reversed coefficient "
-               "order; NTT-domain images use the final P-network physical layout. `mod_ctx_map.csv` "
-               "documents q and Barrett mu records. "
-               "Load that image with dload type=2 and flag[0]=1 so the object allocator "
-               "places it in 32-line small Bank 5 at MOD_TABLE_BASE_LINE=0x1400; "
-               "hardware maintains DMA consistency, so pmodld needs no software psync. "
-               "`twiddle_map.csv` gives each modulus, direction, phase, stage, loader-batch/lane "
-               "order, line offset, and line count. Every individual binary has an annotated hex view.\n\n"
-               "The physical host-memory ABI in `abi.json` is complete. "
-               "Custom1 sideband semantics and CSR offsets are frozen in `abi.json` and "
-               "`hpu_mem_config.json`. DMA relocation/GPR loading, SRAM scratch allocation, "
-               "and terminal psync completion handling still require runtime integration.\n");
+    std::ostringstream hardware_readme;
+    hardware_readme
+        << "# HPU uint32 Hardware Package\n\n"
+        << "`hpu_mem_image.u32.bin` is the complete contiguous HPU_MEM window image. "
+        << "All words are little-endian uint32 and every object starts on a 256-byte "
+        << "line. Program the frozen CSR offsets in `hpu_mem_config.json`, then use "
+        << "`line_map.csv` for `cmd_mem_line_offset` and `cmd_mem_len_lines`.\n\n"
+        << "`images/` contains independently loadable, line-padded hardware forms of the "
+        << "uint64 mathematical golden. Coefficient-domain images use bit-reversed coefficient "
+        << "order; NTT-domain images use the final P-network physical layout. `mod_ctx_map.csv` "
+        << "documents q and Barrett mu records. "
+        << "Load that image with dload type=2 and flag[0]=1 so the object allocator "
+        << "places it in 32-line small Bank 5 at MOD_TABLE_BASE_LINE=0x1400; "
+        << "hardware maintains DMA consistency, so pmodld needs no software psync. ";
+    if (includes_twiddles) {
+        hardware_readme
+            << "`twiddle_map.csv` gives each modulus, direction, phase, stage, loader-batch/lane "
+            << "order, line offset, and line count. ";
+    } else {
+        hardware_readme
+            << "This operator has no PNTT/PINTT stage, so the package intentionally omits "
+            << "twiddle images and `twiddle_map.csv`. ";
+    }
+    hardware_readme
+        << "Every individual binary has an annotated hex view.\n\n"
+        << "The physical host-memory ABI in `abi.json` is complete. "
+        << "Custom1 sideband semantics and CSR offsets are frozen in `abi.json` and "
+        << "`hpu_mem_config.json`. DMA relocation/GPR loading, SRAM scratch allocation, "
+        << "and terminal psync completion handling still require runtime integration.\n";
+    write_text(hardware_root / "README.md", hardware_readme.str());
 }
 
 void write_case_package(const std::filesystem::path& suite_root,
@@ -1963,7 +1989,8 @@ void write_case_package(const std::filesystem::path& suite_root,
                         const std::string& params,
                         std::vector<Artifact> artifacts,
                         const std::vector<U64>& moduli,
-                        const std::vector<U64>& roots)
+                        const std::vector<U64>& roots,
+                        TwiddleRequirement twiddle_requirement)
 {
     const std::filesystem::path root = suite_root / case_name / "test_data";
     // Case packages are generated artifacts. Recreate the directory so renamed
@@ -1986,15 +2013,26 @@ void write_case_package(const std::filesystem::path& suite_root,
     }
     write_text(root / "params.json", params);
     write_text(root / "artifact_manifest.csv", manifest.str());
-    write_hardware_package(root, artifacts, moduli, roots);
+    std::vector<U64> hardware_roots = roots;
+    if (twiddle_requirement == TwiddleRequirement::kNone) {
+        std::fill(hardware_roots.begin(), hardware_roots.end(), 0);
+    }
+    write_hardware_package(root, artifacts, moduli, hardware_roots);
     std::ostringstream readme;
     readme << "This UT package is generated from the same deterministic N=" << g_n
            << " FHE reference used by ciphertext_multiply. Binary values are little-endian "
            << "uint64 canonical residues. Every binary has a complete annotated `.hex.txt` "
            << "view with block coordinates. Shape and checksum information is in "
            << "artifact_manifest.csv. The independent `hardware/` tree contains uint32, "
-           << "256-byte-line-padded images, q/Barrett contexts, stage twiddles, line offsets, "
-           << "and HPU_MEM window configuration.\n";
+           << "256-byte-line-padded images, q/Barrett contexts, line offsets, and HPU_MEM "
+           << "window configuration. ";
+    if (twiddle_requirement == TwiddleRequirement::kRequired) {
+        readme << "Because this operator executes PNTT/PINTT, it also contains the required "
+               << "stage twiddle images and map.\n";
+    } else {
+        readme << "Because this operator executes no PNTT/PINTT, twiddle data is intentionally "
+               << "omitted.\n";
+    }
     write_text(root / "README.md", readme.str());
 }
 
@@ -2637,7 +2675,8 @@ void generate(const std::filesystem::path& output_root,
         write_case_package(*suite_root, "ntt",
                            common_params("ntt", "coefficient", "NTT", {q_moduli[0]}),
                            std::move(case_artifacts),
-                           {q_moduli[0]}, {q_roots[0]});
+                           {q_moduli[0]}, {q_roots[0]},
+                           TwiddleRequirement::kRequired);
 
         case_artifacts.clear();
         add_artifact(case_artifacts, "input.bin", "INTT input, NTT domain",
@@ -2647,7 +2686,8 @@ void generate(const std::filesystem::path& output_root,
         write_case_package(*suite_root, "intt",
                            common_params("intt", "NTT", "coefficient", {q_moduli[0]}),
                            std::move(case_artifacts),
-                           {q_moduli[0]}, {q_roots[0]});
+                           {q_moduli[0]}, {q_roots[0]},
+                           TwiddleRequirement::kRequired);
 
         case_artifacts.clear();
         words.clear(); append_words(words, plaintext_b_q);
@@ -2664,7 +2704,8 @@ void generate(const std::filesystem::path& output_root,
                            common_params("encode",
                                          "host-signed-to-RNS/coefficient/Q",
                                          "plaintext/NTT/Q", q_moduli),
-                           std::move(case_artifacts), q_moduli, q_roots);
+                           std::move(case_artifacts), q_moduli, q_roots,
+                           TwiddleRequirement::kRequired);
 
         case_artifacts.clear();
         words.clear(); append_words(words, ct_a[0]); append_words(words, ct_a[1]);
@@ -2728,7 +2769,8 @@ void generate(const std::filesystem::path& output_root,
                                    + std::to_string(ckks_product_scale) + ",\n"
                                "  \"metadata_test_output_scale\": "
                                    + std::to_string(ckks_output_scale)),
-                           std::move(case_artifacts), q_moduli, q_roots);
+                           std::move(case_artifacts), q_moduli, q_roots,
+                           TwiddleRequirement::kNone);
         write_text(
             *suite_root / "ckks_rescale" / "test_data" / "dma_plan.csv",
             "phase,operation,logical_object,domain,basis,status\n"
@@ -2796,7 +2838,8 @@ void generate(const std::filesystem::path& output_root,
                 "  \"output_scale\": " + std::to_string(ckks_output_scale) + ",\n"
                 "  \"max_abs_decode_error\": " + std::to_string(ckks_max_abs_error) + ",\n"
                 "  \"decode_error_bound\": " + std::to_string(ckks_error_bound)),
-            std::move(case_artifacts), all_moduli, all_roots);
+            std::move(case_artifacts), all_moduli, all_roots,
+            TwiddleRequirement::kRequired);
         write_text(
             *suite_root / "ckks_ciphertext_multiply" / "test_data" / "SCHEME_VALIDATION.txt",
             "PASS\ncommon_multiply_and_relinearize=PASS\n"
@@ -2842,7 +2885,8 @@ void generate(const std::filesystem::path& output_root,
                 "  \"correction_factor_a\": " + std::to_string(kBgvFactorA) + ",\n"
                 "  \"correction_factor_b\": " + std::to_string(kBgvFactorB) + ",\n"
                 "  \"correction_factor_out\": " + std::to_string(bgv_multiply_factor)),
-            std::move(case_artifacts), bgv_moduli, bgv_roots);
+            std::move(case_artifacts), bgv_moduli, bgv_roots,
+            TwiddleRequirement::kRequired);
         write_text(
             *suite_root / "bgv_ciphertext_multiply" / "test_data" / "SCHEME_VALIDATION.txt",
             "PASS\ncommon_multiply_and_relinearize=PASS\n"
@@ -2972,7 +3016,8 @@ void generate(const std::filesystem::path& output_root,
                 "  \"correction_factor_out\": " + std::to_string(bgv_modswitch_factor) + ",\n"
                 "  \"correction_factor_rule\": \"cf_out=cf_in*q_last^-1 mod t\",\n"
                 "  \"level_delta\": -1"),
-            std::move(case_artifacts), bgv_moduli, bgv_roots);
+            std::move(case_artifacts), bgv_moduli, bgv_roots,
+            TwiddleRequirement::kNone);
         write_text(
             *suite_root / "bgv_modswitch" / "test_data" / "SCHEME_VALIDATION.txt",
             "PASS\nq_last_to_t_bconv=PASS\n"
@@ -3003,7 +3048,8 @@ void generate(const std::filesystem::path& output_root,
         write_case_package(*suite_root, "mm",
                            common_params("mm", "NTT", "NTT", {q_moduli[0]}),
                            std::move(case_artifacts),
-                           {q_moduli[0]}, {q_roots[0]});
+                           {q_moduli[0]}, {q_roots[0]},
+                           TwiddleRequirement::kNone);
 
         case_artifacts.clear();
         add_artifact(case_artifacts, "input_q.bin", "single Q limb", {g_n}, tensor[2][0]);
@@ -3014,7 +3060,8 @@ void generate(const std::filesystem::path& output_root,
                            common_params("bconv", "coefficient/Q0", "coefficient/P0",
                                          {q_moduli[0], p_moduli[0]}),
                            std::move(case_artifacts),
-                           {q_moduli[0], p_moduli[0]}, {q_roots[0], all_roots[g_num_q]});
+                           {q_moduli[0], p_moduli[0]}, {q_roots[0], all_roots[g_num_q]},
+                           TwiddleRequirement::kNone);
 
         case_artifacts.clear();
         words.clear();
@@ -3032,7 +3079,8 @@ void generate(const std::filesystem::path& output_root,
                            common_params("modup", "coefficient/Q_digit0", "coefficient/QP",
                                          all_moduli),
                            std::move(case_artifacts),
-                           all_moduli, all_roots);
+                           all_moduli, all_roots,
+                           TwiddleRequirement::kNone);
 
         case_artifacts.clear();
         words.clear(); append_words(words, ct_a_ntt[0]); append_words(words, ct_a_ntt[1]);
@@ -3052,7 +3100,8 @@ void generate(const std::filesystem::path& output_root,
         write_case_package(*suite_root, "pmult",
                            common_params("pmult", "NTT/Q", "NTT/Q", q_moduli),
                            std::move(case_artifacts),
-                           q_moduli, q_roots);
+                           q_moduli, q_roots,
+                           TwiddleRequirement::kNone);
 
         case_artifacts.clear();
         words.clear(); append_words(words, ct_a_ntt[0]); append_words(words, ct_a_ntt[1]);
@@ -3069,7 +3118,8 @@ void generate(const std::filesystem::path& output_root,
         write_case_package(*suite_root, "cmult",
                            common_params("cmult", "NTT/Q", "NTT/Q", q_moduli),
                            std::move(case_artifacts),
-                           q_moduli, q_roots);
+                           q_moduli, q_roots,
+                           TwiddleRequirement::kNone);
 
         case_artifacts.clear();
         words.clear(); append_words(words, keyswitch_qp[0]);
@@ -3082,7 +3132,8 @@ void generate(const std::filesystem::path& output_root,
         write_case_package(*suite_root, "moddown",
                            common_params("moddown", "coefficient/QP", "coefficient/Q", all_moduli),
                            std::move(case_artifacts),
-                           all_moduli, all_roots);
+                           all_moduli, all_roots,
+                           TwiddleRequirement::kNone);
 
         case_artifacts.clear();
         words.clear(); append_words(words, tensor[0]);
@@ -3105,7 +3156,8 @@ void generate(const std::filesystem::path& output_root,
                            common_params("keyswitch", "base/Q + switching_component/Q + rlk/NTT/QP",
                                          "coefficient/Q", all_moduli),
                            std::move(case_artifacts),
-                           all_moduli, all_roots);
+                           all_moduli, all_roots,
+                           TwiddleRequirement::kRequired);
 
         case_artifacts.clear();
         words.clear();
@@ -3128,7 +3180,8 @@ void generate(const std::filesystem::path& output_root,
                                          "tensor/coefficient/Q + rlk/NTT/QP",
                                          "ciphertext/coefficient/Q", all_moduli),
                            std::move(case_artifacts),
-                           all_moduli, all_roots);
+                           all_moduli, all_roots,
+                           TwiddleRequirement::kRequired);
 
         case_artifacts.clear();
         words.clear();
@@ -3159,7 +3212,8 @@ void generate(const std::filesystem::path& output_root,
                            common_params("auto",
                                          "CPU coefficient automorphism/Q + Galois key/NTT/QP",
                                          "ciphertext/coefficient/Q", all_moduli),
-                           std::move(case_artifacts), all_moduli, all_roots);
+                           std::move(case_artifacts), all_moduli, all_roots,
+                           TwiddleRequirement::kRequired);
         write_text(*suite_root / "auto" / "test_data" / "AUTO_LAYOUT.json",
                    "{\n"
                    "  \"auto_index\": " + std::to_string(g_auto_index) + ",\n"

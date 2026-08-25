@@ -157,9 +157,9 @@ Encrypt(ctA, ctB)
 | `images/**/*.u32.bin` | 输入、常量、期望结果的独立 256B-line-padded 镜像 |
 | `line_map.csv` | 每个对象的 byte address、line offset、line count、payload/padded 大小 |
 | `constants/mod_ctx.u32.bin` / `mod_ctx_map.csv` | 每个 Q/P/t 模数的 q 与 `floor(2^64/q)` Barrett mu 物理记录；非 BGV 包不含 t |
-| `constants/twiddle/**/*.u32.bin` / `twiddle_map.csv` | 每个 basis、方向、phase、stage 的物理 twiddle 和 line 位置 |
+| `constants/twiddle/**/*.u32.bin` / `twiddle_map.csv` | 仅含 `pntt/pintt` 的包生成；记录每个 basis、方向、phase、stage 的物理 twiddle 和 line 位置 |
 | `hpu_mem_config.json` | HPU_MEM base/size、256B line 参数、`0x00..0x18` CSR 偏移和编程顺序 |
-| `abi.json` | `uint32`、小端、Bank 5、mod context word 布局和 NTT/INTT twiddle 约定 |
+| `abi.json` | `uint32`、小端、Bank 5、mod context word 布局；`twiddle_images_included` 标明当前包是否携带 NTT/INTT twiddle |
 
 四个方案用例均独立生成 `dma_plan.csv`。BGV ModSwitch 将 `q_last -> t`
 和面向 `Q'` 的 BConv target 常量拆成不同文件，runtime 不应跨目标基复用其物理 span。
@@ -204,7 +204,7 @@ image、NTT image、pre/post factor 和全部 stage twiddle。默认 Q0 的冻�
 | `bgv_modswitch/expected_qprime` | BGV delta 符号、`q_last^-1`、correction factor |
 | 最终解密 | 上述节点均通过时再检查方案参数和 host 数据解释 |
 
-同一 reference 还会拆分到 `outputs/{ntt,intt,encode,ckks_rescale,ckks_ciphertext_multiply,bgv_ciphertext_multiply,bgv_modswitch,mm,bconv,modup,pmult,cmult,moddown,keyswitch,relinearization,auto}/test_data/`。每个目录均包含独立 `params.json`、数学输入/期望输出、checksum，以及完整的 `hardware/` 镜像、上下文、twiddle 和 line map，可直接交给对应模块负责人跑 UT。Encode 的 signed-to-RNS 边界、方案元数据和逐算子 DLOAD/DSTORE 绑定分别冻结在各自 `params.json` 与 `HPU_PROGRAMMING_MANUAL.md` 附录 C 中。
+同一 reference 还会拆分到 `outputs/{ntt,intt,encode,ckks_rescale,ckks_ciphertext_multiply,bgv_ciphertext_multiply,bgv_modswitch,mm,bconv,modup,pmult,cmult,moddown,keyswitch,relinearization,auto}/test_data/`。每个目录均包含独立 `params.json`、数学输入/期望输出、checksum，以及按实际指令需求裁剪的 `hardware/` 镜像、上下文和 line map，可直接交给对应模块负责人跑 UT。只有 NTT、INTT、Encode、CKKS/BGV CiphertextMultiply、KeySwitch、Relinearization 和 Auto 包含 twiddle；CKKS Rescale、BGV ModSwitch、MM、BConv、ModUp/ModDown、PMult/CMult 不包含。Encode 的 signed-to-RNS 边界、方案元数据和逐算子 DLOAD/DSTORE 绑定分别冻结在各自 `params.json` 与 `HPU_PROGRAMMING_MANUAL.md` 附录 C 中。
 
 ## 6. RV 接口用例
 
