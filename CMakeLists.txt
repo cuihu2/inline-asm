@@ -28,9 +28,19 @@ target_compile_definitions(hpu_test_config
         HPU_DEFAULT_TEST_CONFIG_PATH="${HPU_TEST_CONFIG}"
 )
 
+add_library(hpu_scheme_encoding STATIC
+        src/util/ntt.cpp
+        src/operator/plaintext_ntt.cpp
+        src/scheme/ckks/encode.cpp
+        src/scheme/bgv/encode.cpp
+)
+target_include_directories(hpu_scheme_encoding
+        PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
 add_executable(inline_asm_codegen
         src/main.cpp
-        src/util/ntt.cpp
         src/util/mm.cpp
         src/util/bconv.cpp
         src/poly/auto.cpp
@@ -41,7 +51,6 @@ add_executable(inline_asm_codegen
         src/operator/keyswitch.cpp
         src/operator/relinearization.cpp
         src/operator/ciphertext_multiply.cpp
-        src/operator/encode.cpp
         src/scheme/ckks/rescale.cpp
         src/scheme/ckks/ciphertext_multiply.cpp
         src/scheme/bgv/ciphertext_multiply.cpp
@@ -52,10 +61,19 @@ target_include_directories(inline_asm_codegen
         PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-target_link_libraries(inline_asm_codegen PRIVATE hpu_test_config)
+target_link_libraries(inline_asm_codegen
+        PRIVATE
+        hpu_test_config
+        hpu_scheme_encoding
+)
 
 if(BUILD_TESTING)
-    foreach(INVALID_CONFIG invalid_context_overflow invalid_num_q invalid_plaintext_modulus)
+    foreach(INVALID_CONFIG
+            invalid_context_overflow
+            invalid_num_q
+            invalid_plaintext_modulus
+            invalid_bgv_batching_modulus
+            invalid_composite_plaintext_modulus)
         add_test(
                 NAME hpu_config_rejects_${INVALID_CONFIG}
                 COMMAND inline_asm_codegen
@@ -66,6 +84,15 @@ if(BUILD_TESTING)
                 hpu_config_rejects_${INVALID_CONFIG}
                 PROPERTIES WILL_FAIL TRUE)
     endforeach()
+
+    add_executable(hpu_scheme_encode_self_test
+            test/scheme_encode_self_test.cpp
+    )
+    target_link_libraries(hpu_scheme_encode_self_test
+            PRIVATE
+            hpu_scheme_encoding
+    )
+    add_test(NAME hpu_scheme_encode_self_test COMMAND hpu_scheme_encode_self_test)
 endif()
 
 add_subdirectory(test/encode)

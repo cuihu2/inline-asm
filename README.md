@@ -24,16 +24,24 @@
 - **`operator/keyswitch.hpp/cpp`**：完整密钥切换 (KeySwitch) 逻辑生成，语义为 `KeySwitch(base, switching_component, evk) -> (base + ks0, ks1)`。
 - **`operator/relinearization.hpp/cpp`**：重线性化算子，以 `t0` 为 KeySwitch 的 base、切换 `t2`，再计算 `t1 + ks1`，输出标准二分量密文。
 - **`operator/ciphertext_multiply.hpp/cpp`**：完整密文乘法生成，执行输入分量 NTT、`cmult` 三分量张量积、INTT，并复用 `relinearization` 完成最终合成。
-- **`operator/encode.hpp/cpp`**：硬件 Encode 边界；宿主先完成有符号系数到 RNS-Q 的嵌入，HPU 再逐 Q limb 执行负循环 NTT，输出可直接供 `pmult` 使用的明文。
+- **`operator/plaintext_ntt.hpp/cpp`**：方案内部共享的硬件后端；接收 host 已编码的 RNS-Q 系数 limbs，逐 limb 执行负循环 NTT，不单独生成公共用例。
 
 ### 4) FHE 方案算子层 (`scheme`)
 位于公共算子层之上，负责方案特有的组合顺序和软件元数据：
+- **`scheme/ckks/encode.hpp/cpp`**：以 generator-3 共轭槽位布局执行自包含复数 FFT 编解码，支持 `N/2` 个复数槽位；HPU 部分只执行 RNS-Q NTT。
 - **`scheme/ckks/rescale.hpp/cpp`**：CKKS 系数域带舍入降层，复用 `ModDown(Q', {q_last})`，并提供 scale 更新接口。
 - **`scheme/ckks/ciphertext_multiply.hpp/cpp`**：公共密文乘法与重线形化之后继续执行 CKKS Rescale，输出 `Q_without_last`。
+- **`scheme/bgv/encode.hpp/cpp`**：提供 signed coefficient encoding 和 generator-3 两行 batching；要求 `t` 为素数且 `2N | (t-1)`。
 - **`scheme/bgv/ciphertext_multiply.hpp/cpp`**：复用公共乘法，并提供 `correction_factor_a * correction_factor_b mod t` 元数据更新。
 - **`scheme/bgv/modswitch.hpp/cpp`**：执行 BGV `mod t and divide q_last`，输出 `Q_without_last` 并更新 correction factor。
 
-公共层不声明自己属于 CKKS、BGV 或 BFV。当前 `operator/encode` 仍只是宿主 signed-to-RNS 与 HPU NTT 的公共边界，不是 CKKS FFT Encoder 或 BGV BatchEncoder。
+公共层不声明自己属于 CKKS、BGV 或 BFV。CKKS/BGV 的 Encode/Decode 数学在 host 方案层执行；两者共享的 `plaintext_ntt` 只负责 HPU 上的逐 Q limb NTT。
+
+| 方案 | Encode/Decode | 乘法后处理 | 当前范围 |
+| --- | --- | --- | --- |
+| CKKS | `N/2` 复数槽位、generator-3 共轭嵌入 | Relinearization + Rescale | 确定性功能通路 |
+| BGV | signed coefficients、`N` 槽两行 batching | Relinearization + ModSwitch | 确定性功能通路 |
+| BFV | 未生成 | 未生成 | 等待 centered correction 硬件能力 |
 
 ### 5) 指令编码模块 (`encode`)
 将生成出的 HPU 汇编进一步转译为 32 位机器码文本：
@@ -112,7 +120,8 @@ ctest --test-dir build --output-on-failure
 执行 `inline_asm_encode_outputs` 后，会进一步整理出根目录下的 `outputs/` 文件夹。执行 `hpu_reference_vectors` 后，各算子目录会补充输入、期望结果和可读 golden：
 - `outputs/ntt/`
 - `outputs/intt/`
-- `outputs/encode/`
+- `outputs/ckks_encode/`
+- `outputs/bgv_encode/`
 - `outputs/ckks_rescale/`
 - `outputs/ckks_ciphertext_multiply/`
 - `outputs/bgv_ciphertext_multiply/`
@@ -181,7 +190,7 @@ context 用于 BGV 明文模数 `t`，固定 MOD_ID 顺序为 `Q|P|t`。`plainte
 上下文、256B line offset/count，并只为实际包含 `pntt/pintt` 的算子包生成逐
 stage twiddle；MM、BConv、ModUp/ModDown、PMult/CMult、CKKS Rescale 和 BGV
 ModSwitch 的最小硬件镜像不携带 twiddle。数据从同一 reference 拆分出
-NTT、INTT、Encode、CKKS Rescale、CKKS/BGV CiphertextMultiply、BGV ModSwitch、
+NTT、INTT、CKKS/BGV Encode、CKKS Rescale、CKKS/BGV CiphertextMultiply、BGV ModSwitch、
 MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、KeySwitch 和 Relinearization
 的独立 UT 数据包。
 
@@ -200,8 +209,8 @@ MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、KeySwitch 和 Relinearizat
 - **完整密文乘法语义：**
   `cmult` 只负责 FHE 密文乘法中的张量积阶段，即 $t_0=a_0b_0$、$t_1=a_0b_1+a_1b_0$、$t_2=a_1b_1$。`relinearization` 调用 `KeySwitch(base=t0, switching_component=t2, evk=rlk)` 得到 $(t_0+ks_0,ks_1)$，再生成 $t_1+ks_1$；`ciphertext_multiply` 直接复用该算子。
 
-- **Encode 的软硬件边界：**
-  当前 reference 的 Encode 是整数明文的 signed-to-RNS 嵌入，不是 CKKS 复数槽位 FFT。冻结的 11 条 HPU ISA 没有比较或条件选择指令，无法从单份 `mod t` 规范余数恢复正负号；因此宿主负责生成 `plaintext_coeff_q[basis][coefficient]`，HPU Encode 负责逐 limb 负循环 NTT，输出 `plaintext_ntt_q`。
+- **方案 Encode 的软硬件边界：**
+  CKKS host API 把最多 `N/2` 个复数槽位映射为带 scale 的 signed 系数；BGV host API 支持 signed coefficient encoding 和 `N` 槽两行 batching。host 再将结果嵌入 RNS-Q，HPU 共享后端逐 limb 执行显式 pre-twist、NTT stages 与写回，输出可直接供 PMULT 使用的 `plaintext_ntt_q`。Decode 完全在 host 执行。
 
 - **CKKS Rescale 舍入语义：**
   对 `Q={q_0,...,q_last}` 上的每个密文分量，先在每个 limb 加入 `floor(q_last/2)`，再把最后一个 context 当作单元素 P 基复用 ModDown。输出基为 `Q'={q_0,...,q_{last-1}}`，计算的是 `round(x/q_last) mod Q'`；指令流只处理系数域数据，方案层的 `rescale_scale` 负责计算软件元数据 `scale/q_last`。
@@ -227,7 +236,7 @@ MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、KeySwitch 和 Relinearizat
 
 - `N` 为 2 的幂且 `128 <= N <= 65536`；下界来自 NTT 的 128-register batch，上界来自普通 bank 的 1024 line
 - ISA 提供 8 个逻辑对象号 `p0..p7`；当前复合算子最多同时使用 `p0..p4`，具体角色见 `doc/HPU_PROGRAMMING_MANUAL.md` 附录 C
-- 复杂算子（Encode/CKKS Rescale/BGV ModSwitch/PMULT/CMULT/MODUP/MODDOWN）使用 `dload/dstore` 流式搬运，不在本地长期保留多基对象
+- 复杂算子（CKKS/BGV Encode、CKKS Rescale、BGV ModSwitch、PMULT/CMULT/MODUP/MODDOWN）使用 `dload/dstore` 流式搬运，不在本地长期保留多基对象
 - `dload type=2, flag[0]=1` 将模表逻辑对象分配到 small Bank 5；DMA 与后续指令的一致性由硬件维护，可直接使用 `pmodld MOD_ID` 激活表项
 - 每个可编码算子同时生成 `.inst32` 和 `.cmd26`；`cmd26[25]` 区分 custom0/custom1，custom0 直接携带 `inst[31:7]`，custom1 按控制逻辑字段重排并另带 offset/count sideband
 - `psync` 只在完整程序的最后发出，用于通知 CPU 整个 HPU 程序已经完成；不得将其插入算子内部作为 DMA 等待或阶段屏障

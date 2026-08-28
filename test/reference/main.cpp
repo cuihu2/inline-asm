@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <complex>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -16,6 +17,8 @@
 #include <vector>
 
 #include "config/fhe_test_config.hpp"
+#include "scheme/bgv/encode.hpp"
+#include "scheme/ckks/encode.hpp"
 
 namespace {
 
@@ -325,6 +328,17 @@ BasisPoly encode_basis(const std::vector<std::int64_t>& input,
     return out;
 }
 
+BasisPoly lift_basis(const Poly& input, const std::vector<U64>& moduli)
+{
+    BasisPoly output(moduli.size(), Poly(input.size()));
+    for (std::size_t basis = 0; basis < moduli.size(); ++basis) {
+        for (std::size_t coefficient = 0; coefficient < input.size(); ++coefficient) {
+            output[basis][coefficient] = input[coefficient] % moduli[basis];
+        }
+    }
+    return output;
+}
+
 BasisPoly transform_basis(const BasisPoly& input,
                           const std::vector<U64>& moduli,
                           const std::vector<U64>& roots,
@@ -361,7 +375,7 @@ Ciphertext encrypt_test_message(const std::vector<std::int64_t>& message,
 }
 
 Ciphertext encrypt_bgv_test_message(
-    const std::vector<std::int64_t>& message,
+    const Poly& plaintext_coefficients,
     U64 correction_factor,
     U64 plaintext_modulus,
     const BasisPoly& secret,
@@ -372,14 +386,15 @@ Ciphertext encrypt_bgv_test_message(
     Ciphertext ciphertext;
     ciphertext[0].resize(moduli.size());
     ciphertext[1].resize(moduli.size());
-    Poly encoded_t(message.size());
-    for (std::size_t i = 0; i < message.size(); ++i) {
-        const std::int64_t reduced =
-            ((message[i] % static_cast<std::int64_t>(plaintext_modulus))
-             + static_cast<std::int64_t>(plaintext_modulus))
-            % static_cast<std::int64_t>(plaintext_modulus);
+    if (plaintext_coefficients.size() != g_n) {
+        throw std::runtime_error("BGV plaintext must contain N coefficients");
+    }
+    Poly encoded_t(plaintext_coefficients.size());
+    for (std::size_t i = 0; i < plaintext_coefficients.size(); ++i) {
         encoded_t[i] = mul_mod(
-            static_cast<U64>(reduced), correction_factor, plaintext_modulus);
+            plaintext_coefficients[i] % plaintext_modulus,
+            correction_factor,
+            plaintext_modulus);
     }
     for (std::size_t basis = 0; basis < moduli.size(); ++basis) {
         const U64 modulus = moduli[basis];
@@ -753,6 +768,71 @@ Ciphertext multiply_and_relinearize(
     return output;
 }
 
+Ciphertext automorphism_and_keyswitch(
+    const Ciphertext& input,
+    U64 galois_element,
+    const BasisPoly& secret_q,
+    const EvaluationKey& galois_key_ntt,
+    const std::vector<U64>& q_moduli,
+    const std::vector<U64>& p_moduli,
+    const std::vector<U64>& all_moduli,
+    const std::vector<U64>& q_roots,
+    const std::vector<U64>& all_roots)
+{
+    if (galois_key_ntt.size() != g_dnum || g_num_q % g_dnum != 0) {
+        throw std::runtime_error("invalid Galois key for automorphism");
+    }
+    Ciphertext rotated;
+    for (std::size_t component = 0; component < 2; ++component) {
+        rotated[component] = apply_negacyclic_automorphism(
+            input[component], galois_element, q_moduli);
+    }
+
+    const std::size_t digit_size = g_num_q / g_dnum;
+    std::array<BasisPoly, 2> accum_ntt;
+    for (BasisPoly& component : accum_ntt) {
+        component.assign(all_moduli.size(), Poly(g_n, 0));
+    }
+    for (std::size_t digit = 0; digit < g_dnum; ++digit) {
+        const BasisPoly raised = modup(
+            rotated[1], q_moduli, all_moduli,
+            digit * digit_size, digit_size);
+        const BasisPoly raised_ntt = transform_basis(
+            raised, all_moduli, all_roots, false);
+        for (std::size_t component = 0; component < 2; ++component) {
+            for (std::size_t basis = 0; basis < all_moduli.size(); ++basis) {
+                accum_ntt[component][basis] = add_poly(
+                    accum_ntt[component][basis],
+                    pointwise_mul(
+                        raised_ntt[basis],
+                        galois_key_ntt[digit][component][basis],
+                        all_moduli[basis]),
+                    all_moduli[basis]);
+            }
+        }
+    }
+
+    std::array<BasisPoly, 2> switched_q;
+    for (std::size_t component = 0; component < 2; ++component) {
+        switched_q[component] = moddown(
+            transform_basis(accum_ntt[component], all_moduli, all_roots, true),
+            q_moduli, p_moduli);
+    }
+    Ciphertext output;
+    for (std::size_t basis = 0; basis < q_moduli.size(); ++basis) {
+        output[0].push_back(add_poly(
+            rotated[0][basis], switched_q[0][basis], q_moduli[basis]));
+        output[1].push_back(switched_q[1][basis]);
+    }
+    verify_equal(
+        apply_negacyclic_automorphism(
+            decrypt_ciphertext(input, secret_q, q_moduli, q_roots),
+            galois_element, q_moduli),
+        decrypt_ciphertext(output, secret_q, q_moduli, q_roots),
+        "scheme automorphism plus Galois key switch");
+    return output;
+}
+
 struct BgvModswitchTrace {
     BasisPoly output;
     Poly c_last_mod_t;
@@ -838,6 +918,21 @@ std::vector<I128> exact_rns_to_centered(const BasisPoly& input,
         output[coefficient] = value > basis_product / 2
             ? static_cast<I128>(value - basis_product)
             : static_cast<I128>(value);
+    }
+    return output;
+}
+
+std::vector<std::int64_t> centered_to_int64(
+    const std::vector<I128>& coefficients,
+    const std::string& label)
+{
+    std::vector<std::int64_t> output(coefficients.size());
+    for (std::size_t i = 0; i < coefficients.size(); ++i) {
+        if (coefficients[i] < std::numeric_limits<std::int64_t>::min()
+            || coefficients[i] > std::numeric_limits<std::int64_t>::max()) {
+            throw std::runtime_error(label + " coefficient exceeds int64");
+        }
+        output[i] = static_cast<std::int64_t>(coefficients[i]);
     }
     return output;
 }
@@ -1150,6 +1245,111 @@ std::string csv_field(const std::string& value)
     }
     escaped.push_back('"');
     return escaped;
+}
+
+struct HostArtifact {
+    std::string path;
+    std::string role;
+    std::string contents;
+};
+
+U64 fnv1a_text(const std::string& text)
+{
+    U64 hash = kFnv1a64OffsetBasis;
+    for (unsigned char byte : text) {
+        hash ^= byte;
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+void write_host_package(
+    const std::filesystem::path& test_data_root,
+    const std::vector<HostArtifact>& artifacts)
+{
+    const auto host_root = test_data_root / "host";
+    std::filesystem::remove_all(host_root);
+    std::ostringstream manifest;
+    manifest << "path,role,bytes,fnv1a64\n";
+    for (const HostArtifact& artifact : artifacts) {
+        write_text(host_root / artifact.path, artifact.contents);
+        manifest << csv_field(artifact.path) << ','
+                 << csv_field(artifact.role) << ','
+                 << artifact.contents.size() << ','
+                 << hex64(fnv1a_text(artifact.contents)) << '\n';
+    }
+    write_text(host_root / "host_manifest.csv", manifest.str());
+}
+
+std::string complex_slots_csv(
+    const std::vector<std::complex<double>>& values,
+    const std::string& value_name)
+{
+    std::ostringstream output;
+    output << "slot," << value_name << "_real," << value_name << "_imag\n";
+    output << std::setprecision(17);
+    for (std::size_t slot = 0; slot < values.size(); ++slot) {
+        output << slot << ',' << values[slot].real() << ','
+               << values[slot].imag() << '\n';
+    }
+    return output.str();
+}
+
+std::string signed_values_csv(
+    const std::vector<std::int64_t>& values,
+    const std::string& value_name)
+{
+    std::ostringstream output;
+    output << "index," << value_name << '\n';
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        output << index << ',' << values[index] << '\n';
+    }
+    return output.str();
+}
+
+std::string residues_csv(const Poly& values, const std::string& value_name)
+{
+    std::ostringstream output;
+    output << "index," << value_name << '\n';
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        output << index << ',' << values[index] << '\n';
+    }
+    return output.str();
+}
+
+std::string complex_comparison_csv(
+    const std::vector<std::complex<double>>& expected,
+    const std::vector<std::complex<double>>& actual)
+{
+    if (expected.size() != actual.size()) {
+        throw std::runtime_error("complex comparison size mismatch");
+    }
+    std::ostringstream output;
+    output << "slot,expected_real,expected_imag,actual_real,actual_imag,abs_error\n";
+    output << std::setprecision(17);
+    for (std::size_t slot = 0; slot < expected.size(); ++slot) {
+        output << slot << ',' << expected[slot].real() << ','
+               << expected[slot].imag() << ',' << actual[slot].real() << ','
+               << actual[slot].imag() << ','
+               << std::abs(actual[slot] - expected[slot]) << '\n';
+    }
+    return output.str();
+}
+
+std::string signed_comparison_csv(
+    const std::vector<std::int64_t>& expected,
+    const std::vector<std::int64_t>& actual)
+{
+    if (expected.size() != actual.size()) {
+        throw std::runtime_error("signed comparison size mismatch");
+    }
+    std::ostringstream output;
+    output << "slot,expected,actual,equal\n";
+    for (std::size_t slot = 0; slot < expected.size(); ++slot) {
+        output << slot << ',' << expected[slot] << ',' << actual[slot] << ','
+               << (expected[slot] == actual[slot] ? 1 : 0) << '\n';
+    }
+    return output.str();
 }
 
 void add_artifact(std::vector<Artifact>& artifacts,
@@ -2349,18 +2549,50 @@ void generate(const std::filesystem::path& output_root,
     const std::vector<U64> retained_q_roots(
         q_roots.begin(), q_roots.end() - 1);
 
-    // CKKS functional fixture: encode integer coefficients at scale q_last,
-    // multiply/relinearize, then apply the rounded coefficient-domain Rescale.
-    const U64 ckks_input_scale = q_moduli.back();
-    const U64 ckks_product_scale = static_cast<U64>(
-        static_cast<U128>(ckks_input_scale) * ckks_input_scale);
-    const U64 ckks_output_scale = ckks_product_scale / q_moduli.back();
-    const auto ckks_message_a = scale_signed_message(message_a, ckks_input_scale);
-    const auto ckks_message_b = scale_signed_message(message_b, ckks_input_scale);
+    // CKKS fixture: host canonical embedding, functional encryption,
+    // multiply/relinearize, rounded Rescale, decrypt, and slot Decode.
+    const double ckks_input_scale = static_cast<double>(q_moduli.back());
+    const double ckks_product_scale = ckks_input_scale * ckks_input_scale;
+    const double ckks_output_scale =
+        ckks_product_scale / static_cast<double>(q_moduli.back());
+    std::vector<std::complex<double>> ckks_slots_a(g_n / 2);
+    std::vector<std::complex<double>> ckks_slots_b(g_n / 2);
+    for (std::size_t slot = 0; slot < g_n / 2; ++slot) {
+        ckks_slots_a[slot] = {
+            (static_cast<double>((3 * slot + 1) % 11) - 5.0) / 8.0,
+            (static_cast<double>((5 * slot + 2) % 9) - 4.0) / 16.0};
+        ckks_slots_b[slot] = {
+            (static_cast<double>((7 * slot + 3) % 13) - 6.0) / 8.0,
+            (static_cast<double>((2 * slot + 1) % 7) - 3.0) / 16.0};
+    }
+    const auto ckks_encoded_a = hpu::scheme::ckks::encode_slots(
+        ckks_slots_a, g_n, ckks_input_scale);
+    const auto ckks_encoded_b = hpu::scheme::ckks::encode_slots(
+        ckks_slots_b, g_n, ckks_input_scale);
+    const auto ckks_roundtrip_a = hpu::scheme::ckks::decode_slots(
+        ckks_encoded_a.coefficients, ckks_input_scale);
+    const auto ckks_roundtrip_b = hpu::scheme::ckks::decode_slots(
+        ckks_encoded_b.coefficients, ckks_input_scale);
+    const double ckks_encode_bound = std::max(
+        1e-6, 8.0 * static_cast<double>(g_n) / ckks_input_scale);
+    double ckks_encode_max_error_a = 0.0;
+    double ckks_encode_max_error_b = 0.0;
+    for (std::size_t slot = 0; slot < g_n / 2; ++slot) {
+        ckks_encode_max_error_a = std::max(
+            ckks_encode_max_error_a,
+            std::abs(ckks_roundtrip_a[slot] - ckks_slots_a[slot]));
+        ckks_encode_max_error_b = std::max(
+            ckks_encode_max_error_b,
+            std::abs(ckks_roundtrip_b[slot] - ckks_slots_b[slot]));
+        if (ckks_encode_max_error_a > ckks_encode_bound
+            || ckks_encode_max_error_b > ckks_encode_bound) {
+            throw std::runtime_error("CKKS Encode/Decode round-trip failed");
+        }
+    }
     const Ciphertext ckks_ct_a = encrypt_test_message(
-        ckks_message_a, secret_q, q_moduli, q_roots, rng);
+        ckks_encoded_a.coefficients, secret_q, q_moduli, q_roots, rng);
     const Ciphertext ckks_ct_b = encrypt_test_message(
-        ckks_message_b, secret_q, q_moduli, q_roots, rng);
+        ckks_encoded_b.coefficients, secret_q, q_moduli, q_roots, rng);
     SchemeMultiplyTrace ckks_multiply_trace;
     const Ciphertext ckks_product_q = multiply_and_relinearize(
         ckks_ct_a, ckks_ct_b, secret_q, rlk_ntt,
@@ -2378,37 +2610,104 @@ void generate(const std::filesystem::path& output_root,
     const BasisPoly secret_qprime(secret_q.begin(), secret_q.end() - 1);
     const BasisPoly ckks_decrypted_qprime = decrypt_ciphertext(
         ckks_product_qprime, secret_qprime, retained_q_moduli, retained_q_roots);
-    const auto ckks_centered = exact_rns_to_centered(
-        ckks_decrypted_qprime, retained_q_moduli);
-    const auto ckks_ideal = scale_signed_message(expected_plain, ckks_input_scale);
-    U64 ckks_max_abs_error = 0;
-    for (std::size_t i = 0; i < g_n; ++i) {
-        const I128 error = ckks_centered[i] - static_cast<I128>(ckks_ideal[i]);
-        const U128 magnitude = error < 0
-            ? static_cast<U128>(-error)
-            : static_cast<U128>(error);
+    const auto ckks_centered = centered_to_int64(
+        exact_rns_to_centered(ckks_decrypted_qprime, retained_q_moduli),
+        "CKKS decrypted");
+    const auto ckks_decoded_product = hpu::scheme::ckks::decode_slots(
+        ckks_centered, ckks_output_scale);
+    std::vector<std::complex<double>> ckks_expected_slots(g_n / 2);
+    double ckks_max_abs_error = 0.0;
+    for (std::size_t slot = 0; slot < g_n / 2; ++slot) {
+        ckks_expected_slots[slot] = ckks_slots_a[slot] * ckks_slots_b[slot];
         ckks_max_abs_error = std::max(
-            ckks_max_abs_error, static_cast<U64>(magnitude));
+            ckks_max_abs_error,
+            std::abs(ckks_decoded_product[slot] - ckks_expected_slots[slot]));
     }
-    const U64 ckks_error_bound = static_cast<U64>(2 * g_n);
+    const double ckks_error_bound = std::max(
+        1e-6, 64.0 * static_cast<double>(g_n) / ckks_input_scale);
     if (ckks_max_abs_error > ckks_error_bound) {
-        throw std::runtime_error("CKKS decoded Rescale error exceeds functional bound");
+        throw std::runtime_error("CKKS slot product exceeds functional error bound");
     }
+    const auto ckks_ideal = hpu::scheme::ckks::encode_slots(
+        ckks_expected_slots, g_n, ckks_output_scale).coefficients;
     const BasisPoly ckks_ideal_qprime = encode_basis(
         ckks_ideal, retained_q_moduli);
 
-    // BGV fixture: correction factors are intentionally non-trivial so both
-    // multiplication and modulus-switch metadata are observable.
+    // BGV fixture: batch Encode, non-trivial correction factors, multiply,
+    // ModSwitch, factor removal, and exact slot Decode.
+    std::vector<std::int64_t> bgv_slots_a(g_n);
+    std::vector<std::int64_t> bgv_slots_b(g_n);
+    for (std::size_t slot = 0; slot < g_n; ++slot) {
+        bgv_slots_a[slot] = static_cast<std::int64_t>((3 * slot + 1) % 17) - 8;
+        bgv_slots_b[slot] = static_cast<std::int64_t>((5 * slot + 2) % 19) - 9;
+    }
+    const Poly bgv_plain_a = hpu::scheme::bgv::encode_slots(
+        bgv_slots_a, g_n, g_plaintext_modulus);
+    const Poly bgv_plain_b = hpu::scheme::bgv::encode_slots(
+        bgv_slots_b, g_n, g_plaintext_modulus);
+    if (hpu::scheme::bgv::decode_slots(bgv_plain_a, g_plaintext_modulus)
+            != bgv_slots_a
+        || hpu::scheme::bgv::decode_slots(bgv_plain_b, g_plaintext_modulus)
+            != bgv_slots_b) {
+        throw std::runtime_error("BGV batch Encode/Decode round-trip failed");
+    }
+    std::vector<std::int64_t> bgv_expected_slots(g_n);
+    for (std::size_t slot = 0; slot < g_n; ++slot) {
+        I128 product = static_cast<I128>(bgv_slots_a[slot]) * bgv_slots_b[slot];
+        product %= static_cast<I128>(g_plaintext_modulus);
+        if (product > static_cast<I128>(g_plaintext_modulus / 2)) {
+            product -= static_cast<I128>(g_plaintext_modulus);
+        } else if (product < -static_cast<I128>(g_plaintext_modulus / 2)) {
+            product += static_cast<I128>(g_plaintext_modulus);
+        }
+        bgv_expected_slots[slot] = static_cast<std::int64_t>(product);
+    }
+    const Poly bgv_expected_coeff_t = hpu::scheme::bgv::encode_slots(
+        bgv_expected_slots, g_n, g_plaintext_modulus);
+
+    const Poly bgv_auto_coeff_t = apply_negacyclic_automorphism(
+        bgv_plain_a, 3, g_plaintext_modulus);
+    const auto bgv_expected_auto_slots = hpu::scheme::bgv::decode_slots(
+        bgv_auto_coeff_t, g_plaintext_modulus);
+    for (std::size_t row = 0; row < 2; ++row) {
+        for (std::size_t column = 0; column < g_n / 2; ++column) {
+            const auto expected = bgv_slots_a[
+                row * (g_n / 2) + (column + 1) % (g_n / 2)];
+            if (bgv_expected_auto_slots[row * (g_n / 2) + column] != expected) {
+                throw std::runtime_error("BGV X->X^3 slot rotation check failed");
+            }
+        }
+    }
+
     constexpr U64 kBgvFactorA = 3;
     constexpr U64 kBgvFactorB = 5;
     const U64 bgv_multiply_factor = mul_mod(
         kBgvFactorA, kBgvFactorB, g_plaintext_modulus);
     const Ciphertext bgv_ct_a = encrypt_bgv_test_message(
-        message_a, kBgvFactorA, g_plaintext_modulus,
+        bgv_plain_a, kBgvFactorA, g_plaintext_modulus,
         secret_q, q_moduli, q_roots, rng);
     const Ciphertext bgv_ct_b = encrypt_bgv_test_message(
-        message_b, kBgvFactorB, g_plaintext_modulus,
+        bgv_plain_b, kBgvFactorB, g_plaintext_modulus,
         secret_q, q_moduli, q_roots, rng);
+    const Ciphertext bgv_auto_ct = automorphism_and_keyswitch(
+        bgv_ct_a, 3, secret_q, galois_key_ntt,
+        q_moduli, p_moduli, all_moduli, q_roots, all_roots);
+    const Poly bgv_auto_phase_t = centered_rns_to_modulus(
+        decrypt_ciphertext(bgv_auto_ct, secret_q, q_moduli, q_roots),
+        q_moduli, g_plaintext_modulus);
+    const U64 bgv_factor_a_inverse = inverse_mod(
+        kBgvFactorA, g_plaintext_modulus);
+    Poly bgv_auto_decoded_coeff_t(g_n);
+    for (std::size_t coefficient = 0; coefficient < g_n; ++coefficient) {
+        bgv_auto_decoded_coeff_t[coefficient] = mul_mod(
+            bgv_auto_phase_t[coefficient], bgv_factor_a_inverse,
+            g_plaintext_modulus);
+    }
+    const auto bgv_auto_decoded_slots = hpu::scheme::bgv::decode_slots(
+        bgv_auto_decoded_coeff_t, g_plaintext_modulus);
+    if (bgv_auto_decoded_slots != bgv_expected_auto_slots) {
+        throw std::runtime_error("BGV ciphertext Auto slot rotation failed");
+    }
     SchemeMultiplyTrace bgv_multiply_trace;
     const Ciphertext bgv_product_q = multiply_and_relinearize(
         bgv_ct_a, bgv_ct_b, secret_q, rlk_ntt,
@@ -2420,11 +2719,19 @@ void generate(const std::filesystem::path& output_root,
         bgv_decrypted_q, q_moduli, g_plaintext_modulus);
     const U64 bgv_multiply_factor_inverse = inverse_mod(
         bgv_multiply_factor, g_plaintext_modulus);
+    Poly bgv_decoded_coeff_t(g_n);
     for (std::size_t i = 0; i < g_n; ++i) {
-        if (mul_mod(bgv_phase_mod_t[i], bgv_multiply_factor_inverse,
-                    g_plaintext_modulus) != expected_plain_mod_t[i]) {
+        bgv_decoded_coeff_t[i] = mul_mod(
+            bgv_phase_mod_t[i], bgv_multiply_factor_inverse,
+            g_plaintext_modulus);
+        if (bgv_decoded_coeff_t[i] != bgv_expected_coeff_t[i]) {
             throw std::runtime_error("BGV multiply correction-factor decode failed");
         }
+    }
+    const auto bgv_decoded_slots = hpu::scheme::bgv::decode_slots(
+        bgv_decoded_coeff_t, g_plaintext_modulus);
+    if (bgv_decoded_slots != bgv_expected_slots) {
+        throw std::runtime_error("BGV multiply slot Decode failed");
     }
 
     std::array<BgvModswitchTrace, 2> bgv_modswitch_trace;
@@ -2444,11 +2751,19 @@ void generate(const std::filesystem::path& output_root,
         bgv_product_qprime, secret_qprime, retained_q_moduli, retained_q_roots);
     const Poly bgv_switched_phase_mod_t = centered_rns_to_modulus(
         bgv_decrypted_qprime, retained_q_moduli, g_plaintext_modulus);
+    Poly bgv_switched_coeff_t(g_n);
     for (std::size_t i = 0; i < g_n; ++i) {
-        if (mul_mod(bgv_switched_phase_mod_t[i], bgv_modswitch_factor_inverse,
-                    g_plaintext_modulus) != expected_plain_mod_t[i]) {
+        bgv_switched_coeff_t[i] = mul_mod(
+            bgv_switched_phase_mod_t[i], bgv_modswitch_factor_inverse,
+            g_plaintext_modulus);
+        if (bgv_switched_coeff_t[i] != bgv_expected_coeff_t[i]) {
             throw std::runtime_error("BGV ModSwitch correction-factor decode failed");
         }
+    }
+    const auto bgv_switched_slots = hpu::scheme::bgv::decode_slots(
+        bgv_switched_coeff_t, g_plaintext_modulus);
+    if (bgv_switched_slots != bgv_expected_slots) {
+        throw std::runtime_error("BGV ModSwitch slot Decode failed");
     }
 
     std::vector<Artifact> artifacts;
@@ -2692,23 +3007,175 @@ void generate(const std::filesystem::path& output_root,
                            {q_moduli[0]}, {q_roots[0]},
                            TwiddleRequirement::kRequired);
 
+        const BasisPoly ckks_encode_a_q = encode_basis(
+            ckks_encoded_a.coefficients, q_moduli);
+        const BasisPoly ckks_encode_b_q = encode_basis(
+            ckks_encoded_b.coefficients, q_moduli);
+        const BasisPoly ckks_encode_a_ntt = transform_basis(
+            ckks_encode_a_q, q_moduli, q_roots, false);
+        const BasisPoly ckks_encode_b_ntt = transform_basis(
+            ckks_encode_b_q, q_moduli, q_roots, false);
         case_artifacts.clear();
-        words.clear(); append_words(words, plaintext_b_q);
-        add_artifact(case_artifacts, "input_coeff_q.bin",
-                     "host signed-to-RNS plaintext, coefficient domain",
+        words.clear(); append_words(words, ckks_encode_a_q);
+        add_artifact(case_artifacts, "input/plaintext_a_coeff_q.bin",
+                     "CKKS host-encoded plaintext A, coefficient RNS-Q",
                      {g_num_q, g_n}, std::move(words),
                      {"basis_q", "coefficient"});
-        words.clear(); append_words(words, plaintext_b_ntt);
-        add_artifact(case_artifacts, "expected_ntt_q.bin",
-                     "encoded plaintext ready for PMult, NTT domain",
+        words.clear(); append_words(words, ckks_encode_b_q);
+        add_artifact(case_artifacts, "input/plaintext_b_coeff_q.bin",
+                     "CKKS host-encoded plaintext B, coefficient RNS-Q",
+                     {g_num_q, g_n}, std::move(words),
+                     {"basis_q", "coefficient"});
+        words.clear(); append_words(words, ckks_encode_a_ntt);
+        add_artifact(case_artifacts, "expected/plaintext_a_ntt_q.bin",
+                     "CKKS plaintext A ready for PMult, NTT RNS-Q",
                      {g_num_q, g_n}, std::move(words),
                      {"basis_q", "coefficient"}, HardwareDomain::kNtt);
-        write_case_package(*suite_root, "encode",
-                           common_params("encode",
-                                         "host-signed-to-RNS/coefficient/Q",
-                                         "plaintext/NTT/Q", q_moduli),
-                           std::move(case_artifacts), q_moduli, q_roots,
-                           TwiddleRequirement::kRequired);
+        words.clear(); append_words(words, ckks_encode_b_ntt);
+        add_artifact(case_artifacts, "expected/plaintext_b_ntt_q.bin",
+                     "CKKS plaintext B ready for PMult, NTT RNS-Q",
+                     {g_num_q, g_n}, std::move(words),
+                     {"basis_q", "coefficient"}, HardwareDomain::kNtt);
+        write_case_package(
+            *suite_root, "ckks_encode",
+            scheme_params(
+                "CKKS", "encode",
+                "host complex slots -> signed coefficients -> coefficient/RNS-Q",
+                "plaintext/NTT/Q", q_moduli,
+                "  \"slot_count\": " + std::to_string(g_n / 2) + ",\n"
+                "  \"slot_layout\": \"generator-3 canonical embedding with conjugate half\",\n"
+                "  \"scale\": " + std::to_string(ckks_input_scale) + ",\n"
+                "  \"level\": " + std::to_string(g_num_q - 1) + ",\n"
+                "  \"roundtrip_error_bound\": "
+                    + std::to_string(ckks_encode_bound) + ",\n"
+                "  \"decode_location\": \"host_only\",\n"
+                "  \"hpu_operation\": \"per-Q-limb negacyclic NTT\""),
+            std::move(case_artifacts), q_moduli, q_roots,
+            TwiddleRequirement::kRequired);
+        write_host_package(
+            *suite_root / "ckks_encode" / "test_data",
+            {
+                {"slots_a.csv", "input complex slots A",
+                 complex_slots_csv(ckks_slots_a, "input")},
+                {"slots_b.csv", "input complex slots B",
+                 complex_slots_csv(ckks_slots_b, "input")},
+                {"decoded_a.csv", "decoded slots A after host round-trip",
+                 complex_slots_csv(ckks_roundtrip_a, "decoded")},
+                {"decoded_b.csv", "decoded slots B after host round-trip",
+                 complex_slots_csv(ckks_roundtrip_b, "decoded")},
+                {"coefficients_a.csv", "signed scaled CKKS coefficients A",
+                 signed_values_csv(ckks_encoded_a.coefficients, "coefficient")},
+                {"coefficients_b.csv", "signed scaled CKKS coefficients B",
+                 signed_values_csv(ckks_encoded_b.coefficients, "coefficient")},
+                {"error_stats.csv", "CKKS Encode/Decode error summary",
+                 "vector,max_abs_error,error_bound,pass\nA,"
+                    + std::to_string(ckks_encode_max_error_a) + ","
+                    + std::to_string(ckks_encode_bound) + ",1\nB,"
+                    + std::to_string(ckks_encode_max_error_b) + ","
+                    + std::to_string(ckks_encode_bound) + ",1\n"},
+                {"validation.txt", "host Encode/Decode status",
+                 "PASS\nslot_layout=generator-3\nzero_fill=PASS\n"
+                 "roundtrip_error_within_bound=PASS\n"},
+            });
+        write_text(
+            *suite_root / "ckks_encode" / "test_data" / "dma_plan.csv",
+            "vector,phase,operation,logical_object,domain,basis,status\n"
+            "A,input,dload,plaintext_a_coeff_q,coefficient,Q,READY\n"
+            "A,transform,pntt,plaintext_a,NTT,Q,READY\n"
+            "A,output,dstore,plaintext_a_ntt_q,NTT,Q,READY\n"
+            "B,input,dload,plaintext_b_coeff_q,coefficient,Q,READY\n"
+            "B,transform,pntt,plaintext_b,NTT,Q,READY\n"
+            "B,output,dstore,plaintext_b_ntt_q,NTT,Q,READY\n");
+
+        std::vector<std::int64_t> bgv_coefficient_sample(g_n, 0);
+        const std::vector<std::int64_t> bgv_coefficient_prefix{
+            0, 1, -1, 7, -7,
+            static_cast<std::int64_t>(g_plaintext_modulus / 2),
+            -static_cast<std::int64_t>(g_plaintext_modulus / 2)};
+        std::copy(bgv_coefficient_prefix.begin(), bgv_coefficient_prefix.end(),
+                  bgv_coefficient_sample.begin());
+        const Poly bgv_coefficient_t = hpu::scheme::bgv::encode_coefficients(
+            bgv_coefficient_sample, g_n, g_plaintext_modulus);
+        const auto bgv_coefficient_decoded = hpu::scheme::bgv::decode_coefficients(
+            bgv_coefficient_t, g_plaintext_modulus);
+        const BasisPoly bgv_coefficient_q = lift_basis(
+            bgv_coefficient_t, q_moduli);
+        const BasisPoly bgv_batch_q = lift_basis(bgv_plain_a, q_moduli);
+        const BasisPoly bgv_coefficient_ntt = transform_basis(
+            bgv_coefficient_q, q_moduli, q_roots, false);
+        const BasisPoly bgv_batch_ntt = transform_basis(
+            bgv_batch_q, q_moduli, q_roots, false);
+        case_artifacts.clear();
+        words.clear(); append_words(words, bgv_coefficient_q);
+        add_artifact(case_artifacts, "input/coefficient_plaintext_q.bin",
+                     "BGV coefficient-encoded plaintext, coefficient RNS-Q",
+                     {g_num_q, g_n}, std::move(words),
+                     {"basis_q", "coefficient"});
+        words.clear(); append_words(words, bgv_batch_q);
+        add_artifact(case_artifacts, "input/batch_plaintext_q.bin",
+                     "BGV generator-3 batched plaintext, coefficient RNS-Q",
+                     {g_num_q, g_n}, std::move(words),
+                     {"basis_q", "coefficient"});
+        words.clear(); append_words(words, bgv_coefficient_ntt);
+        add_artifact(case_artifacts, "expected/coefficient_plaintext_ntt_q.bin",
+                     "BGV coefficient plaintext ready for PMult, NTT RNS-Q",
+                     {g_num_q, g_n}, std::move(words),
+                     {"basis_q", "coefficient"}, HardwareDomain::kNtt);
+        words.clear(); append_words(words, bgv_batch_ntt);
+        add_artifact(case_artifacts, "expected/batch_plaintext_ntt_q.bin",
+                     "BGV batched plaintext ready for PMult, NTT RNS-Q",
+                     {g_num_q, g_n}, std::move(words),
+                     {"basis_q", "coefficient"}, HardwareDomain::kNtt);
+        write_case_package(
+            *suite_root, "bgv_encode",
+            scheme_params(
+                "BGV", "coefficient_encode_and_batch_encode",
+                "host signed coefficients or N slots -> coefficient/RNS-Q",
+                "plaintext/NTT/Q", q_moduli,
+                "  \"plaintext_modulus\": "
+                    + std::to_string(g_plaintext_modulus) + ",\n"
+                "  \"slot_count\": " + std::to_string(g_n) + ",\n"
+                "  \"slot_layout\": \"generator-3, two rows of N/2\",\n"
+                "  \"batching_condition\": \"t prime and 2N divides t-1\",\n"
+                "  \"decode_location\": \"host_only\",\n"
+                "  \"hpu_operation\": \"per-Q-limb negacyclic NTT\""),
+            std::move(case_artifacts), q_moduli, q_roots,
+            TwiddleRequirement::kRequired);
+        write_host_package(
+            *suite_root / "bgv_encode" / "test_data",
+            {
+                {"coefficient_input.csv", "signed coefficient input",
+                 signed_values_csv(bgv_coefficient_sample, "input")},
+                {"coefficient_encoded_mod_t.csv", "coefficient encoding modulo t",
+                 residues_csv(bgv_coefficient_t, "coefficient_mod_t")},
+                {"coefficient_decoded.csv", "decoded signed coefficients",
+                 signed_values_csv(bgv_coefficient_decoded, "decoded")},
+                {"batch_slots.csv", "two-row generator-3 input slots",
+                 signed_values_csv(bgv_slots_a, "input")},
+                {"batch_coefficients_mod_t.csv", "batched polynomial modulo t",
+                 residues_csv(bgv_plain_a, "coefficient_mod_t")},
+                {"batch_decoded_slots.csv", "decoded batch slots",
+                 signed_values_csv(
+                     hpu::scheme::bgv::decode_slots(
+                         bgv_plain_a, g_plaintext_modulus),
+                     "decoded")},
+                {"auto_x3_expected_slots.csv", "expected X->X^3 row rotations",
+                 signed_values_csv(bgv_expected_auto_slots, "expected")},
+                {"auto_x3_decoded_slots.csv", "ciphertext Auto decoded row rotations",
+                 signed_values_csv(bgv_auto_decoded_slots, "rotated")},
+                {"validation.txt", "host Encode/Decode and Auto status",
+                 "PASS\ncoefficient_roundtrip=PASS\nbatch_roundtrip=PASS\n"
+                 "auto_x_to_x3_ciphertext_keyswitch_two_rows_left_rotate=PASS\n"},
+            });
+        write_text(
+            *suite_root / "bgv_encode" / "test_data" / "dma_plan.csv",
+            "vector,phase,operation,logical_object,domain,basis,status\n"
+            "coefficient,input,dload,coefficient_plaintext_q,coefficient,Q,READY\n"
+            "coefficient,transform,pntt,coefficient_plaintext,NTT,Q,READY\n"
+            "coefficient,output,dstore,coefficient_plaintext_ntt_q,NTT,Q,READY\n"
+            "batch,input,dload,batch_plaintext_q,coefficient,Q,READY\n"
+            "batch,transform,pntt,batch_plaintext,NTT,Q,READY\n"
+            "batch,output,dstore,batch_plaintext_ntt_q,NTT,Q,READY\n");
 
         case_artifacts.clear();
         words.clear(); append_words(words, ct_a[0]); append_words(words, ct_a[1]);
@@ -2849,6 +3316,20 @@ void generate(const std::filesystem::path& output_root,
             "rescale_direct_rounded_crt=PASS\n"
             "scale_out=scale_a*scale_b/q_last\n"
             "decoded_error_within_bound=PASS\n");
+        write_host_package(
+            *suite_root / "ckks_ciphertext_multiply" / "test_data",
+            {
+                {"input_slots_a.csv", "CKKS input slots A",
+                 complex_slots_csv(ckks_slots_a, "input")},
+                {"input_slots_b.csv", "CKKS input slots B",
+                 complex_slots_csv(ckks_slots_b, "input")},
+                {"decoded_product.csv", "expected and decoded CKKS slot product",
+                 complex_comparison_csv(
+                     ckks_expected_slots, ckks_decoded_product)},
+                {"validation.txt", "end-to-end CKKS slot validation",
+                 "PASS\nencode=PASS\nencrypt=PASS\nmultiply=PASS\n"
+                 "relinearize=PASS\nrescale=PASS\ndecrypt=PASS\ndecode=PASS\n"},
+            });
         write_text(
             *suite_root / "ckks_ciphertext_multiply" / "test_data" / "dma_plan.csv",
             "phase,operation,logical_object,domain,basis,status\n"
@@ -2871,8 +3352,8 @@ void generate(const std::filesystem::path& output_root,
                      "centered CRT phase reduced modulo t",
                      {g_n}, bgv_phase_mod_t);
         add_artifact(case_artifacts, "expected/plaintext_product_mod_t.bin",
-                     "decoded BGV plaintext product",
-                     {g_n}, expected_plain_mod_t);
+                     "decoded BGV batched plaintext product coefficients",
+                     {g_n}, bgv_expected_coeff_t);
         write_case_package(
             *suite_root,
             "bgv_ciphertext_multiply",
@@ -2895,6 +3376,20 @@ void generate(const std::filesystem::path& output_root,
             "PASS\ncommon_multiply_and_relinearize=PASS\n"
             "correction_factor_out=factor_a*factor_b_mod_t\n"
             "decoded_plaintext_product_mod_t=PASS\n");
+        write_host_package(
+            *suite_root / "bgv_ciphertext_multiply" / "test_data",
+            {
+                {"input_slots_a.csv", "BGV batched input slots A",
+                 signed_values_csv(bgv_slots_a, "input")},
+                {"input_slots_b.csv", "BGV batched input slots B",
+                 signed_values_csv(bgv_slots_b, "input")},
+                {"decoded_product.csv", "expected and decoded BGV slot product",
+                 signed_comparison_csv(
+                     bgv_expected_slots, bgv_decoded_slots)},
+                {"validation.txt", "end-to-end BGV multiply validation",
+                 "PASS\nencode=PASS\nencrypt=PASS\nmultiply=PASS\n"
+                 "relinearize=PASS\ndecrypt=PASS\nremove_factor=PASS\ndecode=PASS\n"},
+            });
         write_text(
             *suite_root / "bgv_ciphertext_multiply" / "test_data" / "dma_plan.csv",
             "phase,operation,logical_object,domain,basis,status\n"
@@ -3001,7 +3496,7 @@ void generate(const std::filesystem::path& output_root,
                      {g_n}, bgv_switched_phase_mod_t);
         add_artifact(case_artifacts, "expected/plaintext_product_mod_t.bin",
                      "decoded plaintext after correction-factor removal",
-                     {g_n}, expected_plain_mod_t);
+                     {g_n}, bgv_expected_coeff_t);
         write_case_package(
             *suite_root,
             "bgv_modswitch",
@@ -3028,6 +3523,17 @@ void generate(const std::filesystem::path& output_root,
             "coefficient_modswitch_formula=PASS\n"
             "correction_factor_update=PASS\n"
             "decoded_plaintext_preserved=PASS\n");
+        write_host_package(
+            *suite_root / "bgv_modswitch" / "test_data",
+            {
+                {"decoded_product_after_modswitch.csv",
+                 "expected and decoded BGV slots after ModSwitch",
+                 signed_comparison_csv(
+                     bgv_expected_slots, bgv_switched_slots)},
+                {"validation.txt", "end-to-end BGV ModSwitch validation",
+                 "PASS\nmodswitch=PASS\ncorrection_factor_update=PASS\n"
+                 "decrypt=PASS\nremove_factor=PASS\ndecode=PASS\n"},
+            });
         write_text(
             *suite_root / "bgv_modswitch" / "test_data" / "dma_plan.csv",
             "phase,operation,logical_object,domain,basis,status\n"

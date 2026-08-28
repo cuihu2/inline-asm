@@ -67,6 +67,24 @@ std::size_t checked_size(
     return static_cast<std::size_t>(value);
 }
 
+bool is_prime(std::uint64_t value)
+{
+    if (value < 2) {
+        return false;
+    }
+    if ((value & 1U) == 0) {
+        return value == 2;
+    }
+    for (std::uint64_t divisor = 3;
+         divisor <= value / divisor;
+         divisor += 2) {
+        if (value % divisor == 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void validate(const FheTestConfig& config)
 {
     constexpr std::size_t kWordsPerLine = 64;
@@ -105,6 +123,13 @@ void validate(const FheTestConfig& config)
     }
     if ((config.plaintext_modulus & 1U) == 0) {
         throw std::runtime_error("plaintext_modulus must be odd for BGV");
+    }
+    if (!is_prime(config.plaintext_modulus)) {
+        throw std::runtime_error("plaintext_modulus must be prime for BGV batching");
+    }
+    if ((config.plaintext_modulus - 1) % (2 * config.N) != 0) {
+        throw std::runtime_error(
+            "BGV batching requires plaintext_modulus = 1 mod 2N");
     }
 }
 

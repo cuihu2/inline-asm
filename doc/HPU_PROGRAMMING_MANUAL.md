@@ -774,8 +774,12 @@ Relinearization 和原始 CiphertextMultiply。`scheme/ckks` 与 `scheme/bgv`
 位于其上，只组合方案特有步骤并维护软件元数据。方案层当前统一采用系数域输入、
 系数域输出边界；内部 NTT/INTT 仍由公共算子生成。
 
-通用 `operator/encode` 只表示“宿主 signed-to-RNS，HPU 执行负循环 NTT”的边界，
-不得把它解释成 CKKS FFT Encoder 或 BGV BatchEncoder。
+`scheme/ckks/encode` 与 `scheme/bgv/encode` 分别定义方案数学。CKKS 使用 generator-3
+槽位映射、共轭半区和 radix-2 复数 FFT，把最多 `N/2` 个复数槽位量化为带 scale
+的 signed 系数；BGV 支持 signed coefficient encoding，并在 `t` 为素数且
+`2N | (t-1)` 时以 generator-3 映射提供两行、共 `N` 槽 batching。Decode 均在
+host 执行。两种 Encode 把 RNS-Q 系数 limbs 交给公共 `plaintext_ntt` 后端，由 HPU
+执行逐 limb 负循环 NTT。
 
 ### 8.6 CKKS Rescale 与完整乘法
 
@@ -832,8 +836,8 @@ correction_factor_out = correction_factor_in * q_last^-1 mod t
 
 | 方案能力 | 状态 | 当前边界 |
 | --- | --- | --- |
-| CKKS Rescale / Multiply | 已实现 | 系数域算子；不包含复数槽位 FFT Encoder |
-| BGV Multiply / ModSwitch | 已实现 | 系数明文；不包含 BatchEncoder |
+| CKKS Encode/Decode / Rescale / Multiply | 已实现 | host 复数编解码 + HPU RNS-Q NTT/方案算子 |
+| BGV coefficient/batch Encode/Decode / Multiply / ModSwitch | 已实现 | host 模 t 编解码 + HPU RNS-Q NTT/方案算子 |
 | BFV BEHZ Multiply | 未生成 | ISA 缺少 centered correction 所需的比较和条件选择 |
 
 BFV BEHZ 的 `SM-MRQ` 需要根据 `r_m_tilde >= m_tilde/2` 决定是否减去
@@ -848,9 +852,9 @@ MOD_ID 布局，并覆盖阈值两侧及边界值。算法参考为
 [Microsoft SEAL evaluator](https://github.com/microsoft/SEAL/blob/main/native/src/seal/evaluator.cpp)
 和 [RNS implementation](https://raw.githubusercontent.com/microsoft/SEAL/main/native/src/seal/util/rns.cpp)。
 
-另外，CKKS FFT 编解码、BGV batching、生产密钥生成、安全参数选择、随机数接口、
-多 level 模数链以及噪声/精度预算仍属于后续 host runtime/compiler 工作。当前测试
-使用确定性零噪声、P 可整除的功能 fixture，必须标记为
+生产密钥生成、安全参数选择、随机数接口、多 level 模数链以及噪声/精度预算仍属于
+后续 host runtime/compiler 工作。当前 Encode/Decode 是自包含的功能实现，但不承担
+生产参数选择或密文元数据持久化。当前测试使用确定性零噪声、P 可整除的功能 fixture，必须标记为
 `TEST_VECTOR_SCOPE=FUNCTIONAL_ONLY`。
 
 ## 9. 汇编器检查和错误
@@ -985,7 +989,7 @@ ModDown 的 source context 是 P，target context 是 Q：
 | Stage 2，每个 `q_i` | `p2` | `P^-1 mod q_i` | - |
 | Stage 2，每个 `q_i` | `p0` | - | `(q-correction)*P^-1 mod q_i` |
 
-### C.3 NTT、INTT 与 Encode
+### C.3 NTT、INTT 与方案 Encode
 
 NTT/INTT body 假定数据对象和活动模上下文已由外层准备。独立用例使用 `p0` 作为
 数据、`p1` 作为 twiddle；复合算子使用 `p0` 和 `p3`。
@@ -1000,10 +1004,15 @@ NTT/INTT body 假定数据对象和活动模上下文已由外层准备。独立
 每份 stage 表固定包含 `N/2` 个 `uint32`。数据对象 `p0` 跨 stage 保持同一逻辑
 OBJ_ID，但控制器可按 out-of-place 协议提交新的物理 base。
 
-Encode 的逻辑输入不是单份 `mod t` 数据，而是宿主已经完成 signed-to-RNS 的
-`[num_q,N]` 系数域 limbs。顺序为：加载 `p4=Q table`；对每个 `q_i` 执行
-`pmodld i`、`dload p0=input_coeff_q[i]`、按上表加载 `p3` twiddle 并完成 NTT，
-最后 `dstore p0=expected_ntt_q[i],rel=1`。
+CKKS Encode 的 host 顺序是：generator-3 槽位映射、填充共轭半区、复数逆嵌入、
+乘 scale 并舍入为 `int64`、按每个 `q_i` 转为 canonical residue。BGV coefficient
+Encode 将 centered signed 值映射到 `mod t`；BatchEncode 把两行 `N/2` 槽写入
+generator-3 根次序并执行模 `t` 逆负循环 NTT，再将系数 canonical lift 到 Q。
+
+两种方案交给 HPU 的逻辑输入都是 `[num_q,N]` 系数域 limbs。指令顺序为：加载
+`p4=Q table`；对每个 `q_i` 执行 `pmodld i`、`dload p0=plaintext_coeff_q[i]`、
+加载 `p3` pre-twist/stage twiddle 并完成 NTT，最后
+`dstore p0=plaintext_ntt_q[i],rel=1`。Decode 不生成 HPU 指令。
 
 ### C.4 PMULT 与 CMULT
 
