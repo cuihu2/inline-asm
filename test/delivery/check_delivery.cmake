@@ -72,7 +72,7 @@ set(REQUIRED_FILES
     "outputs/ciphertext_multiply/test_data/params.json"
     "outputs/ciphertext_multiply/test_data/artifact_manifest.csv"
     "outputs/ciphertext_multiply/test_data/input/ct_a_q.bin"
-    "outputs/ciphertext_multiply/test_data/input/ct_a_q.hex.txt"
+    "outputs/ciphertext_multiply/test_data/input/ct_a_q.dec.txt"
     "outputs/ciphertext_multiply/test_data/input/ct_b_q.bin"
     "outputs/ciphertext_multiply/test_data/constants/relinearization_key_ntt_qp.bin"
     "outputs/ciphertext_multiply/test_data/expected/tensor_coeff_q.bin"
@@ -98,8 +98,8 @@ set(REQUIRED_FILES
     "outputs/rv_interface_smoke/test_data/expected_decode.csv"
     "outputs/rv_interface_smoke/test_data/expected_cmd26.csv"
     "outputs/rv_interface_smoke/test_data/negative_cases.asm.txt"
-    "outputs/intt/test_data/input.hex.txt"
-    "outputs/intt/test_data/expected.hex.txt"
+    "outputs/intt/test_data/input.dec.txt"
+    "outputs/intt/test_data/expected.dec.txt"
     "outputs/encode/test_data/input_coeff_q.bin"
     "outputs/encode/test_data/expected_ntt_q.bin"
     "outputs/ckks_rescale/test_data/input_q.bin"
@@ -154,6 +154,27 @@ foreach(RELATIVE_PATH IN LISTS REQUIRED_FILES)
     file(SIZE "${PATH}" SIZE)
     if(SIZE EQUAL 0)
         message(FATAL_ERROR "Empty delivery artifact: ${RELATIVE_PATH}")
+    endif()
+endforeach()
+
+file(GLOB_RECURSE LEGACY_HEX_VIEWS LIST_DIRECTORIES false
+    "${ROOT}/outputs/*.hex.txt")
+if(LEGACY_HEX_VIEWS)
+    message(FATAL_ERROR "Legacy hexadecimal readable views remain: ${LEGACY_HEX_VIEWS}")
+endif()
+
+file(GLOB_RECURSE DECIMAL_VIEWS LIST_DIRECTORIES false
+    "${ROOT}/outputs/*.dec.txt")
+if(NOT DECIMAL_VIEWS)
+    message(FATAL_ERROR "No decimal readable views were generated")
+endif()
+foreach(DECIMAL_VIEW IN LISTS DECIMAL_VIEWS)
+    file(READ "${DECIMAL_VIEW}" DECIMAL_TEXT)
+    if(NOT DECIMAL_TEXT MATCHES "# text_values: unsigned decimal")
+        message(FATAL_ERROR "Readable view is not marked as decimal: ${DECIMAL_VIEW}")
+    endif()
+    if(DECIMAL_TEXT MATCHES "0x[0-9a-fA-F]+")
+        message(FATAL_ERROR "Hexadecimal value remains in decimal view: ${DECIMAL_VIEW}")
     endif()
 endforeach()
 

@@ -1271,7 +1271,7 @@ void add_scheme_multiply_artifacts(
 std::filesystem::path readable_path(const std::filesystem::path& binary_path)
 {
     std::filesystem::path path = binary_path;
-    path.replace_extension(".hex.txt");
+    path.replace_extension(".dec.txt");
     return path;
 }
 
@@ -1300,7 +1300,7 @@ void write_readable_artifact(const std::filesystem::path& root,
            << "# role: " << artifact.role << "\n"
            << "# shape: " << shape_string(artifact.shape) << "\n"
            << "# encoding: canonical residue, uint64, little-endian in the binary file\n"
-           << "# text_values: fixed-width 64-bit hexadecimal\n"
+           << "# text_values: unsigned decimal\n"
            << "# axes: ";
     for (std::size_t i = 0; i < axes.size(); ++i) {
         output << (i ? ", " : "") << axes[i] << '=' << artifact.shape[i];
@@ -1332,7 +1332,7 @@ void write_readable_artifact(const std::filesystem::path& root,
                    << '-' << std::setw(6) << (end - 1) << ":";
             for (std::size_t coefficient = offset; coefficient < end; ++coefficient) {
                 const U64 value = artifact.words[block * coefficients + coefficient];
-                output << " 0x" << std::hex << std::setw(16) << std::setfill('0') << value;
+                output << ' ' << std::dec << value;
             }
             output << '\n';
         }
@@ -1381,6 +1381,7 @@ void write_readable_hardware_image(const std::filesystem::path& hardware_root,
            << "# role: " << image.role << "\n"
            << "# logical_shape: " << shape_string(image.shape) << "\n"
            << "# encoding: uint32 little-endian canonical residue or ABI field\n"
+           << "# text_values: unsigned decimal\n"
            << "# payload_words: " << image.payload_words.size() << "\n"
            << "# padded_words: " << image.padded_words.size() << "\n"
            << "# hpu_line_offset: " << image.line_offset << "\n"
@@ -1393,8 +1394,7 @@ void write_readable_hardware_image(const std::filesystem::path& hardware_root,
             const std::size_t word_index = line * kHpuWordsPerLine + offset;
             output << std::dec << std::setw(8) << std::setfill('0') << word_index << ":";
             for (std::size_t lane = 0; lane < 8; ++lane) {
-                output << " 0x" << std::hex << std::setw(8) << std::setfill('0')
-                       << image.padded_words[word_index + lane];
+                output << ' ' << std::dec << image.padded_words[word_index + lane];
             }
             if (word_index >= image.payload_words.size()) {
                 output << "  # padding";
@@ -1976,7 +1976,7 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
             << "twiddle images and `twiddle_map.csv`. ";
     }
     hardware_readme
-        << "Every individual binary has an annotated hex view.\n\n"
+        << "Every individual binary has an annotated decimal view.\n\n"
         << "The physical host-memory ABI in `abi.json` is complete. "
         << "Custom1 sideband semantics and CSR offsets are frozen in `abi.json` and "
         << "`hpu_mem_config.json`. DMA relocation/GPR loading, SRAM scratch allocation, "
@@ -2021,7 +2021,7 @@ void write_case_package(const std::filesystem::path& suite_root,
     std::ostringstream readme;
     readme << "This UT package is generated from the same deterministic N=" << g_n
            << " FHE reference used by ciphertext_multiply. Binary values are little-endian "
-           << "uint64 canonical residues. Every binary has a complete annotated `.hex.txt` "
+           << "uint64 canonical residues. Every binary has a complete annotated `.dec.txt` "
            << "view with block coordinates. Shape and checksum information is in "
            << "artifact_manifest.csv. The independent `hardware/` tree contains uint32, "
            << "256-byte-line-padded images, q/Barrett contexts, line offsets, and HPU_MEM "
@@ -2528,6 +2528,9 @@ void generate(const std::filesystem::path& output_root,
     add_artifact(artifacts, "expected/plaintext_product_mod_t.bin", "expected plaintext product",
                  {g_n}, expected_plain_mod_t);
 
+    // The main package is generated output just like each standalone UT case.
+    // Recreate it so files from an older readable-view schema cannot survive.
+    std::filesystem::remove_all(output_root);
     for (Artifact& artifact : artifacts) {
         write_binary(output_root / artifact.path, artifact.words);
         write_readable_artifact(output_root, artifact);
@@ -2602,7 +2605,7 @@ void generate(const std::filesystem::path& output_root,
         << "`N=" << g_n << ", Q=" << g_num_q << ", P=" << g_num_p
         << ", dnum=" << g_dnum << "`.\n\n"
         << "Top-level binary files contain mathematical golden residues as little-endian uint64 values. Every binary "
-        << "has a complete annotated `.hex.txt` view. Dimensions, readable paths, and checksums "
+        << "has a complete annotated `.dec.txt` view. Dimensions, readable paths, and checksums "
         << "are listed in `artifact_manifest.csv`; basis order is Q followed by P.\n\n"
         << "The independent `hardware/` tree contains uint32 hardware images, q/Barrett contexts, "
         << "physical per-stage twiddles, 256-byte line offsets/counts, and a complete HPU_MEM image/config.\n\n"

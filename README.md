@@ -135,8 +135,8 @@ ctest --test-dir build --output-on-failure
 - `ntt.asm`
 - `ntt.inst32`（运行编码工具后生成）
 - `ntt.cmd26`（与 `.inst32` 逐条对应）
-- `test_data/input.bin`、`test_data/input.hex.txt`
-- `test_data/expected.bin`、`test_data/expected.hex.txt`
+- `test_data/input.bin`、`test_data/input.dec.txt`
+- `test_data/expected.bin`、`test_data/expected.dec.txt`
 - `test_data/params.json`、`test_data/artifact_manifest.csv`
 - `test_data/hardware/hpu_mem_image.u32.bin`、`line_map.csv`、`hpu_mem_config.json`
 - `test_data/hardware/mod_ctx_map.csv`、`twiddle_map.csv`、`abi.json`

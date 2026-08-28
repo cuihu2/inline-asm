@@ -147,7 +147,7 @@ Encrypt(ctA, ctB)
 
 顶层 `.bin` 均采用 little-endian `uint64_t` canonical residue，只作为数学 golden。多维数组按 C row-major 展平，最后一维始终是 coefficient；基顺序固定为 `Q[0..num_q-1]` 后接 `P[0..num_p-1]`。
 
-每个 `.bin` 都有同名 `.hex.txt` 人工可读版本，例如 `input.bin` 对应 `input.hex.txt`。文本文件头包含用途、shape、维度含义和编码说明，多维数据按 component/digit/basis 分块，并在每行标注 coefficient 范围。
+每个 `.bin` 都有同名 `.dec.txt` 人工可读版本，例如 `input.bin` 对应 `input.dec.txt`。其中数据值采用无符号十进制；文本文件头包含用途、shape、维度含义和编码说明，多维数据按 component/digit/basis 分块，并在每行标注 coefficient 范围。
 
 每个完整乘法包和独立 UT 包还包含 `hardware/`：
 
