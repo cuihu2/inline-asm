@@ -2,22 +2,15 @@
 
 #include "util/hpu_asm.hpp"
 #include "util/ntt.hpp"
+#include "util/validation.hpp"
 
 #include <sstream>
 
 namespace {
 
-bool is_power_of_two(int value)
-{
-    return value > 0 && (value & (value - 1)) == 0;
-}
-
 bool valid_plaintext_ntt_config(int N, int num_q)
 {
-    return is_power_of_two(N)
-        && hpu::fits_ntt_object(N)
-        && num_q > 0
-        && num_q <= hpu::kMaxModContexts;
+    return hpu::is_valid_plaintext_ntt_config(N, num_q);
 }
 
 } // namespace
@@ -57,4 +50,3 @@ std::string generate_plaintext_ntt_body_asm(
     }
     return asm_code.str();
 }
-

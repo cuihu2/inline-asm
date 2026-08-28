@@ -1,4 +1,5 @@
 #include "config/fhe_test_config.hpp"
+#include "util/validation.hpp"
 
 #include <algorithm>
 #include <array>
@@ -67,36 +68,17 @@ std::size_t checked_size(
     return static_cast<std::size_t>(value);
 }
 
-bool is_prime(std::uint64_t value)
-{
-    if (value < 2) {
-        return false;
-    }
-    if ((value & 1U) == 0) {
-        return value == 2;
-    }
-    for (std::uint64_t divisor = 3;
-         divisor <= value / divisor;
-         divisor += 2) {
-        if (value % divisor == 0) {
-            return false;
-        }
-    }
-    return true;
-}
-
 void validate(const FheTestConfig& config)
 {
-    constexpr std::size_t kWordsPerLine = 64;
-    constexpr std::size_t kRegularBankLines = 1024;
-    constexpr std::size_t kMaxModContexts = 256;
     constexpr std::uint64_t kMinPeModulus = 65537;
 
-    if (config.N < 128 || (config.N & (config.N - 1)) != 0) {
+    if (config.N < static_cast<std::size_t>(hpu::kNttRegisterCount)
+        || !hpu::is_power_of_two(config.N)) {
         throw std::runtime_error(
             "N must be a power of two and at least 128 for the 128-register NTT array");
     }
-    if ((config.N + kWordsPerLine - 1) / kWordsPerLine > kRegularBankLines) {
+    if ((config.N + hpu::kHpuWordsPerLine - 1) / hpu::kHpuWordsPerLine
+        > static_cast<std::size_t>(hpu::kRegularBankLines)) {
         throw std::runtime_error("N exceeds one 1024-line regular SRAM bank");
     }
     if (config.num_q < 2) {
@@ -108,8 +90,8 @@ void validate(const FheTestConfig& config)
     if (config.dnum == 0 || config.num_q % config.dnum != 0) {
         throw std::runtime_error("dnum must be positive and divide num_q");
     }
-    if (config.num_q > kMaxModContexts
-        || config.num_p >= kMaxModContexts - config.num_q) {
+    if (!hpu::has_mod_context_capacity(
+            config.num_q, config.num_p, std::size_t{1})) {
         throw std::runtime_error(
             "num_q + num_p + plaintext context exceeds the 8-bit MOD_ID space");
     }
@@ -124,7 +106,7 @@ void validate(const FheTestConfig& config)
     if ((config.plaintext_modulus & 1U) == 0) {
         throw std::runtime_error("plaintext_modulus must be odd for BGV");
     }
-    if (!is_prime(config.plaintext_modulus)) {
+    if (!hpu::is_prime(config.plaintext_modulus)) {
         throw std::runtime_error("plaintext_modulus must be prime for BGV batching");
     }
     if ((config.plaintext_modulus - 1) % (2 * config.N) != 0) {

@@ -4,24 +4,13 @@
 #include "poly/cmult.hpp"
 #include "util/hpu_asm.hpp"
 #include "util/ntt.hpp"
+#include "util/validation.hpp"
 
 #include <cmath>
 #include <sstream>
 #include <string>
 
 namespace {
-
-bool is_power_of_two(int x)
-{
-    return x > 0 && (x & (x - 1)) == 0;
-}
-
-bool is_valid_config(int N, int num_q, int num_p, int dnum)
-{
-    return is_power_of_two(N) && hpu::fits_ntt_object(N)
-        && num_q > 0 && num_p > 0 && dnum > 0
-        && num_q % dnum == 0 && num_q + num_p <= hpu::kMaxModContexts;
-}
 
 std::string generate_basis_ntt_body_asm(
     int N,
@@ -94,7 +83,7 @@ std::string generate_hpu_ciphertext_multiply_body_asm(
 {
     std::ostringstream asm_code;
 
-    if (!is_valid_config(N, num_q, num_p, dnum)) {
+    if (!hpu::is_valid_rns_decomposition_config(N, num_q, num_p, dnum)) {
         asm_code << "        // Invalid config: require power-of-two N fitting 1024 lines, divisible digits, and at most 256 mod contexts\n";
         return asm_code.str();
     }
@@ -130,7 +119,7 @@ std::string generate_hpu_ciphertext_multiply_asm(
     asm_code << "void hpu_ciphertext_multiply_N" << N << "_Q" << num_q
              << "_P" << num_p << "_D" << dnum << "(void) {\n";
 
-    if (!is_valid_config(N, num_q, num_p, dnum)) {
+    if (!hpu::is_valid_rns_decomposition_config(N, num_q, num_p, dnum)) {
         asm_code << "    // Invalid config: require power-of-two N fitting 1024 lines, divisible digits, and at most 256 mod contexts\n";
         asm_code << "}\n";
         return asm_code.str();

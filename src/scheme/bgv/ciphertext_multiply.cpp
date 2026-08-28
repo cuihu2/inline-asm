@@ -2,6 +2,7 @@
 
 #include "operator/ciphertext_multiply.hpp"
 #include "util/hpu_asm.hpp"
+#include "util/validation.hpp"
 
 #include <sstream>
 #include <stdexcept>
@@ -9,17 +10,11 @@
 namespace hpu::scheme::bgv {
 namespace {
 
-bool is_power_of_two(int value)
-{
-    return value > 0 && (value & (value - 1)) == 0;
-}
-
 bool valid_config(int N, int num_q, int num_p, int dnum)
 {
-    return is_power_of_two(N) && hpu::fits_ntt_object(N)
-        && num_q >= 2 && num_p > 0 && dnum > 0
-        && num_q % dnum == 0
-        && num_q + num_p + 1 <= hpu::kMaxModContexts;
+    return num_q >= 2
+        && hpu::is_valid_rns_decomposition_config(
+            N, num_q, num_p, dnum, 1);
 }
 
 } // namespace

@@ -2,10 +2,20 @@
 
 #include "util/bconv.hpp"
 #include "util/hpu_asm.hpp"
+#include "util/validation.hpp"
 
 #include <sstream>
 #include <string>
 #include <vector>
+
+namespace {
+
+bool valid_moddown_config(int num_q, int num_p)
+{
+    return num_p > 0 && hpu::has_mod_context_capacity(num_q, num_p);
+}
+
+} // namespace
 // Coefficient domain.
 std::string generate_hpu_moddown_body_asm(
     int num_q,
@@ -14,7 +24,7 @@ std::string generate_hpu_moddown_body_asm(
 {
     std::ostringstream asm_code;
 
-    if (num_q <= 0 || num_p <= 0 || num_q + num_p > hpu::kMaxModContexts) {
+    if (!valid_moddown_config(num_q, num_p)) {
         asm_code << "        // Invalid config: require positive bases within the 8-bit MOD_ID capacity\n";
         return asm_code.str();
     }
@@ -77,7 +87,7 @@ std::string generate_hpu_moddown_asm(
     std::ostringstream asm_code;
     asm_code << "void hpu_moddown_Q" << num_q << "_P" << num_p << "(void) {\n";
 
-    if (num_q <= 0 || num_p <= 0 || num_q + num_p > hpu::kMaxModContexts) {
+    if (!valid_moddown_config(num_q, num_p)) {
         asm_code << "    // Invalid config: require positive bases within the 8-bit MOD_ID capacity\n";
         asm_code << "}\n";
         return asm_code.str();

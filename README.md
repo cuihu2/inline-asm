@@ -8,6 +8,7 @@
 
 ### 1) 基础工具层 (`util`)
 - **`util/hpu_asm.hpp/cpp`**：基础 HPU 汇编助记符封装和生成接口，遵循 `doc/HPU_PROGRAMMING_MANUAL.md`。
+- **`util/validation.hpp`**：共享参数校验，包括 2 的幂、NTT 对象容量、模上下文容量、RNS digit 配置和素数检查。
 - **`util/ntt.hpp/cpp`**：按 stage 推进的基于对象槽位语义的 NTT / INTT 汇编生成。
 - **`util/mm.hpp/cpp`**：对象槽位级别的四则运算，特别是逐点向量乘法、乘加积累等（`pmul` / `pmac`）。
 - **`util/bconv.hpp/cpp`**：对象槽位上带参数 `q_offset` 支持分组扩展的基础 Basis Conversion 两阶段汇编生成。

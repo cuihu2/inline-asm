@@ -2,6 +2,7 @@
 
 #include "operator/plaintext_ntt.hpp"
 #include "util/hpu_asm.hpp"
+#include "util/validation.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -13,11 +14,6 @@ namespace {
 
 using U64 = std::uint64_t;
 using U128 = unsigned __int128;
-
-bool is_power_of_two(std::size_t value)
-{
-    return value >= 2 && (value & (value - 1)) == 0;
-}
 
 U64 add_mod(U64 left, U64 right, U64 modulus)
 {
@@ -55,32 +51,16 @@ U64 inverse_mod(U64 value, U64 modulus)
     return pow_mod(value, modulus - 2, modulus);
 }
 
-bool is_prime(U64 value)
-{
-    if (value < 2) {
-        return false;
-    }
-    if ((value & 1U) == 0) {
-        return value == 2;
-    }
-    for (U64 divisor = 3; divisor <= value / divisor; divisor += 2) {
-        if (value % divisor == 0) {
-            return false;
-        }
-    }
-    return true;
-}
-
 void validate_plaintext_modulus(std::size_t N, U64 modulus, bool batching)
 {
-    if (!is_power_of_two(N)) {
+    if (N < 2 || !hpu::is_power_of_two(N)) {
         throw std::invalid_argument("BGV N must be a power of two and at least 2");
     }
     if (modulus < 2 || modulus > std::numeric_limits<std::uint32_t>::max()) {
         throw std::invalid_argument("BGV plaintext modulus must fit uint32 and be at least 2");
     }
     if (batching
-        && (!is_prime(modulus) || (modulus - 1) % (2 * N) != 0)) {
+        && (!hpu::is_prime(modulus) || (modulus - 1) % (2 * N) != 0)) {
         throw std::invalid_argument(
             "BGV batching requires prime t and 2N to divide t-1");
     }
@@ -191,8 +171,7 @@ std::vector<std::size_t> generator3_slot_roots(std::size_t N)
 
 bool valid_codegen_config(int N, int num_q, U64 modulus)
 {
-    if (N <= 0 || (N & (N - 1)) != 0 || !hpu::fits_ntt_object(N)
-        || num_q <= 0 || num_q > hpu::kMaxModContexts) {
+    if (!hpu::is_valid_plaintext_ntt_config(N, num_q)) {
         return false;
     }
     try {

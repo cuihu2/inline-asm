@@ -1,18 +1,10 @@
 #include "util/ntt.hpp"
 #include "util/hpu_asm.hpp"
+#include "util/validation.hpp"
 
 #include <cmath>
 #include <sstream>
 #include <string>
-
-namespace {
-
-bool is_power_of_two(int x)
-{
-    return x > 0 && (x & (x - 1)) == 0;
-}
-
-} // namespace
 
 std::string generate_hpu_ntt_body_asm(
     int N,
@@ -22,7 +14,7 @@ std::string generate_hpu_ntt_body_asm(
 {
     std::ostringstream asm_code;
 
-    if (!is_power_of_two(N) || !hpu::fits_ntt_object(N)) {
+    if (!hpu::is_valid_ntt_size(N)) {
         asm_code << "        // Invalid config: require power-of-two 128 <= N <= 65536\n";
         return asm_code.str();
     }
@@ -66,7 +58,7 @@ std::string generate_hpu_intt_body_asm(
 {
     std::ostringstream asm_code;
 
-    if (!is_power_of_two(N) || !hpu::fits_ntt_object(N)) {
+    if (!hpu::is_valid_ntt_size(N)) {
         asm_code << "        // Invalid config: require power-of-two 128 <= N <= 65536\n";
         return asm_code.str();
     }
@@ -114,7 +106,7 @@ std::string generate_hpu_ntt_asm(
 
     asm_code << "void hpu_ntt_N" << N << "(void) {\n";
 
-    if (!is_power_of_two(N) || !hpu::fits_ntt_object(N)) {
+    if (!hpu::is_valid_ntt_size(N)) {
         asm_code << "    // Invalid config: require power-of-two 128 <= N <= 65536\n";
         asm_code << "}\n";
         return asm_code.str();
@@ -156,7 +148,7 @@ std::string generate_hpu_intt_asm(
 
     asm_code << "void hpu_intt_N" << N << "(void) {\n";
 
-    if (!is_power_of_two(N) || !hpu::fits_ntt_object(N)) {
+    if (!hpu::is_valid_ntt_size(N)) {
         asm_code << "    // Invalid config: require power-of-two 128 <= N <= 65536\n";
         asm_code << "}\n";
         return asm_code.str();

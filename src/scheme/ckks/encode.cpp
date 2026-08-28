@@ -2,6 +2,7 @@
 
 #include "operator/plaintext_ntt.hpp"
 #include "util/hpu_asm.hpp"
+#include "util/validation.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -13,11 +14,6 @@ namespace hpu::scheme::ckks {
 namespace {
 
 constexpr double kPi = 3.141592653589793238462643383279502884;
-
-bool is_power_of_two(std::size_t value)
-{
-    return value >= 2 && (value & (value - 1)) == 0;
-}
 
 unsigned log2_exact(std::size_t value)
 {
@@ -97,16 +93,14 @@ void fft(std::vector<std::complex<double>>& values, bool inverse)
 
 void validate_ring(std::size_t N)
 {
-    if (!is_power_of_two(N)) {
+    if (N < 2 || !hpu::is_power_of_two(N)) {
         throw std::invalid_argument("CKKS N must be a power of two and at least 2");
     }
 }
 
 bool valid_codegen_config(int N, int num_q)
 {
-    return N > 0 && (N & (N - 1)) == 0
-        && hpu::fits_ntt_object(N)
-        && num_q > 0 && num_q <= hpu::kMaxModContexts;
+    return hpu::is_valid_plaintext_ntt_config(N, num_q);
 }
 
 } // namespace
@@ -219,4 +213,3 @@ std::string generate_encode_asm(int N, int num_q, bool append_psync)
 }
 
 } // namespace hpu::scheme::ckks
-
