@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from array import array
 from dataclasses import dataclass
-import hashlib
 import json
 import mmap
 from os import PathLike
@@ -42,14 +41,6 @@ _WORDS_PER_LINE = 64
 IO_CHUNK_BYTES = 4 * 1024 * 1024
 
 
-def checksum_file(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as source:
-        while chunk := source.read(IO_CHUNK_BYTES):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 @dataclass(frozen=True, slots=True)
 class WordDifference:
     word_index: int
@@ -63,8 +54,6 @@ class ArtifactDiff:
     changed_words: int
     first_changed_word: int | None
     last_changed_word: int | None
-    before_checksum: str
-    after_checksum: str
     preview: tuple[WordDifference, ...]
 
     @property
@@ -120,8 +109,6 @@ def diff_files(
     if before_size % 4 != 0:
         raise ValueError("u32 image size must be a multiple of four bytes")
 
-    before_digest = hashlib.sha256()
-    after_digest = hashlib.sha256()
     changed_words = 0
     first_changed_word: int | None = None
     last_changed_word: int | None = None
@@ -134,8 +121,6 @@ def diff_files(
                 after_chunk = after_file.read(IO_CHUNK_BYTES)
                 if not before_chunk:
                     break
-                before_digest.update(before_chunk)
-                after_digest.update(after_chunk)
                 if before_chunk != after_chunk:
                     before_words = _words_from_little_endian(before_chunk)
                     after_words = _words_from_little_endian(after_chunk)
@@ -159,8 +144,6 @@ def diff_files(
         changed_words=changed_words,
         first_changed_word=first_changed_word,
         last_changed_word=last_changed_word,
-        before_checksum=before_digest.hexdigest(),
-        after_checksum=after_digest.hexdigest(),
         preview=tuple(preview),
     )
 

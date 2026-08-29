@@ -112,14 +112,6 @@ def _require_live(state: MachineState, slot: int | None, role: str) -> ObjectSta
     return obj
 
 
-def _checksum_words(words: array) -> str:
-    value = 0xCBF29CE484222325
-    for byte in words.tobytes():
-        value ^= byte
-        value = (value * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
-    return f"0x{value:016x}"
-
-
 def _validate_dma_binding(state: MachineState, instruction: Any, binding: Any | None) -> Any:
     if binding is None:
         raise SimulationError(
@@ -231,7 +223,6 @@ def execute_step(state: MachineState, instruction: Any, binding: Any | None = No
     changed_object: int | None = None
     changed_ddr_span: dict[str, int] | None = None
     stage_detail: dict[str, int] | None = None
-    before_checksum: str | None = None
     before_payload_words = 0
     before_slot = getattr(instruction, "pdst", None)
     if before_slot is None and instruction.mnemonic in {"pfree", "dstore"}:
@@ -239,7 +230,6 @@ def execute_step(state: MachineState, instruction: Any, binding: Any | None = No
     if before_slot is not None and 0 <= before_slot <= 7:
         obj = state.objects[before_slot]
         if obj.allocated:
-            before_checksum = _checksum_words(obj.data)
             before_payload_words = obj.payload_words
 
     if instruction.mnemonic in {"padd", "psub", "pmul", "pmac"}:
@@ -405,10 +395,8 @@ def execute_step(state: MachineState, instruction: Any, binding: Any | None = No
             instruction_index=state.instruction_index,
         )
 
-    after_checksum = None
     changed_object_span = None
     if changed_object is not None and state.objects[changed_object].allocated:
-        after_checksum = _checksum_words(state.objects[changed_object].data)
         changed_object_span = {
             "start_word": 0,
             "word_count": state.objects[changed_object].payload_words,
@@ -437,8 +425,6 @@ def execute_step(state: MachineState, instruction: Any, binding: Any | None = No
         "active_mu": state.active_mu,
         "changed_object": changed_object,
         "changed_object_span": changed_object_span,
-        "before_checksum": before_checksum,
-        "after_checksum": after_checksum,
         "changed_ddr_span": changed_ddr_span,
         "stage_detail": stage_detail,
         "live_objects": [index for index, obj in enumerate(state.objects) if obj.allocated],

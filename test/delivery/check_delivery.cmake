@@ -841,10 +841,12 @@ foreach(SCHEME_CASE ckks_ciphertext_multiply bgv_ciphertext_multiply bgv_modswit
     set(${SCHEME_CASE_UPPER}_INST32_COUNT ${SCHEME_INST32_COUNT})
 endforeach()
 
-file(SHA256 "${ROOT}/outputs/relinearization/test_data/expected_q.bin" RELIN_EXPECTED_HASH)
-file(SHA256 "${ROOT}/outputs/ciphertext_multiply/test_data/expected/ciphertext_out_q.bin"
-    CIPHERTEXT_EXPECTED_HASH)
-if(NOT RELIN_EXPECTED_HASH STREQUAL CIPHERTEXT_EXPECTED_HASH)
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E compare_files
+        "${ROOT}/outputs/relinearization/test_data/expected_q.bin"
+        "${ROOT}/outputs/ciphertext_multiply/test_data/expected/ciphertext_out_q.bin"
+    RESULT_VARIABLE RELIN_EXPECTED_COMPARE_RESULT)
+if(NOT RELIN_EXPECTED_COMPARE_RESULT EQUAL 0)
     message(FATAL_ERROR "Standalone relinearization output differs from ciphertext multiply output")
 endif()
 

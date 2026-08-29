@@ -9,12 +9,11 @@ import json
 import mmap
 from pathlib import Path
 import random
-import re
 import struct
 from typing import Any, Mapping
 
 from .arithmetic import apply_arithmetic
-from .artifacts import checksum_file, read_u32, write_u32
+from .artifacts import read_u32, write_u32
 from .isa import decode_instruction, expected_command26, parse_instruction_word
 from .ntt import (
     bit_reverse_index,
@@ -25,16 +24,27 @@ from .ntt import (
     hardware_ntt_layout,
     logical_negacyclic_ntt,
 )
+from .validation import (
+    BARRETT_MU_BITS,
+    LINE_BYTES,
+    MIN_PE_MODULUS,
+    UINT32_MAX,
+    WORDS_PER_LINE,
+    has_mod_context_capacity,
+    is_valid_ntt_size,
+    parse_shape,
+    require_fields,
+    require_int,
+    require_mapping,
+    require_safe_name,
+    require_text,
+    shape_words,
+)
 
 
 __all__ = ["prepare_case"]
 
-_LINE_BYTES = 256
-_WORDS_PER_LINE = _LINE_BYTES // 4
-_MIN_MODULUS = 65537
-_UINT32_MAX = (1 << 32) - 1
 _POISON_WORD = 0xA5A5A5A5
-_SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 
 
 @dataclass(slots=True)
@@ -56,50 +66,8 @@ class _Artifact:
         return self.relative_path is None
 
 
-def _require_mapping(value: Any, name: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{name} must be a JSON object")
-    return value
-
-
-def _require_fields(
-    value: Mapping[str, Any],
-    name: str,
-    required: set[str],
-    optional: set[str] | None = None,
-) -> None:
-    allowed = required | (optional or set())
-    missing = required - set(value)
-    unknown = set(value) - allowed
-    if missing:
-        raise ValueError(f"{name} is missing fields: {', '.join(sorted(missing))}")
-    if unknown:
-        raise ValueError(f"{name} has unknown fields: {', '.join(sorted(unknown))}")
-
-
-def _require_int(value: Any, name: str, minimum: int | None = None) -> int:
-    if type(value) is not int:
-        raise ValueError(f"{name} must be an integer")
-    if minimum is not None and value < minimum:
-        raise ValueError(f"{name} must be at least {minimum}")
-    return value
-
-
-def _require_text(value: Any, name: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{name} must be a nonempty string")
-    return value.strip()
-
-
-def _require_safe_name(value: Any, name: str) -> str:
-    text = _require_text(value, name)
-    if _SAFE_NAME.fullmatch(text) is None or text in {".", ".."}:
-        raise ValueError(f"{name} must be a safe file-name component")
-    return text
-
-
 def _resolve_source_path(base_dir: Path, value: Any, name: str) -> Path:
-    text = _require_text(value, name)
+    text = require_text(value, name)
     path = Path(text)
     if not path.is_absolute():
         path = base_dir / path
@@ -108,32 +76,10 @@ def _resolve_source_path(base_dir: Path, value: Any, name: str) -> Path:
     return path
 
 
-def _parse_shape(value: Any, name: str) -> tuple[int, ...]:
-    if type(value) is int:
-        dimensions = (value,)
-    elif isinstance(value, list):
-        dimensions = tuple(value)
-    else:
-        raise ValueError(f"{name} must be an integer or a list of integers")
-    if not dimensions:
-        raise ValueError(f"{name} must contain at least one dimension")
-    for dimension in dimensions:
-        if type(dimension) is not int or dimension <= 0:
-            raise ValueError(f"{name} dimensions must be positive integers")
-    return dimensions
-
-
-def _shape_words(shape: tuple[int, ...]) -> int:
-    words = 1
-    for dimension in shape:
-        words *= dimension
-    return words
-
-
 def _array_u32(values: Any) -> array[int]:
     result = array("I")
     for index, value in enumerate(values):
-        if type(value) is not int or not 0 <= value <= _UINT32_MAX:
+        if type(value) is not int or not 0 <= value <= UINT32_MAX:
             raise ValueError(f"artifact word {index} must fit uint32")
         result.append(value)
     return result
@@ -193,23 +139,23 @@ def _read_cmd26(path: Path, expected: list[int]) -> bytes:
 
 
 def _generate_moduli(config: Mapping[str, Any], n: int) -> list[dict[str, int]]:
-    _require_fields(config, "moduli", {"source", "count"}, {"start"})
+    require_fields(config, "moduli", {"source", "count"}, {"start"})
     if config["source"] != "generated":
         raise ValueError("moduli.source must be generated")
-    count = _require_int(config["count"], "moduli.count", 1)
-    if count > 256:
+    count = require_int(config["count"], "moduli.count", 1)
+    if not has_mod_context_capacity(count):
         raise ValueError("moduli.count exceeds the 8-bit MOD_ID space")
-    start = _require_int(config.get("start", _MIN_MODULUS), "moduli.start", 2)
-    start = max(start, _MIN_MODULUS)
+    start = require_int(config.get("start", MIN_PE_MODULUS), "moduli.start", 2)
+    start = max(start, MIN_PE_MODULUS)
     values: list[dict[str, int]] = []
     next_start = start
     for index in range(count):
         q = find_ntt_prime(next_start, 2 * n)
-        if q > _UINT32_MAX:
+        if q > UINT32_MAX:
             raise ValueError("generated modulus exceeds the 32-bit PE range")
         psi = find_primitive_2n_root(q, n)
         mu = (1 << 64) // q
-        if mu >= 1 << 48:
+        if mu >= 1 << BARRETT_MU_BITS:
             raise ValueError("generated Barrett reciprocal exceeds 48 bits")
         values.append(
             {
@@ -242,7 +188,7 @@ def _mod_context_words(moduli: list[dict[str, int]]) -> array[int]:
         values.extend(
             (
                 modulus["q"],
-                mu & _UINT32_MAX,
+                mu & UINT32_MAX,
                 (mu >> 32) & 0xFFFF,
                 0,
             )
@@ -369,14 +315,14 @@ def _input_artifacts(
     resolved_inputs: list[dict[str, Any]] = []
     names: set[str] = set()
     for input_index, raw_value in enumerate(raw_inputs):
-        value = _require_mapping(raw_value, f"inputs[{input_index}]")
-        _require_fields(
+        value = require_mapping(raw_value, f"inputs[{input_index}]")
+        require_fields(
             value,
             f"inputs[{input_index}]",
             {"name", "source", "shape", "domain", "modulus_index"},
             {"path"},
         )
-        name = _require_safe_name(value["name"], f"inputs[{input_index}].name")
+        name = require_safe_name(value["name"], f"inputs[{input_index}].name")
         if name in names:
             raise ValueError(f"duplicate input name: {name}")
         names.add(name)
@@ -386,17 +332,17 @@ def _input_artifacts(
             "intt_post_factor",
         } or name.startswith(("ntt_stage_", "intt_stage_", "output:")):
             raise ValueError(f"input name collides with a reserved artifact: {name}")
-        source = _require_text(value["source"], f"inputs[{input_index}].source")
-        shape = _parse_shape(value["shape"], f"inputs[{input_index}].shape")
-        domain = _require_text(value["domain"], f"inputs[{input_index}].domain")
-        modulus_index = _require_int(
+        source = require_text(value["source"], f"inputs[{input_index}].source")
+        shape = parse_shape(value["shape"], f"inputs[{input_index}].shape")
+        domain = require_text(value["domain"], f"inputs[{input_index}].domain")
+        modulus_index = require_int(
             value["modulus_index"],
             f"inputs[{input_index}].modulus_index",
             0,
         )
         if modulus_index >= len(moduli):
             raise ValueError("input modulus_index is outside generated moduli")
-        payload_words = _shape_words(shape)
+        payload_words = shape_words(shape)
         if source == "generated":
             if "path" in value:
                 raise ValueError("generated input must not provide path")
@@ -514,8 +460,8 @@ def _resolve_bindings(
     for dma_index, (raw_value, expected_instruction_index) in enumerate(
         zip(raw_bindings, dma_indices, strict=True)
     ):
-        value = _require_mapping(raw_value, f"dma_bindings[{dma_index}]")
-        _require_fields(
+        value = require_mapping(raw_value, f"dma_bindings[{dma_index}]")
+        require_fields(
             value,
             f"dma_bindings[{dma_index}]",
             {
@@ -528,7 +474,7 @@ def _resolve_bindings(
             },
             {"payload_words"},
         )
-        instruction_index = _require_int(
+        instruction_index = require_int(
             value["instruction_index"],
             f"dma_bindings[{dma_index}].instruction_index",
             0,
@@ -536,15 +482,15 @@ def _resolve_bindings(
         if instruction_index != expected_instruction_index:
             raise ValueError("dma_bindings must follow custom1 program order")
         instruction = instructions[instruction_index]
-        direction = _require_text(
+        direction = require_text(
             value["direction"], f"dma_bindings[{dma_index}].direction"
         )
-        obj_id = _require_int(value["obj_id"], f"dma_bindings[{dma_index}].obj_id")
-        type_or_release = _require_int(
+        obj_id = require_int(value["obj_id"], f"dma_bindings[{dma_index}].obj_id")
+        type_or_release = require_int(
             value["type_or_release"],
             f"dma_bindings[{dma_index}].type_or_release",
         )
-        flag = _require_int(value["flag"], f"dma_bindings[{dma_index}].flag")
+        flag = require_int(value["flag"], f"dma_bindings[{dma_index}].flag")
         if (
             direction != instruction.mnemonic
             or obj_id != instruction.obj_id
@@ -554,7 +500,7 @@ def _resolve_bindings(
             raise ValueError(
                 f"dma_bindings[{dma_index}] does not match instruction {instruction_index}"
             )
-        token = _require_text(
+        token = require_text(
             value["artifact"], f"dma_bindings[{dma_index}].artifact"
         )
         if direction == "dload":
@@ -562,7 +508,7 @@ def _resolve_bindings(
                 raise ValueError(f"unknown DLOAD artifact: {token}")
             artifact = artifact_by_token[token]
             payload_words = artifact.payload_words
-            if "payload_words" in value and _require_int(
+            if "payload_words" in value and require_int(
                 value["payload_words"],
                 f"dma_bindings[{dma_index}].payload_words",
                 1,
@@ -571,12 +517,12 @@ def _resolve_bindings(
         else:
             if not token.startswith("output:"):
                 raise ValueError("DSTORE artifact must use output:name")
-            output_name = _require_safe_name(
+            output_name = require_safe_name(
                 token.removeprefix("output:"),
                 f"dma_bindings[{dma_index}].artifact output name",
             )
             token = "output:" + output_name
-            payload_words = _require_int(
+            payload_words = require_int(
                 value.get("payload_words", n),
                 f"dma_bindings[{dma_index}].payload_words",
                 1,
@@ -601,7 +547,9 @@ def _resolve_bindings(
 
         if artifact.line_offset is None:
             artifact.line_offset = next_line
-            artifact.line_count = (artifact.payload_words + _WORDS_PER_LINE - 1) // _WORDS_PER_LINE
+            artifact.line_count = (
+                artifact.payload_words + WORDS_PER_LINE - 1
+            ) // WORDS_PER_LINE
             next_line += artifact.line_count
             allocated.append(artifact)
         resolved.append(
@@ -699,7 +647,7 @@ def _build_oracle(
     output_token = final_binding["role"]
     if not output_token.startswith("output:"):
         raise ValueError("final DSTORE role does not identify output:name")
-    output_name = _require_safe_name(
+    output_name = require_safe_name(
         output_token.removeprefix("output:"),
         "final output name",
     )
@@ -755,7 +703,7 @@ def _write_ddr(
     allocated: list[_Artifact],
     output_root: Path,
 ) -> None:
-    total_bytes = line_count * _LINE_BYTES
+    total_bytes = line_count * LINE_BYTES
     with path.open("x+b") as output:
         output.truncate(total_bytes)
         if total_bytes == 0:
@@ -764,11 +712,11 @@ def _write_ddr(
             for artifact in allocated:
                 if artifact.line_offset is None or artifact.line_count is None:
                     raise RuntimeError(f"artifact has no allocated DDR span: {artifact.token}")
-                start = artifact.line_offset * _LINE_BYTES
-                span_bytes = artifact.line_count * _LINE_BYTES
+                start = artifact.line_offset * LINE_BYTES
+                span_bytes = artifact.line_count * LINE_BYTES
                 if artifact.is_output:
                     poison = struct.pack("<I", _POISON_WORD) * (
-                        artifact.line_count * _WORDS_PER_LINE
+                        artifact.line_count * WORDS_PER_LINE
                     )
                     image[start : start + span_bytes] = poison
                     continue
@@ -781,7 +729,7 @@ def _write_ddr(
             image.flush()
 
 
-def _write_manifest(path: Path, artifacts: list[_Artifact], output_root: Path) -> None:
+def _write_manifest(path: Path, artifacts: list[_Artifact]) -> None:
     fields = (
         "artifact",
         "role",
@@ -793,17 +741,11 @@ def _write_manifest(path: Path, artifacts: list[_Artifact], output_root: Path) -
         "payload_words",
         "line_offset",
         "line_count",
-        "sha256",
     )
     with path.open("x", encoding="utf-8", newline="") as output:
         writer = csv.DictWriter(output, fieldnames=fields)
         writer.writeheader()
         for artifact in artifacts:
-            artifact_path = (
-                output_root / artifact.relative_path
-                if artifact.relative_path is not None
-                else None
-            )
             writer.writerow(
                 {
                     "artifact": artifact.token,
@@ -828,11 +770,6 @@ def _write_manifest(path: Path, artifacts: list[_Artifact], output_root: Path) -
                     "line_count": (
                         artifact.line_count if artifact.line_count is not None else ""
                     ),
-                    "sha256": (
-                        checksum_file(artifact_path)
-                        if artifact_path is not None
-                        else ""
-                    ),
                 }
             )
 
@@ -847,8 +784,8 @@ def prepare_case(case_path: str | Path, output_dir: str | Path) -> Path:
         raw_case = json.loads(source_case_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ValueError(f"cannot read case JSON {source_case_path}: {error}") from error
-    case = _require_mapping(raw_case, "case")
-    _require_fields(
+    case = require_mapping(raw_case, "case")
+    require_fields(
         case,
         "case",
         {
@@ -867,18 +804,20 @@ def prepare_case(case_path: str | Path, output_dir: str | Path) -> Path:
     )
     if type(case["schema_version"]) is not int or case["schema_version"] != 1:
         raise ValueError("schema_version must be 1")
-    case_name = _require_text(case["case_name"], "case_name")
-    operation = _require_text(case["operation"], "operation").lower()
-    n = _require_int(case["N"], "N", 128)
-    if n & (n - 1) or n % 128:
-        raise ValueError("N must be a power-of-two multiple of 128")
-    seed = _require_int(case["seed"], "seed")
-    checkpoint_policy = _require_text(
+    case_name = require_text(case["case_name"], "case_name")
+    operation = require_text(case["operation"], "operation").lower()
+    n = require_int(case["N"], "N")
+    if not is_valid_ntt_size(n):
+        raise ValueError(
+            "N must be a supported power of two in the range 128..65536"
+        )
+    seed = require_int(case["seed"], "seed")
+    checkpoint_policy = require_text(
         case["checkpoint_policy"], "checkpoint_policy"
     )
 
-    program = _require_mapping(case["program"], "program")
-    _require_fields(program, "program", {"inst32"}, {"cmd26"})
+    program = require_mapping(case["program"], "program")
+    require_fields(program, "program", {"inst32"}, {"cmd26"})
     inst32_source = _resolve_source_path(
         source_case_path.parent, program["inst32"], "program.inst32"
     )
@@ -898,12 +837,12 @@ def prepare_case(case_path: str | Path, output_dir: str | Path) -> Path:
     else:
         cmd26_content = generated_cmd26
 
-    memory = _require_mapping(case["memory"], "memory")
-    _require_fields(memory, "memory", {"line_bytes", "line_count"})
-    if type(memory["line_bytes"]) is not int or memory["line_bytes"] != _LINE_BYTES:
+    memory = require_mapping(case["memory"], "memory")
+    require_fields(memory, "memory", {"line_bytes", "line_count"})
+    if type(memory["line_bytes"]) is not int or memory["line_bytes"] != LINE_BYTES:
         raise ValueError("memory.line_bytes must be 256")
 
-    moduli = _generate_moduli(_require_mapping(case["moduli"], "moduli"), n)
+    moduli = _generate_moduli(require_mapping(case["moduli"], "moduli"), n)
     rng = random.Random(seed)
     input_artifacts, oracle_input_artifacts, resolved_inputs = _input_artifacts(
         case["inputs"],
@@ -929,7 +868,7 @@ def prepare_case(case_path: str | Path, output_dir: str | Path) -> Path:
     if raw_line_count == "auto":
         line_count = required_lines
     else:
-        line_count = _require_int(raw_line_count, "memory.line_count", 1)
+        line_count = require_int(raw_line_count, "memory.line_count", 1)
         if line_count < required_lines:
             raise ValueError(
                 f"memory.line_count {line_count} is smaller than required {required_lines}"
@@ -955,7 +894,7 @@ def prepare_case(case_path: str | Path, output_dir: str | Path) -> Path:
         output_root / "semantic_bindings.json",
         json.dumps(bindings_document, indent=2) + "\n",
     )
-    _write_manifest(output_root / "input_manifest.csv", artifacts, output_root)
+    _write_manifest(output_root / "input_manifest.csv", artifacts)
 
     resolved_case = {
         "schema_version": 1,
@@ -968,7 +907,7 @@ def prepare_case(case_path: str | Path, output_dir: str | Path) -> Path:
         "timing": "SEQUENTIAL_ARCHITECTURAL",
         "program": {"inst32": "program.inst32", "cmd26": "program.cmd26"},
         "memory": {
-            "line_bytes": _LINE_BYTES,
+            "line_bytes": LINE_BYTES,
             "line_count": line_count,
             "image": "ddr_before.u32.bin",
             "ddr_before": "ddr_before.u32.bin",

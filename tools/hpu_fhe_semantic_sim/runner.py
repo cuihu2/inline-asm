@@ -636,8 +636,6 @@ def run_case(
             "ddr": {
                 "size_bytes": difference.size_bytes,
                 "changed_words": difference.changed_words,
-                "before_checksum": difference.before_checksum,
-                "after_checksum": difference.after_checksum,
             },
         }
         _write_json(output / "summary.json", summary)
@@ -711,8 +709,6 @@ def run_case(
             "changed_words": difference.changed_words,
             "first_changed_word": difference.first_changed_word,
             "last_changed_word": difference.last_changed_word,
-            "before_checksum": difference.before_checksum,
-            "after_checksum": difference.after_checksum,
         },
         "result_words": len(physical),
         "first_mismatch": first_mismatch,

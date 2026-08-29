@@ -3,17 +3,36 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.hpu_fhe_semantic_sim.cli import compare_trace_files
+from tools.hpu_fhe_semantic_sim.cli import build_parser, compare_trace_files
 
 
 class CompareTraceTest(unittest.TestCase):
+    def test_validate_delivery_subcommand_accepts_an_optional_assignment_manifest(self) -> None:
+        parser = build_parser()
+        unresolved = parser.parse_args(
+            ["validate-delivery", "--case-dir", "outputs/mm"]
+        )
+        resolved = parser.parse_args(
+            [
+                "validate-delivery",
+                "--case-dir",
+                "outputs/mm",
+                "--assignments",
+                "mm.assignments.json",
+            ]
+        )
+
+        self.assertEqual(unresolved.case_dir, "outputs/mm")
+        self.assertIsNone(unresolved.assignments)
+        self.assertEqual(resolved.assignments, "mm.assignments.json")
+
     def test_identical_trace_files_compare_equal(self) -> None:
         root = Path(tempfile.mkdtemp(prefix="hpu_semantic_compare_"))
         left = root / "left.jsonl"
         right = root / "right.jsonl"
         rows = [
-            {"instruction_index": 0, "mnemonic": "padd", "after_checksum": "0x1"},
-            {"instruction_index": 1, "mnemonic": "psync", "after_checksum": None},
+            {"instruction_index": 0, "mnemonic": "padd", "changed_object": 2},
+            {"instruction_index": 1, "mnemonic": "psync", "changed_object": None},
         ]
         payload = "".join(json.dumps(row) + "\n" for row in rows)
         left.write_text(payload, encoding="utf-8")
@@ -34,7 +53,7 @@ class CompareTraceTest(unittest.TestCase):
             "dma_index": 1,
             "word": "0x4040000b",
             "mnemonic": "pntt",
-            "after_checksum": "0x1234",
+            "changed_object": 0,
             "status": "PASS",
         }
         left.write_text(

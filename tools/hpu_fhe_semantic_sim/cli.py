@@ -24,8 +24,6 @@ TRACE_COMPARE_FIELDS = (
     "live_objects",
     "changed_object",
     "changed_object_span",
-    "before_checksum",
-    "after_checksum",
     "changed_ddr_span",
     "stage_detail",
     "status",
@@ -95,6 +93,42 @@ def _prepare_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _validate_delivery_command(args: argparse.Namespace) -> int:
+    from .bindings import load_dma_assignments_json
+    from .delivery import load_delivery_package
+
+    delivery = load_delivery_package(Path(args.case_dir))
+    resolved = None
+    if args.assignments is not None:
+        assignments = load_dma_assignments_json(Path(args.assignments))
+        resolved = delivery.resolve_dma_bindings(assignments)
+    result = {
+        "status": "VALID_RESOLVED" if resolved is not None else "VALID_UNRESOLVED",
+        "case_name": delivery.case_name,
+        "operation": (
+            delivery.params.get("operation")
+            or delivery.params.get("algorithm")
+            or delivery.case_name
+        ),
+        "N": delivery.params["N"],
+        "line_bytes": delivery.line_bytes,
+        "line_count": delivery.line_count,
+        "artifact_count": len(delivery.artifacts),
+        "mod_context_count": len(delivery.mod_contexts),
+        "twiddle_count": len(delivery.twiddles),
+        "instruction_count": len(delivery.instruction_words),
+        "dma_count": len(delivery.relocations),
+        "requires_explicit_dma_assignments": resolved is None,
+        "resolved_bindings": (
+            [binding.as_semantic_dict() for binding in resolved]
+            if resolved is not None
+            else None
+        ),
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _step_command(args: argparse.Namespace) -> int:
     from .runner import step_case
 
@@ -124,6 +158,17 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--case", required=True)
     prepare_parser.add_argument("--output-dir", required=True)
     prepare_parser.set_defaults(handler=_prepare_command)
+
+    delivery_parser = subparsers.add_parser(
+        "validate-delivery",
+        help="validate one current-main delivery without regenerating its data",
+    )
+    delivery_parser.add_argument("--case-dir", required=True)
+    delivery_parser.add_argument(
+        "--assignments",
+        help="explicit DMA-to-artifact assignment JSON; omitted leaves DMA unresolved",
+    )
+    delivery_parser.set_defaults(handler=_validate_delivery_command)
 
     step_parser = subparsers.add_parser("step", help="execute one instruction from explicit state")
     step_parser.add_argument("--state", required=True)

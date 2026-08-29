@@ -153,8 +153,8 @@ ctest --test-dir build --output-on-failure
 
 `outputs/` 是 `hpu_delivery` 生成的交付产物，当前被 `.gitignore` 忽略；仅向测试
 同学发送 Git commit 或让其重新 clone 本仓库不会包含这些数据。正式交付应在同一
-次 `hpu_delivery` 成功后整体归档 `outputs/`，同时记录源码 commit、归档
-SHA-256 和 `outputs/DELIVERY_REPORT.txt`。不得混合不同生成批次的指令、
+次 `hpu_delivery` 成功后整体归档 `outputs/`，同时记录源码 commit 和
+`outputs/DELIVERY_REPORT.txt`。不得混合不同生成批次的指令、
 relocation manifest、line map 与 HPU_MEM 镜像。
 
 ---

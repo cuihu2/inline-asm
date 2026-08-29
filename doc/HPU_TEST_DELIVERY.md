@@ -100,7 +100,7 @@ CMake cache 变量 `HPU_TEST_CONFIG` 指向的同一路径，避免指令流与�
 2. 整体归档 `outputs/`，保留各算子的 `artifact_manifest.csv`、
    `hardware_manifest.csv`、`line_map.csv`、`hpu_mem_config.json`、指令文件和
    `DELIVERY_REPORT.txt`。
-3. 随包记录源码 commit 与归档 SHA-256；指令、resolved relocation manifest 和
+3. 随包记录源码 commit；指令、resolved relocation manifest 和
    HPU_MEM 镜像必须来自同一生成批次。
 4. 如果同时交付 Nexus-AM IT runtime，应将它作为受版本控制的独立交付物，并附带
    对应源码 fingerprint、内存 profile 和逐条 resolved relocation manifest。

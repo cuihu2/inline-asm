@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from array import array
+import csv
 import json
 from pathlib import Path
 import tempfile
@@ -497,7 +498,26 @@ class PrepareCaseTests(unittest.TestCase):
             (root / "source.inst32").read_bytes(),
         )
         self.assertTrue((first_output / "program.cmd26").is_file())
-        self.assertTrue((first_output / "input_manifest.csv").is_file())
+        manifest_path = first_output / "input_manifest.csv"
+        self.assertTrue(manifest_path.is_file())
+        with manifest_path.open(encoding="utf-8", newline="") as manifest_file:
+            manifest = csv.DictReader(manifest_file)
+            self.assertEqual(
+                manifest.fieldnames,
+                [
+                    "artifact",
+                    "role",
+                    "path",
+                    "source",
+                    "domain",
+                    "shape",
+                    "modulus_index",
+                    "payload_words",
+                    "line_offset",
+                    "line_count",
+                ],
+            )
+            self.assertGreater(len(list(manifest)), 0)
 
         bindings_document = json.loads(
             (first_output / "semantic_bindings.json").read_text(encoding="utf-8")

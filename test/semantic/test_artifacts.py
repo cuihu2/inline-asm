@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import struct
 import tempfile
 import unittest
@@ -13,7 +12,6 @@ from tools.hpu_fhe_semantic_sim.artifacts import (
     ArtifactDiff,
     ArtifactWorkspace,
     IO_CHUNK_BYTES,
-    checksum_file,
     diff_files,
     load_bindings_json,
     preview_hex,
@@ -218,17 +216,6 @@ class U32FileTests(unittest.TestCase):
 
 
 class LargeFileInspectionTests(unittest.TestCase):
-    def test_checksum_matches_sha256_across_the_four_mib_boundary(self) -> None:
-        with PersistentTemporaryDirectory() as temporary_directory:
-            path = Path(temporary_directory) / "large.bin"
-            content = b"A" * IO_CHUNK_BYTES + b"boundary-data"
-            path.write_bytes(content)
-
-            digest = checksum_file(path)
-
-        self.assertEqual(IO_CHUNK_BYTES, 4 * 1024 * 1024)
-        self.assertEqual(digest, hashlib.sha256(content).hexdigest())
-
     def test_diff_reports_word_changes_on_both_sides_of_a_chunk_boundary(self) -> None:
         with PersistentTemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -243,9 +230,6 @@ class LargeFileInspectionTests(unittest.TestCase):
             after_path.write_bytes(content)
 
             difference = diff_files(before_path, after_path)
-            expected_before_checksum = checksum_file(before_path)
-            expected_after_checksum = checksum_file(after_path)
-
         self.assertIsInstance(difference, ArtifactDiff)
         self.assertFalse(difference.identical)
         self.assertEqual(difference.size_bytes, IO_CHUNK_BYTES + 8)
@@ -259,9 +243,6 @@ class LargeFileInspectionTests(unittest.TestCase):
                 (second_index, 0, 0xAABBCCDD),
             ],
         )
-        self.assertEqual(difference.before_checksum, expected_before_checksum)
-        self.assertEqual(difference.after_checksum, expected_after_checksum)
-
     def test_preview_hex_reads_a_bounded_word_window(self) -> None:
         with PersistentTemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "preview.u32.bin"
