@@ -54,6 +54,13 @@ else()
     set(FHE_LAST_STAGE_NAME "${FHE_LAST_STAGE}")
 endif()
 
+set(TWIDDLE_CASES
+    ntt intt ckks_encode bgv_encode ckks_ciphertext_multiply bgv_ciphertext_multiply
+    keyswitch relinearization auto ciphertext_multiply)
+set(NO_TWIDDLE_CASES
+    ckks_rescale bgv_modswitch mm bconv modup pmult cmult moddown)
+set(PACKAGED_CASES ${TWIDDLE_CASES} ${NO_TWIDDLE_CASES})
+
 set(REQUIRED_FILES
     "output/ciphertext_multiply.asm"
     "output/relinearization.asm"
@@ -65,7 +72,7 @@ set(REQUIRED_FILES
     "outputs/ciphertext_multiply/test_data/params.json"
     "outputs/ciphertext_multiply/test_data/artifact_manifest.csv"
     "outputs/ciphertext_multiply/test_data/input/ct_a_q.bin"
-    "outputs/ciphertext_multiply/test_data/input/ct_a_q.hex.txt"
+    "outputs/ciphertext_multiply/test_data/input/ct_a_q.dec.txt"
     "outputs/ciphertext_multiply/test_data/input/ct_b_q.bin"
     "outputs/ciphertext_multiply/test_data/constants/relinearization_key_ntt_qp.bin"
     "outputs/ciphertext_multiply/test_data/expected/tensor_coeff_q.bin"
@@ -91,10 +98,23 @@ set(REQUIRED_FILES
     "outputs/rv_interface_smoke/test_data/expected_decode.csv"
     "outputs/rv_interface_smoke/test_data/expected_cmd26.csv"
     "outputs/rv_interface_smoke/test_data/negative_cases.asm.txt"
-    "outputs/intt/test_data/input.hex.txt"
-    "outputs/intt/test_data/expected.hex.txt"
-    "outputs/encode/test_data/input_coeff_q.bin"
-    "outputs/encode/test_data/expected_ntt_q.bin"
+    "outputs/intt/test_data/input.dec.txt"
+    "outputs/intt/test_data/expected.dec.txt"
+    "outputs/ckks_encode/test_data/input/plaintext_a_coeff_q.bin"
+    "outputs/ckks_encode/test_data/expected/plaintext_a_ntt_q.bin"
+    "outputs/ckks_encode/test_data/host/slots_a.csv"
+    "outputs/ckks_encode/test_data/host/decoded_a.csv"
+    "outputs/ckks_encode/test_data/host/error_stats.csv"
+    "outputs/ckks_encode/test_data/host/host_manifest.csv"
+    "outputs/ckks_encode/test_data/host/validation.txt"
+    "outputs/bgv_encode/test_data/input/coefficient_plaintext_q.bin"
+    "outputs/bgv_encode/test_data/input/batch_plaintext_q.bin"
+    "outputs/bgv_encode/test_data/expected/batch_plaintext_ntt_q.bin"
+    "outputs/bgv_encode/test_data/host/batch_slots.csv"
+    "outputs/bgv_encode/test_data/host/batch_decoded_slots.csv"
+    "outputs/bgv_encode/test_data/host/auto_x3_decoded_slots.csv"
+    "outputs/bgv_encode/test_data/host/host_manifest.csv"
+    "outputs/bgv_encode/test_data/host/validation.txt"
     "outputs/ckks_rescale/test_data/input_q.bin"
     "outputs/ckks_rescale/test_data/constants/q_last_half_mod_q.bin"
     "outputs/ckks_rescale/test_data/constants/q_last_inv_mod_qprime.bin"
@@ -116,9 +136,7 @@ set(REQUIRED_FILES
     "outputs/bgv_modswitch/test_data/expected_qprime.bin"
 )
 
-foreach(CASE_NAME ntt intt encode ckks_rescale ckks_ciphertext_multiply
-        bgv_ciphertext_multiply bgv_modswitch mm bconv modup pmult cmult
-        moddown keyswitch relinearization)
+foreach(CASE_NAME IN LISTS PACKAGED_CASES)
     list(APPEND REQUIRED_FILES
         "outputs/${CASE_NAME}/test_data/params.json"
         "outputs/${CASE_NAME}/test_data/artifact_manifest.csv"
@@ -127,8 +145,11 @@ foreach(CASE_NAME ntt intt encode ckks_rescale ckks_ciphertext_multiply
         "outputs/${CASE_NAME}/test_data/hardware/hpu_mem_config.json"
         "outputs/${CASE_NAME}/test_data/hardware/line_map.csv"
         "outputs/${CASE_NAME}/test_data/hardware/mod_ctx_map.csv"
-        "outputs/${CASE_NAME}/test_data/hardware/twiddle_map.csv"
         "outputs/${CASE_NAME}/${CASE_NAME}.cmd26")
+endforeach()
+foreach(CASE_NAME IN LISTS TWIDDLE_CASES)
+    list(APPEND REQUIRED_FILES
+        "outputs/${CASE_NAME}/test_data/hardware/twiddle_map.csv")
 endforeach()
 list(APPEND REQUIRED_FILES "outputs/auto/test_data/STATUS.md")
 
@@ -136,6 +157,11 @@ if(EXISTS "${ROOT}/output/rescale.asm"
         OR EXISTS "${ROOT}/output/rescale.cpp"
         OR EXISTS "${ROOT}/outputs/rescale")
     message(FATAL_ERROR "Legacy rescale artifacts remain after direct CKKS migration")
+endif()
+if(EXISTS "${ROOT}/output/encode.asm"
+        OR EXISTS "${ROOT}/output/encode.cpp"
+        OR EXISTS "${ROOT}/outputs/encode")
+    message(FATAL_ERROR "Legacy common Encode artifacts remain after scheme migration")
 endif()
 
 foreach(RELATIVE_PATH IN LISTS REQUIRED_FILES)
@@ -146,6 +172,67 @@ foreach(RELATIVE_PATH IN LISTS REQUIRED_FILES)
     file(SIZE "${PATH}" SIZE)
     if(SIZE EQUAL 0)
         message(FATAL_ERROR "Empty delivery artifact: ${RELATIVE_PATH}")
+    endif()
+endforeach()
+
+file(GLOB_RECURSE LEGACY_HEX_VIEWS LIST_DIRECTORIES false
+    "${ROOT}/outputs/*.hex.txt")
+if(LEGACY_HEX_VIEWS)
+    message(FATAL_ERROR "Legacy hexadecimal readable views remain: ${LEGACY_HEX_VIEWS}")
+endif()
+
+file(GLOB_RECURSE DECIMAL_VIEWS LIST_DIRECTORIES false
+    "${ROOT}/outputs/*.dec.txt")
+if(NOT DECIMAL_VIEWS)
+    message(FATAL_ERROR "No decimal readable views were generated")
+endif()
+foreach(DECIMAL_VIEW IN LISTS DECIMAL_VIEWS)
+    file(READ "${DECIMAL_VIEW}" DECIMAL_TEXT)
+    if(NOT DECIMAL_TEXT MATCHES "# text_values: unsigned decimal")
+        message(FATAL_ERROR "Readable view is not marked as decimal: ${DECIMAL_VIEW}")
+    endif()
+    if(DECIMAL_TEXT MATCHES "0x[0-9a-fA-F]+")
+        message(FATAL_ERROR "Hexadecimal value remains in decimal view: ${DECIMAL_VIEW}")
+    endif()
+endforeach()
+
+# A package carries twiddle images exactly when its executable stream performs
+# PNTT/PINTT. Pointwise and coefficient-only operators must not inflate their
+# HPU_MEM image with constants that no DMA relocation can reference.
+foreach(CASE_NAME IN LISTS PACKAGED_CASES)
+    file(READ "${ROOT}/output/${CASE_NAME}.asm" CASE_ASM)
+    set(HARDWARE_ROOT "${ROOT}/outputs/${CASE_NAME}/test_data/hardware")
+    set(TWIDDLE_ROOT "${HARDWARE_ROOT}/constants/twiddle")
+    file(GLOB_RECURSE CASE_TWIDDLE_FILES LIST_DIRECTORIES false
+        "${TWIDDLE_ROOT}/*")
+    file(READ "${HARDWARE_ROOT}/abi.json" CASE_ABI)
+    file(READ "${HARDWARE_ROOT}/line_map.csv" CASE_LINE_MAP)
+    if(CASE_ASM MATCHES "\"p(ntt|intt) ")
+        if(NOT CASE_TWIDDLE_FILES)
+            message(FATAL_ERROR
+                "${CASE_NAME}: PNTT/PINTT stream has no packaged twiddle images")
+        endif()
+        if(NOT EXISTS "${HARDWARE_ROOT}/twiddle_map.csv")
+            message(FATAL_ERROR
+                "${CASE_NAME}: PNTT/PINTT stream has no twiddle_map.csv")
+        endif()
+        if(NOT CASE_ABI MATCHES "\"twiddle_images_included\": true")
+            message(FATAL_ERROR
+                "${CASE_NAME}: ABI does not mark required twiddle images as included")
+        endif()
+    else()
+        if(CASE_TWIDDLE_FILES OR EXISTS "${HARDWARE_ROOT}/twiddle_map.csv")
+            message(FATAL_ERROR
+                "${CASE_NAME}: non-NTT stream contains unused twiddle artifacts")
+        endif()
+        if(CASE_LINE_MAP MATCHES "constants/twiddle/")
+            message(FATAL_ERROR
+                "${CASE_NAME}: non-NTT HPU_MEM line map contains unused twiddle data")
+        endif()
+        if(NOT CASE_ABI MATCHES "\"twiddle_images_included\": false")
+            message(FATAL_ERROR
+                "${CASE_NAME}: ABI does not mark twiddle images as omitted")
+        endif()
     endif()
 endforeach()
 
@@ -403,26 +490,43 @@ if(INTT_STAGE_POSITION EQUAL -1
     message(FATAL_ERROR "INTT stream does not execute normalization/inverse twist after its stages")
 endif()
 
-file(READ "${ROOT}/output/encode.asm" ENCODE_ASM)
-string(FIND "${ENCODE_ASM}"
-    "ENCODE: host signed-to-RNS input -> NTT plaintext" ENCODE_BOUNDARY_POSITION)
-string(FIND "${ENCODE_ASM}"
-    "Negacyclic pre-twist: explicit PMUL" ENCODE_NTT_POSITION)
-if(ENCODE_BOUNDARY_POSITION EQUAL -1
-        OR ENCODE_NTT_POSITION EQUAL -1
-        OR ENCODE_BOUNDARY_POSITION GREATER_EQUAL ENCODE_NTT_POSITION)
-    message(FATAL_ERROR "Encode stream does not transform host-embedded RNS plaintext")
+foreach(SCHEME_ENCODE ckks_encode bgv_encode)
+    file(READ "${ROOT}/output/${SCHEME_ENCODE}.asm" ENCODE_ASM)
+    string(FIND "${ENCODE_ASM}"
+        "PLAINTEXT NTT BACKEND: coefficient RNS-Q -> NTT RNS-Q"
+        ENCODE_BOUNDARY_POSITION)
+    string(FIND "${ENCODE_ASM}"
+        "Negacyclic pre-twist: explicit PMUL" ENCODE_NTT_POSITION)
+    if(ENCODE_BOUNDARY_POSITION EQUAL -1
+            OR ENCODE_NTT_POSITION EQUAL -1
+            OR ENCODE_BOUNDARY_POSITION GREATER_EQUAL ENCODE_NTT_POSITION)
+        message(FATAL_ERROR
+            "${SCHEME_ENCODE} does not transform host-encoded RNS plaintext")
+    endif()
+endforeach()
+file(READ "${ROOT}/outputs/ckks_encode/test_data/params.json" CKKS_ENCODE_PARAMS)
+if(NOT CKKS_ENCODE_PARAMS MATCHES "\"scheme\": \"CKKS\""
+        OR NOT CKKS_ENCODE_PARAMS MATCHES "generator-3 canonical embedding"
+        OR NOT CKKS_ENCODE_PARAMS MATCHES "\"decode_location\": \"host_only\"")
+    message(FATAL_ERROR "CKKS Encode package does not freeze its host scheme boundary")
 endif()
-file(READ "${ROOT}/outputs/encode/test_data/params.json" ENCODE_PARAMS)
-if(NOT ENCODE_PARAMS MATCHES
-        "\"input_domain\": \"host-signed-to-RNS/coefficient/Q\"")
-    message(FATAL_ERROR "Encode package does not freeze the host signed-to-RNS boundary")
+file(READ "${ROOT}/outputs/bgv_encode/test_data/params.json" BGV_ENCODE_PARAMS)
+if(NOT BGV_ENCODE_PARAMS MATCHES "\"scheme\": \"BGV\""
+        OR NOT BGV_ENCODE_PARAMS MATCHES "two rows of N/2"
+        OR NOT BGV_ENCODE_PARAMS MATCHES "2N divides t-1")
+    message(FATAL_ERROR "BGV Encode package does not freeze its batching boundary")
 endif()
-file(READ "${ROOT}/outputs/encode/test_data/artifact_manifest.csv" ENCODE_MANIFEST)
-if(NOT ENCODE_MANIFEST MATCHES
-        "expected_ntt_q.bin[^\n]*${FHE_NUM_Q}x${FHE_N}")
-    message(FATAL_ERROR
-        "Encode expected output does not match Q=${FHE_NUM_Q}, N=${FHE_N}")
+file(READ "${ROOT}/outputs/ckks_encode/test_data/artifact_manifest.csv"
+    CKKS_ENCODE_MANIFEST)
+if(NOT CKKS_ENCODE_MANIFEST MATCHES
+        "plaintext_a_ntt_q.bin[^\n]*${FHE_NUM_Q}x${FHE_N}")
+    message(FATAL_ERROR "CKKS Encode output does not match configured Q and N")
+endif()
+file(READ "${ROOT}/outputs/bgv_encode/test_data/artifact_manifest.csv"
+    BGV_ENCODE_MANIFEST)
+if(NOT BGV_ENCODE_MANIFEST MATCHES
+        "batch_plaintext_ntt_q.bin[^\n]*${FHE_NUM_Q}x${FHE_N}")
+    message(FATAL_ERROR "BGV Encode output does not match configured Q and N")
 endif()
 
 file(READ "${ROOT}/output/ckks_rescale.asm" RESCALE_ASM)
@@ -590,7 +694,7 @@ function(CHECK_OBJECT_LIFECYCLE RELATIVE_PATH)
     endforeach()
 endfunction()
 
-foreach(CASE_NAME ntt intt encode ckks_rescale ckks_ciphertext_multiply
+foreach(CASE_NAME ntt intt ckks_encode bgv_encode ckks_rescale ckks_ciphertext_multiply
         bgv_ciphertext_multiply bgv_modswitch mm bconv pmult cmult modup
         moddown auto keyswitch relinearization ciphertext_multiply)
     CHECK_OBJECT_LIFECYCLE("output/${CASE_NAME}.asm")
@@ -608,7 +712,7 @@ function(CHECK_MOD_CONTEXT_LOAD RELATIVE_PATH)
     endforeach()
 endfunction()
 
-foreach(CASE_NAME ntt intt encode ckks_rescale ckks_ciphertext_multiply
+foreach(CASE_NAME ntt intt ckks_encode bgv_encode ckks_rescale ckks_ciphertext_multiply
         bgv_ciphertext_multiply bgv_modswitch bconv pmult cmult modup
         moddown auto keyswitch relinearization ciphertext_multiply)
     CHECK_MOD_CONTEXT_LOAD("output/${CASE_NAME}.asm")
@@ -636,14 +740,14 @@ function(CHECK_TERMINAL_PSYNC RELATIVE_PATH)
     endif()
 endfunction()
 
-foreach(CASE_NAME ntt intt encode ckks_rescale ckks_ciphertext_multiply
+foreach(CASE_NAME ntt intt ckks_encode bgv_encode ckks_rescale ckks_ciphertext_multiply
         bgv_ciphertext_multiply bgv_modswitch mm bconv pmult cmult modup
         moddown auto keyswitch relinearization ciphertext_multiply)
     CHECK_TERMINAL_PSYNC("output/${CASE_NAME}.asm")
 endforeach()
 CHECK_TERMINAL_PSYNC("outputs/rv_interface_smoke/rv_interface_smoke.asm")
 
-foreach(CASE_NAME ntt intt encode ckks_rescale ckks_ciphertext_multiply
+foreach(CASE_NAME ntt intt ckks_encode bgv_encode ckks_rescale ckks_ciphertext_multiply
         bgv_ciphertext_multiply bgv_modswitch mm bconv pmult cmult modup
         moddown auto keyswitch relinearization ciphertext_multiply)
     foreach(EXECUTABLE_FILE
@@ -701,13 +805,21 @@ if(NOT RELIN_CMD26_COUNT EQUAL RELIN_INST32_COUNT)
     message(FATAL_ERROR "Relinearization 32-bit instruction and 26-bit precode counts differ")
 endif()
 
-file(STRINGS "${ROOT}/outputs/encode/encode.inst32" ENCODE_INST32_LINES)
-list(LENGTH ENCODE_INST32_LINES ENCODE_INST32_COUNT)
-file(STRINGS "${ROOT}/outputs/encode/encode.cmd26" ENCODE_CMD26_LINES)
-list(LENGTH ENCODE_CMD26_LINES ENCODE_CMD26_COUNT)
-if(ENCODE_INST32_COUNT EQUAL 0 OR NOT ENCODE_CMD26_COUNT EQUAL ENCODE_INST32_COUNT)
-    message(FATAL_ERROR "Encode instruction/precode stream is missing or inconsistent")
-endif()
+foreach(SCHEME_ENCODE ckks_encode bgv_encode)
+    file(STRINGS "${ROOT}/outputs/${SCHEME_ENCODE}/${SCHEME_ENCODE}.inst32"
+        ENCODE_INST32_LINES)
+    list(LENGTH ENCODE_INST32_LINES ENCODE_INST32_COUNT)
+    file(STRINGS "${ROOT}/outputs/${SCHEME_ENCODE}/${SCHEME_ENCODE}.cmd26"
+        ENCODE_CMD26_LINES)
+    list(LENGTH ENCODE_CMD26_LINES ENCODE_CMD26_COUNT)
+    if(ENCODE_INST32_COUNT EQUAL 0
+            OR NOT ENCODE_CMD26_COUNT EQUAL ENCODE_INST32_COUNT)
+        message(FATAL_ERROR
+            "${SCHEME_ENCODE} instruction/precode stream is missing or inconsistent")
+    endif()
+    string(TOUPPER "${SCHEME_ENCODE}" SCHEME_ENCODE_UPPER)
+    set(${SCHEME_ENCODE_UPPER}_INST32_COUNT ${ENCODE_INST32_COUNT})
+endforeach()
 
 file(STRINGS "${ROOT}/outputs/ckks_rescale/ckks_rescale.inst32" RESCALE_INST32_LINES)
 list(LENGTH RESCALE_INST32_LINES RESCALE_INST32_COUNT)
@@ -763,13 +875,17 @@ file(WRITE "${ROOT}/outputs/DELIVERY_REPORT.txt"
     "FHE_HARDWARE_CONVOLUTION=PASS\n"
     "NEGACYCLIC_FACTORS_EXPLICIT=PASS\n"
     "NTT_PHYSICAL_OUT_OF_PLACE=PASS\n"
-    "ENCODE_HOST_RNS_BOUNDARY=PASS\n"
+    "SCHEME_ENCODE_HOST_BOUNDARY=PASS\n"
+    "CKKS_GENERATOR3_CANONICAL_EMBEDDING=PASS\n"
+    "BGV_GENERATOR3_BATCHING=PASS\n"
+    "BGV_AUTO_X3_ROW_ROTATION=PASS\n"
     "CKKS_RESCALE_ROUNDED_DROP_LAST=PASS\n"
     "CKKS_MULTIPLY_RELINEARIZE_RESCALE=PASS\n"
     "BGV_MULTIPLY_CORRECTION_FACTOR=PASS\n"
     "BGV_MODSWITCH_DROP_LAST=PASS\n"
     "BGV_CONTEXT_ORDER_Q_P_T=PASS\n"
-    "ENCODE_INST32_COUNT=${ENCODE_INST32_COUNT}\n"
+    "CKKS_ENCODE_INST32_COUNT=${CKKS_ENCODE_INST32_COUNT}\n"
+    "BGV_ENCODE_INST32_COUNT=${BGV_ENCODE_INST32_COUNT}\n"
     "CKKS_RESCALE_INST32_COUNT=${RESCALE_INST32_COUNT}\n"
     "CKKS_CIPHERTEXT_MULTIPLY_INST32_COUNT=${CKKS_CIPHERTEXT_MULTIPLY_INST32_COUNT}\n"
     "BGV_CIPHERTEXT_MULTIPLY_INST32_COUNT=${BGV_CIPHERTEXT_MULTIPLY_INST32_COUNT}\n"

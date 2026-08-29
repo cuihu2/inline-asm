@@ -2,6 +2,7 @@
 
 #include "util/bconv.hpp"
 #include "util/hpu_asm.hpp"
+#include "util/validation.hpp"
 
 #include <sstream>
 #include <stdexcept>
@@ -12,8 +13,8 @@ namespace {
 
 bool valid_config(int num_q, int num_p, int num_components)
 {
-    return num_q >= 2 && num_p >= 0 && num_components > 0
-        && num_q + num_p + 1 <= hpu::kMaxModContexts;
+    return num_q >= 2 && num_components > 0
+        && hpu::has_mod_context_capacity(num_q, num_p, 1);
 }
 
 std::uint64_t inverse_mod(std::uint64_t value, std::uint64_t modulus)

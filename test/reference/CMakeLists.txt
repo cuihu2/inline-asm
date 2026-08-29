@@ -1,7 +1,11 @@
 add_executable(hpu_reference_vectors
         main.cpp
 )
-target_link_libraries(hpu_reference_vectors PRIVATE hpu_test_config)
+target_link_libraries(hpu_reference_vectors
+        PRIVATE
+        hpu_test_config
+        hpu_scheme_encoding
+)
 
 if(BUILD_TESTING)
     add_test(

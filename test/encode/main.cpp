@@ -14,7 +14,8 @@ namespace {
 const std::vector<std::string> kEncodableOutputs{
     "ntt",
     "intt",
-    "encode",
+    "ckks_encode",
+    "bgv_encode",
     "ckks_rescale",
     "ckks_ciphertext_multiply",
     "bgv_ciphertext_multiply",
@@ -34,7 +35,8 @@ const std::vector<std::string> kEncodableOutputs{
 const std::vector<std::string> kAllOutputs{
     "ntt",
     "intt",
-    "encode",
+    "ckks_encode",
+    "bgv_encode",
     "ckks_rescale",
     "ckks_ciphertext_multiply",
     "bgv_ciphertext_multiply",
@@ -263,6 +265,7 @@ int main() {
         const std::filesystem::path source_root{"output"};
         const std::filesystem::path outputs_root{"outputs"};
         std::filesystem::remove_all(outputs_root / "rescale");
+        std::filesystem::remove_all(outputs_root / "encode");
 
         for (const auto& stem : kAllOutputs) {
             package_case(source_root, outputs_root, stem);

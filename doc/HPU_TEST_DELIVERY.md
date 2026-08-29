@@ -33,6 +33,10 @@ MOD_TABLE_BASE_0X1400=PASS
 STAGE_TWIDDLE_LAYOUT=PASS
 NEGACYCLIC_FACTORS_EXPLICIT=PASS
 NTT_PHYSICAL_OUT_OF_PLACE=PASS
+SCHEME_ENCODE_HOST_BOUNDARY=PASS
+CKKS_GENERATOR3_CANONICAL_EMBEDDING=PASS
+BGV_GENERATOR3_BATCHING=PASS
+BGV_AUTO_X3_ROW_ROTATION=PASS
 CKKS_RESCALE_ROUNDED_DROP_LAST=PASS
 CKKS_MULTIPLY_RELINEARIZE_RESCALE=PASS
 BGV_MULTIPLY_CORRECTION_FACTOR=PASS
@@ -50,15 +54,15 @@ Nexus-AM host 用例属于 `PASS_PROBE` 自检：非 RISC-V 分支把嵌入镜�
 `qualification-pending/Skipped`。它可以证明测试程序和数据组织自洽，但不能作为
 HPU 算术通过证据。目标证据必须来自 RISC-V 分支真正发出的 HPU 程序。
 
-### 1.1 2026-08-24 审计基线
+### 1.1 2026-08-28 审计基线
 
 | 检查项 | 结果 |
 | --- | --- |
-| 算子数据包 | 17 个：12 个公共/多项式算子包，以及 CKKS Rescale、CKKS CiphertextMultiply、BGV CiphertextMultiply、BGV ModSwitch、公共 CiphertextMultiply |
+| 算子数据包 | 18 个：12 个公共/多项式算子包，以及 CKKS/BGV Encode、CKKS Rescale、CKKS CiphertextMultiply、BGV CiphertextMultiply、BGV ModSwitch |
 | 数学与硬件文件 | 所有 manifest 路径、字节数、FNV-1a、256B line geometry、主镜像切片和连续 line map 均通过 |
 | Nexus-AM 同步副本 | 需在本次 17 包重新生成后同步；旧 14 包统计不作为本版签字依据 |
 | 生成算子 relocation | 11 份 manifest 的源/解析行数一致，全部 `RESOLVED`；最大 `end_line_exclusive=19137 < 19201` |
-| 本仓库自检 | reference/encode 共 2 项通过 |
+| 本仓库自检 | 指令编码、方案 Encode 和 reference 均通过 |
 | Nexus-AM host 自检 | 53 项无内部失败，但 53 项均按 `PASS_PROBE` 标为 `qualification-pending/Skipped` |
 
 NTT、INTT 和 BConv 使用 Nexus-AM 的专用 transform/BConv testcase，而不是通用
@@ -122,13 +126,16 @@ Encrypt(ctA, ctB)
 
 默认配置为 `N=4096`、`num_q=4`、`num_p=3`、`dnum=2`、`t=65537`。数据使用确定性、无噪声、P 可整除的功能测试评估密钥，以获得逐位可比结果；它用于 UT/IT 定位，不代表生产密钥安全性。
 
-公共乘法之后还生成两条方案闭环：CKKS 执行 rounded Rescale 并验证
+方案闭环从 Encode 开始：CKKS 对 `N/2` 个复数槽位执行 generator-3 canonical
+embedding，BGV 对 `N` 个槽位执行 generator-3 两行 batching。两者均由 host 产生
+RNS-Q 系数 limbs，再由 HPU 流执行 NTT。公共乘法之后，CKKS 执行 rounded Rescale 并验证
 `scale_out=scale_a*scale_b/q_last` 与近似误差；BGV 使用 correction factor `3`、`5`
 执行乘法，再按 `u=-c_last*q_last^-1 mod t` 降层并验证
-`cf_out=cf_in*q_last^-1 mod t`。BFV 不生成指令，原因见
+`cf_out=cf_in*q_last^-1 mod t`；`X->X^3` 还经过功能密文 Auto、Galois KeySwitch、
+解密和 BatchDecode，验证两行分别左旋一格。BFV 不生成指令，原因见
 `HPU_PROGRAMMING_MANUAL.md` 第 8.8 节。
 
-生成器和 reference 共同检查 `N` 为 2 的幂且 `ceil(N/64) <= 1024`，对应当前普通 bank 的最大可承载次数 `N=65536`。`dload load_type` 只接受 `0=seg`、`1=poly`、`2=mod_ctx`；编码值 3 为保留值并纳入 RV 负例。
+生成器和 reference 共同检查 `N` 为 2 的幂且 `ceil(N/64) <= 1024`，对应当前普通 bank 的最大可承载次数 `N=65536`。`dnum` 必须整除 `num_q`，方案上下文还必须满足 `num_q+num_p+1<=256`；BGV batching 进一步要求 `t` 为 PE 范围内素数、`2N | (t-1)`，并与所有 Q/P 模数互素。`dload load_type` 只接受 `0=seg`、`1=poly`、`2=mod_ctx`；编码值 3 为保留值并纳入 RV 负例。
 
 ## 4. 数据格式
 
@@ -147,7 +154,7 @@ Encrypt(ctA, ctB)
 
 顶层 `.bin` 均采用 little-endian `uint64_t` canonical residue，只作为数学 golden。多维数组按 C row-major 展平，最后一维始终是 coefficient；基顺序固定为 `Q[0..num_q-1]` 后接 `P[0..num_p-1]`。
 
-每个 `.bin` 都有同名 `.hex.txt` 人工可读版本，例如 `input.bin` 对应 `input.hex.txt`。文本文件头包含用途、shape、维度含义和编码说明，多维数据按 component/digit/basis 分块，并在每行标注 coefficient 范围。
+每个 `.bin` 都有同名 `.dec.txt` 人工可读版本，例如 `input.bin` 对应 `input.dec.txt`。其中数据值采用无符号十进制；文本文件头包含用途、shape、维度含义和编码说明，多维数据按 component/digit/basis 分块，并在每行标注 coefficient 范围。
 
 每个完整乘法包和独立 UT 包还包含 `hardware/`：
 
@@ -157,12 +164,15 @@ Encrypt(ctA, ctB)
 | `images/**/*.u32.bin` | 输入、常量、期望结果的独立 256B-line-padded 镜像 |
 | `line_map.csv` | 每个对象的 byte address、line offset、line count、payload/padded 大小 |
 | `constants/mod_ctx.u32.bin` / `mod_ctx_map.csv` | 每个 Q/P/t 模数的 q 与 `floor(2^64/q)` Barrett mu 物理记录；非 BGV 包不含 t |
-| `constants/twiddle/**/*.u32.bin` / `twiddle_map.csv` | 每个 basis、方向、phase、stage 的物理 twiddle 和 line 位置 |
+| `constants/twiddle/**/*.u32.bin` / `twiddle_map.csv` | 仅含 `pntt/pintt` 的包生成；记录每个 basis、方向、phase、stage 的物理 twiddle 和 line 位置 |
 | `hpu_mem_config.json` | HPU_MEM base/size、256B line 参数、`0x00..0x18` CSR 偏移和编程顺序 |
-| `abi.json` | `uint32`、小端、Bank 5、mod context word 布局和 NTT/INTT twiddle 约定 |
+| `abi.json` | `uint32`、小端、Bank 5、mod context word 布局；`twiddle_images_included` 标明当前包是否携带 NTT/INTT twiddle |
 
-四个方案用例均独立生成 `dma_plan.csv`。BGV ModSwitch 将 `q_last -> t`
-和面向 `Q'` 的 BConv target 常量拆成不同文件，runtime 不应跨目标基复用其物理 span。
+六个方案用例均独立生成 `dma_plan.csv`。`ckks_encode` 和 `bgv_encode` 还包含
+`host/host_manifest.csv`：其中的槽位、signed 系数、Decode 和误差 CSV 仅供 host
+验收，不进入 HPU_MEM；只有 RNS-Q 输入与 NTT-Q 输出出现在 `hardware/`。
+BGV ModSwitch 将 `q_last -> t` 和面向 `Q'` 的 BConv target 常量拆成不同文件，
+runtime 不应跨目标基复用其物理 span。
 
 硬件模上下文 V1 每条记录占 128 bit，按低位到高位为
 `{q[31:0], mu[47:0], reserved[47:0]}`，其中
@@ -192,6 +202,9 @@ image、NTT image、pre/post factor 和全部 stage twiddle。默认 Q0 的冻�
 
 | 首个失败检查点 | 优先排查模块 |
 | --- | --- |
+| `ckks_encode/host/decoded_*.csv` | generator-3 映射、共轭布局、FFT 方向、scale |
+| `bgv_encode/host/batch_decoded_slots.csv` | generator-3 两行映射、模 t NTT、batching 参数 |
+| `*_encode/.../plaintext*_ntt_q` | host RNS lift、pre-twist、stage twiddle、HPU NTT |
 | `inputs_ntt_q` | NTT、twiddle、模上下文、数据排列 |
 | `tensor_ntt_q` | PE 的 `pmul/pmac`、活动模上下文 |
 | `tensor_coeff_q` | INTT、归一化因子、输出排列 |
@@ -204,7 +217,7 @@ image、NTT image、pre/post factor 和全部 stage twiddle。默认 Q0 的冻�
 | `bgv_modswitch/expected_qprime` | BGV delta 符号、`q_last^-1`、correction factor |
 | 最终解密 | 上述节点均通过时再检查方案参数和 host 数据解释 |
 
-同一 reference 还会拆分到 `outputs/{ntt,intt,encode,ckks_rescale,ckks_ciphertext_multiply,bgv_ciphertext_multiply,bgv_modswitch,mm,bconv,modup,pmult,cmult,moddown,keyswitch,relinearization,auto}/test_data/`。每个目录均包含独立 `params.json`、数学输入/期望输出、checksum，以及完整的 `hardware/` 镜像、上下文、twiddle 和 line map，可直接交给对应模块负责人跑 UT。Encode 的 signed-to-RNS 边界、方案元数据和逐算子 DLOAD/DSTORE 绑定分别冻结在各自 `params.json` 与 `HPU_PROGRAMMING_MANUAL.md` 附录 C 中。
+同一 reference 还会拆分到 `outputs/{ntt,intt,ckks_encode,bgv_encode,ckks_rescale,ckks_ciphertext_multiply,bgv_ciphertext_multiply,bgv_modswitch,mm,bconv,modup,pmult,cmult,moddown,keyswitch,relinearization,auto,ciphertext_multiply}/test_data/`。每个目录均包含独立 `params.json`、数学输入/期望输出、checksum，以及按实际指令需求裁剪的 `hardware/` 镜像、上下文和 line map，可直接交给对应模块负责人跑 UT。NTT、INTT、CKKS/BGV Encode、CKKS/BGV CiphertextMultiply、KeySwitch、Relinearization、Auto 和公共 CiphertextMultiply 包含 twiddle；其余系数或逐点算子不包含。方案 Encode 的 host 数学、RNS-Q/NTT-Q 边界、元数据和 DLOAD/DSTORE 绑定分别冻结在 `host/`、`params.json` 与 `HPU_PROGRAMMING_MANUAL.md` 附录 C 中。
 
 ## 6. RV 接口用例
 

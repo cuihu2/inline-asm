@@ -1,5 +1,6 @@
 #include "util/bconv.hpp"
 #include "util/hpu_asm.hpp"
+#include "util/validation.hpp"
 #include <sstream>
 #include <string>
 #include <vector>
@@ -108,8 +109,8 @@ std::string generate_hpu_bconv_body_asm(
     int q_offset,
     bool append_psync)
 {
-    if (num_q <= 0 || num_p <= 0 || q_offset < 0
-        || q_offset + num_q + num_p > hpu::kMaxModContexts) {
+    if (num_p <= 0 || q_offset < 0
+        || !hpu::has_mod_context_capacity(num_q, num_p, q_offset)) {
         return "        // Invalid config: require positive bases within the 8-bit MOD_ID capacity\n";
     }
 

@@ -2,26 +2,8 @@
 
 #include "util/hpu_asm.hpp"
 #include "util/mm.hpp"
-#include "util/ntt.hpp"
-
-#include <cmath>
 #include <sstream>
 #include <string>
-
-namespace {
-
-bool is_power_of_two(int x)
-{
-    return x > 0 && (x & (x - 1)) == 0;
-}
-
-int final_slot_after_stages(int N, int obj_a, int obj_b)
-{
-    const int logN = static_cast<int>(std::log2(static_cast<double>(N)));
-    return (logN % 2 == 0) ? obj_a : obj_b;
-}
-
-} // namespace
 // eval domain
 std::string generate_hpu_cmult_body_asm(
     int num_q,

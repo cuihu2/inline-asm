@@ -2,6 +2,7 @@
 
 #include "poly/moddown.hpp"
 #include "util/hpu_asm.hpp"
+#include "util/validation.hpp"
 
 #include <cmath>
 #include <sstream>
@@ -12,9 +13,8 @@ namespace {
 
 bool valid_rescale_config(int num_q, int num_components)
 {
-    return num_q >= 2
-        && num_q <= hpu::kMaxModContexts
-        && num_components > 0;
+    return num_q >= 2 && num_components > 0
+        && hpu::has_mod_context_capacity(num_q);
 }
 
 } // namespace

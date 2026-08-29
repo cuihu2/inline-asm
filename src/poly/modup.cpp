@@ -2,10 +2,27 @@
 
 #include "util/bconv.hpp"
 #include "util/hpu_asm.hpp"
+#include "util/validation.hpp"
 
 #include <sstream>
 #include <string>
 #include <vector>
+
+namespace {
+
+bool valid_modup_config(
+    int num_q,
+    int num_p,
+    int num_q_digit,
+    int q_offset)
+{
+    return num_p > 0 && num_q_digit > 0 && q_offset >= 0
+        && q_offset <= num_q
+        && num_q_digit <= num_q - q_offset
+        && hpu::has_mod_context_capacity(num_q, num_p);
+}
+
+} // namespace
 
 std::string generate_hpu_modup_body_asm(
     int num_q,
@@ -15,9 +32,7 @@ std::string generate_hpu_modup_body_asm(
     bool append_psync)
 {
     std::ostringstream asm_code;
-    if (num_q <= 0 || num_p <= 0 || num_q_digit <= 0 || q_offset < 0
-        || q_offset + num_q_digit > num_q
-        || num_q + num_p > hpu::kMaxModContexts) {
+    if (!valid_modup_config(num_q, num_p, num_q_digit, q_offset)) {
         asm_code << "        // Invalid ModUp config\n";
         return asm_code.str();
     }
@@ -65,9 +80,7 @@ std::string generate_hpu_modup_asm(
     asm_code << "void hpu_modup_Q" << num_q << "_P" << num_p
              << "_D" << num_q_digit << "_O" << q_offset << "(void) {\n";
 
-    if (num_q <= 0 || num_p <= 0 || num_q_digit <= 0 || q_offset < 0
-        || q_offset + num_q_digit > num_q
-        || num_q + num_p > hpu::kMaxModContexts) {
+    if (!valid_modup_config(num_q, num_p, num_q_digit, q_offset)) {
         asm_code << "    // Invalid config: require a Q digit within the complete Q union P basis\n";
         asm_code << "}\n";
         return asm_code.str();
