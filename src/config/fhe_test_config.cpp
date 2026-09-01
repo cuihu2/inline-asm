@@ -87,6 +87,15 @@ void validate(const FheTestConfig& config)
     if (config.num_p == 0) {
         throw std::runtime_error("num_p must be positive");
     }
+    if (config.bfv_num_b < config.num_q) {
+        throw std::runtime_error("bfv_num_b must be at least num_q");
+    }
+    constexpr std::uint64_t kMaxHpuMemSizeLines = (std::uint64_t{1} << 33U) - 1;
+    if (config.hpu_mem_max_lines == 0
+        || config.hpu_mem_max_lines > kMaxHpuMemSizeLines) {
+        throw std::runtime_error(
+            "hpu_mem_max_lines must fit the 33-bit HPU_MEM_SIZE_LINES CSR");
+    }
     if (config.dnum == 0 || config.num_q % config.dnum != 0) {
         throw std::runtime_error("dnum must be positive and divide num_q");
     }
@@ -94,6 +103,13 @@ void validate(const FheTestConfig& config)
             config.num_q, config.num_p, std::size_t{1})) {
         throw std::runtime_error(
             "num_q + num_p + plaintext context exceeds the 8-bit MOD_ID space");
+    }
+    if (!hpu::has_mod_context_capacity(
+            config.num_q,
+            config.num_p + config.bfv_num_b,
+            std::size_t{2})) {
+        throw std::runtime_error(
+            "Q, Pks, BFV B, m_sk, and plaintext contexts exceed the 8-bit MOD_ID space");
     }
     if (config.auto_index != 1) {
         throw std::runtime_error("auto_index must be 1; only Galois element 3 is frozen");
@@ -104,14 +120,15 @@ void validate(const FheTestConfig& config)
             "plaintext_modulus must satisfy the PE range 65537 <= t <= 2^32-1");
     }
     if ((config.plaintext_modulus & 1U) == 0) {
-        throw std::runtime_error("plaintext_modulus must be odd for BGV");
+        throw std::runtime_error("plaintext_modulus must be odd for BGV/BFV");
     }
     if (!hpu::is_prime(config.plaintext_modulus)) {
-        throw std::runtime_error("plaintext_modulus must be prime for BGV batching");
+        throw std::runtime_error(
+            "plaintext_modulus must be prime for BGV/BFV batching");
     }
     if ((config.plaintext_modulus - 1) % (2 * config.N) != 0) {
         throw std::runtime_error(
-            "BGV batching requires plaintext_modulus = 1 mod 2N");
+            "BGV/BFV batching requires plaintext_modulus = 1 mod 2N");
     }
 }
 
@@ -129,10 +146,12 @@ FheTestConfig load_fhe_test_config(const std::filesystem::path& path)
         throw std::runtime_error("cannot open FHE test config: " + path.string());
     }
 
-    const std::array<std::string, 7> allowed_keys{
+    const std::array<std::string, 9> allowed_keys{
         "N",
         "num_q",
         "num_p",
+        "bfv_num_b",
+        "hpu_mem_max_lines",
         "dnum",
         "auto_index",
         "plaintext_modulus",
@@ -186,6 +205,8 @@ FheTestConfig load_fhe_test_config(const std::filesystem::path& path)
         checked_size(values, "N"),
         checked_size(values, "num_q"),
         checked_size(values, "num_p"),
+        checked_size(values, "bfv_num_b"),
+        values.at("hpu_mem_max_lines"),
         checked_size(values, "dnum"),
         checked_size(values, "auto_index"),
         values.at("plaintext_modulus"),

@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <random>
 #include <sstream>
@@ -18,6 +19,7 @@
 
 #include "config/fhe_test_config.hpp"
 #include "scheme/bgv/encode.hpp"
+#include "scheme/bfv/encode.hpp"
 #include "scheme/ckks/encode.hpp"
 
 namespace {
@@ -31,14 +33,17 @@ using BasisPoly = std::vector<Poly>;
 using Ciphertext = std::array<BasisPoly, 2>;
 using TensorCiphertext = std::array<BasisPoly, 3>;
 using EvaluationKey = std::vector<std::array<BasisPoly, 2>>;
+using BigInt = U128;
 
 std::size_t g_n = 0;
 std::size_t g_num_q = 0;
 std::size_t g_num_p = 0;
+std::size_t g_bfv_num_b = 0;
 std::size_t g_dnum = 0;
 std::size_t g_auto_index = 0;
 U64 g_plaintext_modulus = 0;
 U64 g_seed = 0;
+U64 g_hpu_mem_max_lines = 0;
 constexpr U64 kFnv1a64OffsetBasis = 14695981039346656037ULL;
 constexpr std::size_t kHpuWordsPerLine = 64;
 constexpr U64 kHpuLineBytes = kHpuWordsPerLine * sizeof(U32);
@@ -78,6 +83,7 @@ struct Artifact {
     std::vector<U64> words;
     std::vector<std::string> axes;
     HardwareDomain hardware_domain = HardwareDomain::kCoefficient;
+    bool hardware_visible = true;
     U64 checksum = 0;
 };
 
@@ -294,6 +300,15 @@ Poly pointwise_mul(const Poly& left, const Poly& right, U64 modulus)
     return out;
 }
 
+Poly scalar_mul_poly(const Poly& input, U64 scalar, U64 modulus)
+{
+    Poly output(input.size());
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        output[i] = mul_mod(input[i], scalar % modulus, modulus);
+    }
+    return output;
+}
+
 Poly negacyclic_mul(const Poly& left, const Poly& right, U64 modulus, U64 psi)
 {
     Poly left_ntt = left;
@@ -441,6 +456,394 @@ Poly bconv_to_target(const BasisPoly& source,
         }
     }
     return out;
+}
+
+U64 product_mod(const std::vector<U64>& values, U64 modulus);
+
+Poly fast_bconv_to_target(const BasisPoly& source,
+                          const std::vector<U64>& source_moduli,
+                          U64 target_modulus)
+{
+    if (source.empty() || source.size() != source_moduli.size()) {
+        throw std::runtime_error("invalid fast BConv source");
+    }
+    Poly out(source.front().size(), 0);
+    for (std::size_t j = 0; j < source.size(); ++j) {
+        U64 qhat_source = 1;
+        U64 qhat_target = 1;
+        for (std::size_t k = 0; k < source_moduli.size(); ++k) {
+            if (k == j) {
+                continue;
+            }
+            qhat_source = mul_mod(
+                qhat_source, source_moduli[k] % source_moduli[j],
+                source_moduli[j]);
+            qhat_target = mul_mod(
+                qhat_target, source_moduli[k] % target_modulus,
+                target_modulus);
+        }
+        const U64 qhat_inverse = inverse_mod(
+            qhat_source, source_moduli[j]);
+        for (std::size_t coefficient = 0;
+             coefficient < out.size(); ++coefficient) {
+            const U64 normalized = mul_mod(
+                source[j][coefficient], qhat_inverse, source_moduli[j]);
+            out[coefficient] = add_mod(
+                out[coefficient],
+                mul_mod(normalized, qhat_target, target_modulus),
+                target_modulus);
+        }
+    }
+    return out;
+}
+
+BasisPoly fast_bconv(const BasisPoly& source,
+                     const std::vector<U64>& source_moduli,
+                     const std::vector<U64>& target_moduli)
+{
+    BasisPoly output;
+    output.reserve(target_moduli.size());
+    for (U64 modulus : target_moduli) {
+        output.push_back(fast_bconv_to_target(
+            source, source_moduli, modulus));
+    }
+    return output;
+}
+
+BigInt big_product(const std::vector<U64>& values)
+{
+    BigInt product = 1;
+    for (U64 value : values) {
+        if (value != 0 && product > static_cast<BigInt>(-1) / value) {
+            throw std::runtime_error(
+                "reference Q product exceeds the self-contained 128-bit path");
+        }
+        product *= value;
+    }
+    return product;
+}
+
+unsigned big_bit_length(const BigInt& value)
+{
+    if (value <= 0) {
+        return 0;
+    }
+    unsigned bits = 0;
+    BigInt remaining = value;
+    while (remaining != 0) {
+        ++bits;
+        remaining >>= 1U;
+    }
+    return bits;
+}
+
+unsigned u64_bit_length(U64 value)
+{
+    unsigned bits = 0;
+    while (value != 0) {
+        ++bits;
+        value >>= 1U;
+    }
+    return bits;
+}
+
+U64 big_mod_u64(const BigInt& value, U64 modulus)
+{
+    return static_cast<U64>(value % modulus);
+}
+
+unsigned product_bit_length(const std::vector<U64>& values)
+{
+    std::vector<U32> limbs(1, 1);
+    for (U64 value : values) {
+        U64 carry = 0;
+        for (U32& limb : limbs) {
+            const U128 wide = static_cast<U128>(limb) * value + carry;
+            limb = static_cast<U32>(wide);
+            carry = static_cast<U64>(wide >> 32U);
+        }
+        while (carry != 0) {
+            limbs.push_back(static_cast<U32>(carry));
+            carry >>= 32U;
+        }
+    }
+    while (limbs.size() > 1 && limbs.back() == 0) {
+        limbs.pop_back();
+    }
+    return static_cast<unsigned>((limbs.size() - 1) * 32)
+        + u64_bit_length(limbs.back());
+}
+
+struct FastBconvConstants {
+    BasisPoly source_hat_inverse;
+    std::vector<BasisPoly> source_hat_mod_target;
+};
+
+FastBconvConstants make_fast_bconv_constants(
+    const std::vector<U64>& source_moduli,
+    const std::vector<U64>& target_moduli)
+{
+    FastBconvConstants constants;
+    constants.source_hat_inverse.resize(source_moduli.size());
+    for (std::size_t source = 0; source < source_moduli.size(); ++source) {
+        U64 source_hat = 1;
+        for (std::size_t other = 0; other < source_moduli.size(); ++other) {
+            if (other != source) {
+                source_hat = mul_mod(
+                    source_hat,
+                    source_moduli[other] % source_moduli[source],
+                    source_moduli[source]);
+            }
+        }
+        constants.source_hat_inverse[source] = Poly(
+            g_n, inverse_mod(source_hat, source_moduli[source]));
+    }
+
+    constants.source_hat_mod_target.resize(target_moduli.size());
+    for (std::size_t target = 0; target < target_moduli.size(); ++target) {
+        constants.source_hat_mod_target[target].resize(source_moduli.size());
+        for (std::size_t source = 0; source < source_moduli.size(); ++source) {
+            U64 source_hat = 1;
+            for (std::size_t other = 0; other < source_moduli.size(); ++other) {
+                if (other != source) {
+                    source_hat = mul_mod(
+                        source_hat,
+                        source_moduli[other] % target_moduli[target],
+                        target_moduli[target]);
+                }
+            }
+            constants.source_hat_mod_target[target][source] = Poly(
+                g_n, source_hat);
+        }
+    }
+    return constants;
+}
+
+struct BfvBehzTrace {
+    Ciphertext left_bsk;
+    Ciphertext right_bsk;
+    Ciphertext left_q_ntt;
+    Ciphertext right_q_ntt;
+    Ciphertext left_bsk_ntt;
+    Ciphertext right_bsk_ntt;
+    TensorCiphertext tensor_q_ntt;
+    TensorCiphertext tensor_bsk_ntt;
+    TensorCiphertext tensor_q_coeff;
+    TensorCiphertext tensor_bsk_coeff;
+    TensorCiphertext scaled_q;
+    TensorCiphertext scaled_bsk;
+    TensorCiphertext fast_floor_bsk;
+    TensorCiphertext output_q;
+    std::array<Poly, 3> alpha_msk;
+};
+
+Ciphertext encrypt_bfv_test_message(
+    const Poly& encoded_t,
+    const std::vector<std::int64_t>& error,
+    const BasisPoly& secret,
+    const std::vector<U64>& q_moduli,
+    const std::vector<U64>& q_roots,
+    std::mt19937_64& rng)
+{
+    if (encoded_t.size() != g_n || error.size() != g_n) {
+        throw std::runtime_error("invalid BFV plaintext or error size");
+    }
+    const BigInt delta = big_product(q_moduli) / g_plaintext_modulus;
+    Ciphertext ciphertext;
+    ciphertext[0].resize(q_moduli.size());
+    ciphertext[1].resize(q_moduli.size());
+    for (std::size_t basis = 0; basis < q_moduli.size(); ++basis) {
+        const U64 modulus = q_moduli[basis];
+        Poly random_a(g_n);
+        for (U64& value : random_a) {
+            value = rng() % modulus;
+        }
+        const Poly product = negacyclic_mul(
+            random_a, secret[basis], modulus, q_roots[basis]);
+        const U64 delta_mod_q = big_mod_u64(delta, modulus);
+        ciphertext[0][basis].resize(g_n);
+        for (std::size_t coefficient = 0;
+             coefficient < g_n; ++coefficient) {
+            U64 scaled = mul_mod(
+                encoded_t[coefficient] % modulus, delta_mod_q, modulus);
+            const std::int64_t signed_error = error[coefficient];
+            const U64 error_mod = signed_error >= 0
+                ? static_cast<U64>(signed_error) % modulus
+                : sub_mod(0, static_cast<U64>(-signed_error) % modulus, modulus);
+            scaled = add_mod(scaled, error_mod, modulus);
+            ciphertext[0][basis][coefficient] = sub_mod(
+                scaled, product[coefficient], modulus);
+        }
+        ciphertext[1][basis] = std::move(random_a);
+    }
+    return ciphertext;
+}
+
+TensorCiphertext tensor_product_ntt(
+    const Ciphertext& left_ntt,
+    const Ciphertext& right_ntt,
+    const std::vector<U64>& moduli)
+{
+    TensorCiphertext tensor;
+    for (BasisPoly& component : tensor) {
+        component.resize(moduli.size());
+    }
+    for (std::size_t basis = 0; basis < moduli.size(); ++basis) {
+        const U64 modulus = moduli[basis];
+        tensor[0][basis] = pointwise_mul(
+            left_ntt[0][basis], right_ntt[0][basis], modulus);
+        tensor[1][basis] = add_poly(
+            pointwise_mul(left_ntt[0][basis], right_ntt[1][basis], modulus),
+            pointwise_mul(left_ntt[1][basis], right_ntt[0][basis], modulus),
+            modulus);
+        tensor[2][basis] = pointwise_mul(
+            left_ntt[1][basis], right_ntt[1][basis], modulus);
+    }
+    return tensor;
+}
+
+TensorCiphertext bfv_behz_multiply(
+    const Ciphertext& left,
+    const Ciphertext& right,
+    const std::vector<U64>& q_moduli,
+    const std::vector<U64>& b_moduli,
+    U64 m_sk,
+    const std::vector<U64>& q_roots,
+    const std::vector<U64>& bsk_roots,
+    BfvBehzTrace* trace)
+{
+    std::vector<U64> bsk_moduli = b_moduli;
+    bsk_moduli.push_back(m_sk);
+
+    Ciphertext left_bsk;
+    Ciphertext right_bsk;
+    Ciphertext left_q_ntt;
+    Ciphertext right_q_ntt;
+    Ciphertext left_bsk_ntt;
+    Ciphertext right_bsk_ntt;
+    for (std::size_t component = 0; component < 2; ++component) {
+        left_bsk[component] = fast_bconv(
+            left[component], q_moduli, bsk_moduli);
+        right_bsk[component] = fast_bconv(
+            right[component], q_moduli, bsk_moduli);
+        left_q_ntt[component] = transform_basis(
+            left[component], q_moduli, q_roots, false);
+        right_q_ntt[component] = transform_basis(
+            right[component], q_moduli, q_roots, false);
+        left_bsk_ntt[component] = transform_basis(
+            left_bsk[component], bsk_moduli, bsk_roots, false);
+        right_bsk_ntt[component] = transform_basis(
+            right_bsk[component], bsk_moduli, bsk_roots, false);
+    }
+
+    TensorCiphertext tensor_q_ntt = tensor_product_ntt(
+        left_q_ntt, right_q_ntt, q_moduli);
+    TensorCiphertext tensor_bsk_ntt = tensor_product_ntt(
+        left_bsk_ntt, right_bsk_ntt, bsk_moduli);
+    TensorCiphertext tensor_q_coeff;
+    TensorCiphertext tensor_bsk_coeff;
+    TensorCiphertext scaled_q;
+    TensorCiphertext scaled_bsk;
+    TensorCiphertext fast_floor_bsk;
+    TensorCiphertext output_q;
+    std::array<Poly, 3> alpha_msk;
+
+    const U64 b_inverse_msk = inverse_mod(
+        product_mod(b_moduli, m_sk), m_sk);
+    for (std::size_t component = 0; component < 3; ++component) {
+        tensor_q_coeff[component] = transform_basis(
+            tensor_q_ntt[component], q_moduli, q_roots, true);
+        tensor_bsk_coeff[component] = transform_basis(
+            tensor_bsk_ntt[component], bsk_moduli, bsk_roots, true);
+        scaled_q[component].resize(q_moduli.size());
+        scaled_bsk[component].resize(bsk_moduli.size());
+        for (std::size_t basis = 0; basis < q_moduli.size(); ++basis) {
+            scaled_q[component][basis] = scalar_mul_poly(
+                tensor_q_coeff[component][basis],
+                g_plaintext_modulus, q_moduli[basis]);
+        }
+        for (std::size_t basis = 0; basis < bsk_moduli.size(); ++basis) {
+            scaled_bsk[component][basis] = scalar_mul_poly(
+                tensor_bsk_coeff[component][basis],
+                g_plaintext_modulus, bsk_moduli[basis]);
+        }
+
+        const BasisPoly converted_q = fast_bconv(
+            scaled_q[component], q_moduli, bsk_moduli);
+        fast_floor_bsk[component].resize(bsk_moduli.size());
+        for (std::size_t basis = 0; basis < bsk_moduli.size(); ++basis) {
+            const U64 modulus = bsk_moduli[basis];
+            const U64 q_inverse = inverse_mod(
+                product_mod(q_moduli, modulus), modulus);
+            fast_floor_bsk[component][basis].resize(g_n);
+            for (std::size_t coefficient = 0;
+                 coefficient < g_n; ++coefficient) {
+                fast_floor_bsk[component][basis][coefficient] = mul_mod(
+                    sub_mod(
+                        scaled_bsk[component][basis][coefficient],
+                        converted_q[basis][coefficient], modulus),
+                    q_inverse, modulus);
+            }
+        }
+
+        const BasisPoly z_b(
+            fast_floor_bsk[component].begin(),
+            fast_floor_bsk[component].begin()
+                + static_cast<std::ptrdiff_t>(b_moduli.size()));
+        const BasisPoly y_q = fast_bconv(z_b, b_moduli, q_moduli);
+        const Poly temp_msk = fast_bconv_to_target(
+            z_b, b_moduli, m_sk);
+        alpha_msk[component].resize(g_n);
+        for (std::size_t coefficient = 0;
+             coefficient < g_n; ++coefficient) {
+            alpha_msk[component][coefficient] = mul_mod(
+                sub_mod(
+                    temp_msk[coefficient],
+                    fast_floor_bsk[component].back()[coefficient],
+                    m_sk),
+                b_inverse_msk, m_sk);
+            if (alpha_msk[component][coefficient] > b_moduli.size()
+                || alpha_msk[component][coefficient] > m_sk / 2) {
+                throw std::runtime_error(
+                    "branchless SK alpha exceeds the proven lower-half range");
+            }
+        }
+
+        output_q[component].resize(q_moduli.size());
+        for (std::size_t basis = 0; basis < q_moduli.size(); ++basis) {
+            const U64 modulus = q_moduli[basis];
+            const U64 b_mod_q = product_mod(b_moduli, modulus);
+            const U64 neg_b_mod_q = b_mod_q == 0 ? 0 : modulus - b_mod_q;
+            output_q[component][basis].resize(g_n);
+            for (std::size_t coefficient = 0;
+                 coefficient < g_n; ++coefficient) {
+                output_q[component][basis][coefficient] = add_mod(
+                    y_q[basis][coefficient],
+                    mul_mod(alpha_msk[component][coefficient],
+                            neg_b_mod_q, modulus),
+                    modulus);
+            }
+        }
+    }
+
+    if (trace != nullptr) {
+        trace->left_bsk = std::move(left_bsk);
+        trace->right_bsk = std::move(right_bsk);
+        trace->left_q_ntt = std::move(left_q_ntt);
+        trace->right_q_ntt = std::move(right_q_ntt);
+        trace->left_bsk_ntt = std::move(left_bsk_ntt);
+        trace->right_bsk_ntt = std::move(right_bsk_ntt);
+        trace->tensor_q_ntt = std::move(tensor_q_ntt);
+        trace->tensor_bsk_ntt = std::move(tensor_bsk_ntt);
+        trace->tensor_q_coeff = std::move(tensor_q_coeff);
+        trace->tensor_bsk_coeff = std::move(tensor_bsk_coeff);
+        trace->scaled_q = std::move(scaled_q);
+        trace->scaled_bsk = std::move(scaled_bsk);
+        trace->fast_floor_bsk = std::move(fast_floor_bsk);
+        trace->output_q = output_q;
+        trace->alpha_msk = std::move(alpha_msk);
+    }
+    return output_q;
 }
 
 BasisPoly modup(const BasisPoly& input_q,
@@ -766,6 +1169,116 @@ Ciphertext multiply_and_relinearize(
         trace->keyswitch_q = std::move(keyswitch_q);
     }
     return output;
+}
+
+Ciphertext relinearize_tensor(
+    const TensorCiphertext& tensor,
+    const BasisPoly& secret_q,
+    const EvaluationKey& rlk_ntt,
+    const std::vector<U64>& q_moduli,
+    const std::vector<U64>& p_moduli,
+    const std::vector<U64>& all_moduli,
+    const std::vector<U64>& q_roots,
+    const std::vector<U64>& all_roots,
+    SchemeMultiplyTrace* trace)
+{
+    const std::size_t digit_size = g_num_q / g_dnum;
+    std::vector<BasisPoly> modup_coeff(g_dnum);
+    std::vector<BasisPoly> modup_ntt(g_dnum);
+    std::array<BasisPoly, 2> accum_ntt;
+    for (BasisPoly& component : accum_ntt) {
+        component.assign(all_moduli.size(), Poly(g_n, 0));
+    }
+    for (std::size_t digit = 0; digit < g_dnum; ++digit) {
+        modup_coeff[digit] = modup(
+            tensor[2], q_moduli, all_moduli,
+            digit * digit_size, digit_size);
+        modup_ntt[digit] = transform_basis(
+            modup_coeff[digit], all_moduli, all_roots, false);
+        for (std::size_t component = 0; component < 2; ++component) {
+            for (std::size_t basis = 0; basis < all_moduli.size(); ++basis) {
+                accum_ntt[component][basis] = add_poly(
+                    accum_ntt[component][basis],
+                    pointwise_mul(
+                        modup_ntt[digit][basis],
+                        rlk_ntt[digit][component][basis],
+                        all_moduli[basis]),
+                    all_moduli[basis]);
+            }
+        }
+    }
+
+    std::array<BasisPoly, 2> accum_coeff;
+    std::array<BasisPoly, 2> keyswitch_q;
+    for (std::size_t component = 0; component < 2; ++component) {
+        accum_coeff[component] = transform_basis(
+            accum_ntt[component], all_moduli, all_roots, true);
+        keyswitch_q[component] = moddown(
+            accum_coeff[component], q_moduli, p_moduli);
+    }
+
+    Ciphertext output;
+    for (std::size_t basis = 0; basis < q_moduli.size(); ++basis) {
+        output[0].push_back(add_poly(
+            tensor[0][basis], keyswitch_q[0][basis], q_moduli[basis]));
+        output[1].push_back(add_poly(
+            tensor[1][basis], keyswitch_q[1][basis], q_moduli[basis]));
+    }
+    verify_equal(
+        decrypt_tensor(tensor, secret_q, q_moduli, q_roots),
+        decrypt_ciphertext(output, secret_q, q_moduli, q_roots),
+        "BFV relinearization");
+    if (trace != nullptr) {
+        trace->tensor_coeff = tensor;
+        trace->modup_coeff = std::move(modup_coeff);
+        trace->modup_ntt = std::move(modup_ntt);
+        trace->keyswitch_accum_ntt = std::move(accum_ntt);
+        trace->keyswitch_accum_coeff = std::move(accum_coeff);
+        trace->keyswitch_q = std::move(keyswitch_q);
+    }
+    return output;
+}
+
+BigInt crt_reconstruct(
+    const BasisPoly& input,
+    const std::vector<U64>& moduli,
+    std::size_t coefficient)
+{
+    BigInt value = 0;
+    BigInt product = 1;
+    for (std::size_t basis = 0; basis < moduli.size(); ++basis) {
+        const U64 modulus = moduli[basis];
+        const U64 current = big_mod_u64(value, modulus);
+        const U64 product_modulus = big_mod_u64(product, modulus);
+        const U64 digit = mul_mod(
+            sub_mod(input[basis][coefficient], current, modulus),
+            inverse_mod(product_modulus, modulus), modulus);
+        value += product * digit;
+        product *= modulus;
+    }
+    return value;
+}
+
+Poly decrypt_bfv_scale_and_round(
+    const Ciphertext& ciphertext,
+    const BasisPoly& secret_q,
+    const std::vector<U64>& q_moduli,
+    const std::vector<U64>& q_roots)
+{
+    const BasisPoly phase = decrypt_ciphertext(
+        ciphertext, secret_q, q_moduli, q_roots);
+    const BigInt Q = big_product(q_moduli);
+    Poly plaintext(g_n);
+    for (std::size_t coefficient = 0;
+         coefficient < g_n; ++coefficient) {
+        const BigInt value = crt_reconstruct(
+            phase, q_moduli, coefficient);
+        const BigInt rounded =
+            (value * g_plaintext_modulus + Q / 2) / Q;
+        plaintext[coefficient] = big_mod_u64(
+            rounded, g_plaintext_modulus);
+    }
+    return plaintext;
 }
 
 Ciphertext automorphism_and_keyswitch(
@@ -1253,6 +1766,330 @@ struct HostArtifact {
     std::string contents;
 };
 
+struct DmaSpan {
+    std::string logical_object;
+    std::string artifact;
+    U64 line_offset = 0;
+    U64 line_count = 0;
+};
+
+struct PlannedDma {
+    std::string direction;
+    int object_slot = 0;
+    DmaSpan span;
+};
+
+std::vector<std::string> parse_csv_row(const std::string& row)
+{
+    std::vector<std::string> fields;
+    std::string field;
+    bool quoted = false;
+    for (std::size_t i = 0; i < row.size(); ++i) {
+        const char ch = row[i];
+        if (ch == '"') {
+            if (quoted && i + 1 < row.size() && row[i + 1] == '"') {
+                field.push_back('"');
+                ++i;
+            } else {
+                quoted = !quoted;
+            }
+        } else if (ch == ',' && !quoted) {
+            fields.push_back(field);
+            field.clear();
+        } else {
+            field.push_back(ch);
+        }
+    }
+    fields.push_back(field);
+    return fields;
+}
+
+std::map<std::string, std::pair<U64, U64>> read_line_catalog(
+    const std::filesystem::path& line_map_path)
+{
+    std::ifstream input(line_map_path);
+    if (!input) {
+        throw std::runtime_error("failed to open " + line_map_path.string());
+    }
+    std::map<std::string, std::pair<U64, U64>> catalog;
+    std::string row;
+    std::getline(input, row);
+    while (std::getline(input, row)) {
+        const auto fields = parse_csv_row(row);
+        if (fields.size() < 6) {
+            throw std::runtime_error("invalid hardware line_map row");
+        }
+        catalog.emplace(
+            fields[0], std::make_pair(
+                static_cast<U64>(std::stoull(fields[4])),
+                static_cast<U64>(std::stoull(fields[5]))));
+    }
+    return catalog;
+}
+
+class DmaPlanBuilder {
+public:
+    explicit DmaPlanBuilder(
+        std::map<std::string, std::pair<U64, U64>> catalog)
+        : catalog_(std::move(catalog)), poly_lines_(g_n / kHpuWordsPerLine)
+    {
+        if (poly_lines_ == 0) {
+            throw std::runtime_error("invalid zero-line polynomial span");
+        }
+    }
+
+    DmaSpan poly(
+        const std::string& artifact,
+        std::size_t poly_index,
+        const std::string& logical_object) const
+    {
+        const auto found = catalog_.find(artifact);
+        if (found == catalog_.end()) {
+            throw std::runtime_error("DMA plan artifact is absent from line_map: " + artifact);
+        }
+        const U64 sub_offset = static_cast<U64>(poly_index) * poly_lines_;
+        if (sub_offset + poly_lines_ > found->second.second) {
+            throw std::runtime_error("DMA polynomial subspan exceeds artifact: " + artifact);
+        }
+        return {logical_object, artifact, found->second.first + sub_offset, poly_lines_};
+    }
+
+    DmaSpan whole(
+        const std::string& artifact,
+        const std::string& logical_object) const
+    {
+        const auto found = catalog_.find(artifact);
+        if (found == catalog_.end()) {
+            throw std::runtime_error("DMA plan artifact is absent from line_map: " + artifact);
+        }
+        return {logical_object, artifact, found->second.first, found->second.second};
+    }
+
+    void load(int object_slot, const DmaSpan& span)
+    {
+        records_.push_back({"dload", object_slot, span});
+    }
+
+    void store(int object_slot, const DmaSpan& span)
+    {
+        records_.push_back({"dstore", object_slot, span});
+    }
+
+    void load_mod_context()
+    {
+        load(4, whole("constants/mod_ctx.u32.bin", "mod_context_table"));
+    }
+
+    void bconv(
+        const std::vector<DmaSpan>& source,
+        const std::vector<DmaSpan>& source_hat_inverse,
+        const std::vector<std::vector<DmaSpan>>& source_hat_mod_target,
+        const std::vector<DmaSpan>& normalized_scratch,
+        const std::vector<DmaSpan>& target)
+    {
+        if (source.empty() || source.size() != source_hat_inverse.size()
+            || source.size() != normalized_scratch.size()
+            || target.size() != source_hat_mod_target.size()) {
+            throw std::runtime_error("invalid planned BConv dimensions");
+        }
+        load_mod_context();
+        for (std::size_t source_index = 0; source_index < source.size(); ++source_index) {
+            load(0, source[source_index]);
+            load(1, source_hat_inverse[source_index]);
+            store(0, normalized_scratch[source_index]);
+        }
+        for (std::size_t target_index = 0; target_index < target.size(); ++target_index) {
+            if (source_hat_mod_target[target_index].size() != source.size()) {
+                throw std::runtime_error("invalid planned BConv target matrix");
+            }
+            for (std::size_t source_index = 0; source_index < source.size(); ++source_index) {
+                load(0, normalized_scratch[source_index]);
+                load(1, source_hat_mod_target[target_index][source_index]);
+            }
+            store(2, target[target_index]);
+        }
+    }
+
+    void transform(
+        const std::vector<std::vector<DmaSpan>>& components,
+        const std::vector<int>& contexts,
+        bool inverse)
+    {
+        transform_between(components, components, contexts, inverse);
+    }
+
+    void transform_between(
+        const std::vector<std::vector<DmaSpan>>& input_components,
+        const std::vector<std::vector<DmaSpan>>& output_components,
+        const std::vector<int>& contexts,
+        bool inverse)
+    {
+        if (input_components.empty()) {
+            return;
+        }
+        if (input_components.size() != output_components.size()) {
+            throw std::runtime_error("invalid planned transform component count");
+        }
+        load_mod_context();
+        const std::size_t stages = u64_bit_length(g_n) - 1;
+        for (std::size_t component_index = 0;
+             component_index < input_components.size(); ++component_index) {
+            const auto& input = input_components[component_index];
+            const auto& output = output_components[component_index];
+            if (input.size() != contexts.size()
+                || output.size() != contexts.size()) {
+                throw std::runtime_error("invalid planned transform dimensions");
+            }
+            for (std::size_t basis = 0; basis < contexts.size(); ++basis) {
+                load(0, input[basis]);
+                if (!inverse) {
+                    load(3, twiddle("ntt", contexts[basis], "pre_twist", -1));
+                }
+                for (std::size_t stage = 0; stage < stages; ++stage) {
+                    load(3, twiddle(
+                        inverse ? "intt" : "ntt", contexts[basis],
+                        "stage", static_cast<int>(stage)));
+                }
+                if (inverse) {
+                    load(3, twiddle(
+                        "intt", contexts[basis], "post_untwist_scale", -1));
+                }
+                store(0, output[basis]);
+            }
+        }
+    }
+
+    void tensor(
+        const std::array<std::vector<DmaSpan>, 4>& input,
+        const std::array<std::vector<DmaSpan>, 3>& output)
+    {
+        load_mod_context();
+        for (std::size_t basis = 0; basis < input[0].size(); ++basis) {
+            load(0, input[0][basis]); load(1, input[2][basis]);
+            store(2, output[0][basis]);
+            load(0, input[0][basis]); load(1, input[3][basis]);
+            load(0, input[1][basis]); load(1, input[2][basis]);
+            store(2, output[1][basis]);
+            load(0, input[1][basis]); load(1, input[3][basis]);
+            store(2, output[2][basis]);
+        }
+    }
+
+    void scalar_multiply(
+        const std::vector<std::vector<DmaSpan>>& components,
+        const std::vector<DmaSpan>& scalar)
+    {
+        load_mod_context();
+        for (const auto& component : components) {
+            for (std::size_t basis = 0; basis < component.size(); ++basis) {
+                load(0, component[basis]);
+                load(1, scalar[basis]);
+                store(0, component[basis]);
+            }
+        }
+    }
+
+    const std::vector<PlannedDma>& records() const { return records_; }
+
+private:
+    DmaSpan twiddle(
+        const std::string& direction,
+        int basis,
+        const std::string& phase,
+        int stage) const
+    {
+        std::ostringstream path;
+        path << "constants/twiddle/" << direction << "/basis_"
+             << std::setw(2) << std::setfill('0') << basis << '/';
+        if (phase == "stage") {
+            path << "stage_" << std::setw(2) << std::setfill('0') << stage;
+        } else {
+            path << phase;
+        }
+        path << ".u32.bin";
+        return whole(path.str(), direction + "_twiddle_ctx_" + std::to_string(basis));
+    }
+
+    std::map<std::string, std::pair<U64, U64>> catalog_;
+    U64 poly_lines_;
+    std::vector<PlannedDma> records_;
+};
+
+std::vector<PlannedDma> rebase_dma_records(
+    const std::vector<PlannedDma>& planned,
+    const std::map<std::string, std::pair<U64, U64>>& old_catalog,
+    const std::map<std::string, std::pair<U64, U64>>& new_catalog)
+{
+    std::vector<PlannedDma> rebased = planned;
+    for (PlannedDma& entry : rebased) {
+        const auto old_span = old_catalog.find(entry.span.artifact);
+        const auto new_span = new_catalog.find(entry.span.artifact);
+        if (old_span == old_catalog.end() || new_span == new_catalog.end()) {
+            throw std::runtime_error(
+                "cannot rebase DMA artifact: " + entry.span.artifact);
+        }
+        if (entry.span.line_offset < old_span->second.first) {
+            throw std::runtime_error(
+                "DMA subspan precedes its artifact: " + entry.span.artifact);
+        }
+        const U64 relative_offset =
+            entry.span.line_offset - old_span->second.first;
+        if (relative_offset + entry.span.line_count > new_span->second.second) {
+            throw std::runtime_error(
+                "rebased DMA subspan exceeds artifact: " + entry.span.artifact);
+        }
+        entry.span.line_offset = new_span->second.first + relative_offset;
+    }
+    return rebased;
+}
+
+void write_resolved_dma_plan(
+    const std::filesystem::path& suite_root,
+    const std::string& case_name,
+    const std::vector<PlannedDma>& planned)
+{
+    const auto manifest_path = suite_root / case_name / "dma_relocation_manifest.csv";
+    std::ifstream manifest(manifest_path);
+    if (!manifest) {
+        throw std::runtime_error("missing DMA relocation manifest: " + manifest_path.string());
+    }
+    std::string header;
+    std::getline(manifest, header);
+    std::vector<std::vector<std::string>> relocation;
+    std::string row;
+    while (std::getline(manifest, row)) {
+        relocation.push_back(parse_csv_row(row));
+    }
+    if (relocation.size() != planned.size()) {
+        throw std::runtime_error(
+            case_name + " resolved DMA plan count differs from encoded relocation manifest");
+    }
+
+    std::ostringstream output;
+    output << "instruction_index,dma_index,direction,object_slot,logical_object,artifact,line_offset,line_count,status\n";
+    for (std::size_t index = 0; index < planned.size(); ++index) {
+        if (relocation[index].size() < 4) {
+            throw std::runtime_error("invalid DMA relocation manifest row");
+        }
+        const auto& entry = planned[index];
+        if (relocation[index][2] != entry.direction
+            || std::stoi(relocation[index][3]) != entry.object_slot) {
+            throw std::runtime_error(
+                case_name + " planned DMA direction/object differs at index "
+                + std::to_string(index));
+        }
+        output << relocation[index][0] << ',' << relocation[index][1] << ','
+               << entry.direction << ',' << entry.object_slot << ','
+               << csv_field(entry.span.logical_object) << ','
+               << csv_field(entry.span.artifact) << ','
+               << entry.span.line_offset << ',' << entry.span.line_count
+               << ",RESOLVED\n";
+    }
+    write_text(
+        suite_root / case_name / "test_data" / "dma_plan.csv",
+        output.str());
+}
+
 U64 fnv1a_text(const std::string& text)
 {
     U64 hash = kFnv1a64OffsetBasis;
@@ -1352,13 +2189,30 @@ std::string signed_comparison_csv(
     return output.str();
 }
 
+std::string residues_comparison_csv(
+    const Poly& expected,
+    const Poly& actual)
+{
+    if (expected.size() != actual.size()) {
+        throw std::runtime_error("residue comparison size mismatch");
+    }
+    std::ostringstream output;
+    output << "index,expected,actual,equal\n";
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        output << index << ',' << expected[index] << ',' << actual[index] << ','
+               << (expected[index] == actual[index] ? 1 : 0) << '\n';
+    }
+    return output.str();
+}
+
 void add_artifact(std::vector<Artifact>& artifacts,
                   std::string path,
                   std::string role,
                   std::vector<std::size_t> shape,
                   std::vector<U64> words,
                   std::vector<std::string> axes = {},
-                  HardwareDomain hardware_domain = HardwareDomain::kCoefficient)
+                  HardwareDomain hardware_domain = HardwareDomain::kCoefficient,
+                  bool hardware_visible = true)
 {
     Artifact artifact{
         std::move(path),
@@ -1367,6 +2221,7 @@ void add_artifact(std::vector<Artifact>& artifacts,
         std::move(words),
         std::move(axes),
         hardware_domain,
+        hardware_visible,
         0};
     artifact.checksum = fnv1a_words(artifact.words);
     artifacts.push_back(std::move(artifact));
@@ -1834,6 +2689,9 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
     std::filesystem::remove_all(hardware_root);
     std::vector<HardwareImage> images;
     for (const Artifact& artifact : artifacts) {
+        if (!artifact.hardware_visible) {
+            continue;
+        }
         add_hardware_image(images,
                            hardware_image_path(artifact.path).string(),
                            "uint32 hardware form of " + artifact.role,
@@ -1955,6 +2813,11 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
         hpu_mem_words.insert(hpu_mem_words.end(), image.padded_words.begin(), image.padded_words.end());
         write_binary32(hardware_root / image.path, image.padded_words);
     }
+    if (next_line > g_hpu_mem_max_lines) {
+        throw std::runtime_error(
+            "hardware package exceeds configured hpu_mem_max_lines="
+            + std::to_string(g_hpu_mem_max_lines));
+    }
     if (hpu_mem_words.size() != next_line * kHpuWordsPerLine) {
         throw std::runtime_error("HPU_MEM image line accounting mismatch");
     }
@@ -2038,6 +2901,8 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
                    << "  \"line_bytes\": " << kHpuLineBytes << ",\n"
                    << "  \"words_per_line\": " << kHpuWordsPerLine << ",\n"
                    << "  \"size_lines\": " << next_line << ",\n"
+                   << "  \"configured_max_lines\": "
+                   << g_hpu_mem_max_lines << ",\n"
                    << "  \"size_bytes\": " << window_bytes << ",\n"
                    << "  \"end_address_exclusive\": \"" << hex64(kHpuMemBase + window_bytes) << "\",\n"
                    << "  \"image_fnv1a64\": \"" << hex64(fnv1a_words32(hpu_mem_words)) << "\",\n"
@@ -2202,13 +3067,14 @@ void write_case_package(const std::filesystem::path& suite_root,
     }
 
     std::ostringstream manifest;
-    manifest << "path,readable_path,role,shape,elements,bytes,fnv1a64\n";
+    manifest << "path,readable_path,role,shape,elements,bytes,hardware_visible,fnv1a64\n";
     for (const Artifact& artifact : artifacts) {
         manifest << csv_field(artifact.path) << ','
                  << csv_field(readable_path(artifact.path).string()) << ','
                  << csv_field(artifact.role) << ','
                  << csv_field(shape_string(artifact.shape)) << ',' << artifact.words.size()
                  << ',' << artifact.words.size() * sizeof(U64) << ','
+                 << (artifact.hardware_visible ? 1 : 0) << ','
                  << hex64(artifact.checksum) << '\n';
     }
     write_text(root / "params.json", params);
@@ -2262,6 +3128,33 @@ void generate(const std::filesystem::path& output_root,
         next = prime + order;
     }
 
+    std::vector<U64> b_moduli;
+    next = 3000000000ULL;
+    for (std::size_t i = 0; i < g_bfv_num_b; ++i) {
+        const U64 prime = find_ntt_prime(next, order);
+        if (prime > UINT32_MAX) {
+            throw std::runtime_error("BFV B basis exceeds the 32-bit PE modulus ABI");
+        }
+        b_moduli.push_back(prime);
+        next = prime + order;
+    }
+    const U64 m_sk = find_ntt_prime(next, order);
+    if (m_sk > UINT32_MAX || m_sk <= 2 * g_bfv_num_b) {
+        throw std::runtime_error("BFV m_sk violates the branchless-SK range gate");
+    }
+
+    const BigInt q_product = big_product(q_moduli);
+    const unsigned no_smrq_extra_bits = u64_bit_length(
+        static_cast<U64>(g_num_q * g_num_q - 1));
+    const unsigned required_b_bits = 33
+        + u64_bit_length(g_plaintext_modulus)
+        + big_bit_length(q_product)
+        + no_smrq_extra_bits;
+    if (product_bit_length(b_moduli) <= required_b_bits) {
+        throw std::runtime_error(
+            "BFV B basis is too small for the no-SMRQ error bound");
+    }
+
     std::vector<U64> all_moduli = q_moduli;
     all_moduli.insert(all_moduli.end(), p_moduli.begin(), p_moduli.end());
     for (U64 modulus : all_moduli) {
@@ -2275,6 +3168,27 @@ void generate(const std::filesystem::path& output_root,
         all_roots.push_back(find_primitive_2n_root(modulus, g_n));
     }
     const std::vector<U64> q_roots(all_roots.begin(), all_roots.begin() + g_num_q);
+    std::vector<U64> bsk_moduli = b_moduli;
+    bsk_moduli.push_back(m_sk);
+    std::vector<U64> bsk_roots;
+    for (U64 modulus : bsk_moduli) {
+        bsk_roots.push_back(find_primitive_2n_root(modulus, g_n));
+    }
+    std::vector<U64> bfv_context_moduli = all_moduli;
+    bfv_context_moduli.insert(
+        bfv_context_moduli.end(), bsk_moduli.begin(), bsk_moduli.end());
+    bfv_context_moduli.push_back(g_plaintext_modulus);
+    std::vector<U64> bfv_multiply_roots = all_roots;
+    bfv_multiply_roots.insert(
+        bfv_multiply_roots.end(), bsk_roots.begin(), bsk_roots.end());
+    bfv_multiply_roots.push_back(0);
+
+    std::vector<U64> unique_contexts = bfv_context_moduli;
+    std::sort(unique_contexts.begin(), unique_contexts.end());
+    if (std::adjacent_find(unique_contexts.begin(), unique_contexts.end())
+        != unique_contexts.end()) {
+        throw std::runtime_error("BFV Q/P/B/m_sk/t contexts must be pairwise distinct");
+    }
     std::vector<U64> bgv_moduli = all_moduli;
     bgv_moduli.push_back(g_plaintext_modulus);
     std::vector<U64> bgv_roots = all_roots;
@@ -2766,6 +3680,104 @@ void generate(const std::filesystem::path& output_root,
         throw std::runtime_error("BGV ModSwitch slot Decode failed");
     }
 
+    // BFV fixture: batch Encode, no-SMRQ BEHZ tensor product, branchless-SK,
+    // independent Q/P relinearization kernel, rounded ModSwitch, and Decode.
+    const std::vector<std::int64_t> bfv_slots_a = bgv_slots_a;
+    const std::vector<std::int64_t> bfv_slots_b = bgv_slots_b;
+    const Poly bfv_plain_a = hpu::scheme::bfv::encode_slots(
+        bfv_slots_a, g_n, g_plaintext_modulus);
+    const Poly bfv_plain_b = hpu::scheme::bfv::encode_slots(
+        bfv_slots_b, g_n, g_plaintext_modulus);
+    if (hpu::scheme::bfv::decode_slots(bfv_plain_a, g_plaintext_modulus)
+            != bfv_slots_a
+        || hpu::scheme::bfv::decode_slots(bfv_plain_b, g_plaintext_modulus)
+            != bfv_slots_b) {
+        throw std::runtime_error("BFV batch Encode/Decode round-trip failed");
+    }
+    std::vector<std::int64_t> bfv_expected_slots(g_n);
+    for (std::size_t slot = 0; slot < g_n; ++slot) {
+        I128 product = static_cast<I128>(bfv_slots_a[slot]) * bfv_slots_b[slot];
+        product %= static_cast<I128>(g_plaintext_modulus);
+        if (product > static_cast<I128>(g_plaintext_modulus / 2)) {
+            product -= static_cast<I128>(g_plaintext_modulus);
+        } else if (product < -static_cast<I128>(g_plaintext_modulus / 2)) {
+            product += static_cast<I128>(g_plaintext_modulus);
+        }
+        bfv_expected_slots[slot] = static_cast<std::int64_t>(product);
+    }
+    const Poly bfv_expected_coeff_t = hpu::scheme::bfv::encode_slots(
+        bfv_expected_slots, g_n, g_plaintext_modulus);
+
+    const std::vector<std::int64_t> zero_error(g_n, 0);
+    const Ciphertext bfv_ct_a = encrypt_bfv_test_message(
+        bfv_plain_a, zero_error, secret_q, q_moduli, q_roots, rng);
+    const Ciphertext bfv_ct_b = encrypt_bfv_test_message(
+        bfv_plain_b, zero_error, secret_q, q_moduli, q_roots, rng);
+    BfvBehzTrace bfv_behz_trace;
+    const TensorCiphertext bfv_tensor_q = bfv_behz_multiply(
+        bfv_ct_a, bfv_ct_b, q_moduli, b_moduli, m_sk,
+        q_roots, bsk_roots, &bfv_behz_trace);
+    SchemeMultiplyTrace bfv_relinearization_trace;
+    const Ciphertext bfv_product_q = relinearize_tensor(
+        bfv_tensor_q, secret_q, rlk_ntt,
+        q_moduli, p_moduli, all_moduli, q_roots, all_roots,
+        &bfv_relinearization_trace);
+    const Poly bfv_decrypted_coeff_t = decrypt_bfv_scale_and_round(
+        bfv_product_q, secret_q, q_moduli, q_roots);
+    if (bfv_decrypted_coeff_t != bfv_expected_coeff_t
+        || hpu::scheme::bfv::decode_slots(
+               bfv_decrypted_coeff_t, g_plaintext_modulus)
+            != bfv_expected_slots) {
+        throw std::runtime_error("BFV BEHZ multiply/relinearize Decode failed");
+    }
+
+    Ciphertext bfv_product_qprime;
+    for (std::size_t component = 0; component < 2; ++component) {
+        bfv_product_qprime[component] = rescale_drop_last(
+            bfv_product_q[component], q_moduli);
+        verify_equal(
+            bfv_product_qprime[component],
+            direct_rounded_divide_last(bfv_product_q[component], q_moduli),
+            "BFV ModSwitch direct rounded CRT check");
+    }
+    const Poly bfv_switched_coeff_t = decrypt_bfv_scale_and_round(
+        bfv_product_qprime, secret_qprime,
+        retained_q_moduli, retained_q_roots);
+    if (bfv_switched_coeff_t != bfv_expected_coeff_t
+        || hpu::scheme::bfv::decode_slots(
+               bfv_switched_coeff_t, g_plaintext_modulus)
+            != bfv_expected_slots) {
+        throw std::runtime_error("BFV ModSwitch Decode failed");
+    }
+
+    std::vector<std::int64_t> bfv_noise_a(g_n);
+    std::vector<std::int64_t> bfv_noise_b(g_n);
+    for (std::size_t coefficient = 0; coefficient < g_n; ++coefficient) {
+        bfv_noise_a[coefficient] = static_cast<std::int64_t>(coefficient % 3) - 1;
+        bfv_noise_b[coefficient] = static_cast<std::int64_t>((2 * coefficient + 1) % 3) - 1;
+    }
+    const Ciphertext bfv_noise_ct_a = encrypt_bfv_test_message(
+        bfv_plain_a, bfv_noise_a, secret_q, q_moduli, q_roots, rng);
+    const Ciphertext bfv_noise_ct_b = encrypt_bfv_test_message(
+        bfv_plain_b, bfv_noise_b, secret_q, q_moduli, q_roots, rng);
+    const TensorCiphertext bfv_noise_tensor = bfv_behz_multiply(
+        bfv_noise_ct_a, bfv_noise_ct_b, q_moduli, b_moduli, m_sk,
+        q_roots, bsk_roots, nullptr);
+    const Ciphertext bfv_noise_product = relinearize_tensor(
+        bfv_noise_tensor, secret_q, rlk_ntt,
+        q_moduli, p_moduli, all_moduli, q_roots, all_roots, nullptr);
+    Ciphertext bfv_noise_switched;
+    for (std::size_t component = 0; component < 2; ++component) {
+        bfv_noise_switched[component] = rescale_drop_last(
+            bfv_noise_product[component], q_moduli);
+    }
+    const Poly bfv_noise_result = decrypt_bfv_scale_and_round(
+        bfv_noise_switched, secret_qprime,
+        retained_q_moduli, retained_q_roots);
+    if (bfv_noise_result != bfv_expected_coeff_t) {
+        throw std::runtime_error("BFV nonzero-noise smoke Decode failed");
+    }
+
     std::vector<Artifact> artifacts;
     std::vector<U64> words;
     append_words(words, ct_a[0]); append_words(words, ct_a[1]);
@@ -2860,6 +3872,8 @@ void generate(const std::filesystem::path& output_root,
            << "  \"N\": " << g_n << ",\n"
            << "  \"num_q\": " << g_num_q << ",\n"
            << "  \"num_p\": " << g_num_p << ",\n"
+           << "  \"bfv_num_b\": " << g_bfv_num_b << ",\n"
+           << "  \"hpu_mem_max_lines\": " << g_hpu_mem_max_lines << ",\n"
            << "  \"dnum\": " << g_dnum << ",\n"
            << "  \"plaintext_modulus\": " << g_plaintext_modulus << ",\n"
            << "  \"seed\": \"" << hex64(g_seed) << "\",\n"
@@ -2946,6 +3960,10 @@ void generate(const std::filesystem::path& output_root,
     write_text(output_root / "VALIDATION.txt", validation.str());
 
     if (suite_root != nullptr) {
+        std::filesystem::remove_all(*suite_root / "bfv_behz_multiply");
+        std::filesystem::remove_all(*suite_root / "bfv_relinearization");
+        std::filesystem::remove(
+            *suite_root / "bfv_ciphertext_multiply" / "pipeline.json");
         const auto common_params = [&](const std::string& operation,
                                        const std::string& input_domain,
                                        const std::string& output_domain,
@@ -3547,6 +4565,968 @@ void generate(const std::filesystem::path& output_root,
             "metadata,host_update,correction_factor,scalar,t,READY\n"
             "output,dstore,ciphertext_component_out,coefficient,Qprime,READY\n");
 
+        const Poly bfv_coefficient_t = hpu::scheme::bfv::encode_coefficients(
+            bgv_coefficient_sample, g_n, g_plaintext_modulus);
+        const BasisPoly bfv_coefficient_q = lift_basis(
+            bfv_coefficient_t, q_moduli);
+        const BasisPoly bfv_batch_q = lift_basis(bfv_plain_a, q_moduli);
+        const BasisPoly bfv_batch_ntt = transform_basis(
+            bfv_batch_q, q_moduli, q_roots, false);
+        case_artifacts.clear();
+        words.clear(); append_words(words, bfv_coefficient_q);
+        add_artifact(
+            case_artifacts, "host/coefficient_plaintext_q.bin",
+            "BFV coefficient encoding example, coefficient RNS-Q",
+            {g_num_q, g_n}, std::move(words),
+            {"basis_q", "coefficient"}, HardwareDomain::kCoefficient, false);
+        words.clear(); append_words(words, bfv_batch_q);
+        add_artifact(
+            case_artifacts, "input/batch_plaintext_q.bin",
+            "BFV generator-3 batched plaintext, coefficient RNS-Q",
+            {g_num_q, g_n}, std::move(words),
+            {"basis_q", "coefficient"});
+        add_artifact(
+            case_artifacts, "runtime/output_ntt_q.bin",
+            "zero-initialized destination for the BFV Encode kernel",
+            {g_num_q, g_n}, Poly(g_num_q * g_n, 0),
+            {"basis_q", "coefficient"}, HardwareDomain::kNtt);
+        words.clear(); append_words(words, bfv_batch_ntt);
+        add_artifact(
+            case_artifacts, "expected/batch_plaintext_ntt_q.bin",
+            "golden BFV plaintext ready for PMult, NTT RNS-Q",
+            {g_num_q, g_n}, std::move(words),
+            {"basis_q", "coefficient"}, HardwareDomain::kNtt, false);
+        write_case_package(
+            *suite_root, "bfv_encode",
+            scheme_params(
+                "BFV", "coefficient_encode_and_batch_encode",
+                "host signed coefficients or N slots -> coefficient/RNS-Q",
+                "plaintext/NTT/Q", q_moduli,
+                "  \"plaintext_modulus\": "
+                    + std::to_string(g_plaintext_modulus) + ",\n"
+                "  \"slot_count\": " + std::to_string(g_n) + ",\n"
+                "  \"slot_layout\": \"generator-3, two rows of N/2\",\n"
+                "  \"batching_condition\": \"t prime and 2N divides t-1\",\n"
+                "  \"decode_location\": \"host_only\",\n"
+                "  \"hpu_operation\": \"per-Q-limb negacyclic NTT\""),
+            std::move(case_artifacts), q_moduli, q_roots,
+            TwiddleRequirement::kRequired);
+        write_host_package(
+            *suite_root / "bfv_encode" / "test_data",
+            {
+                {"coefficient_input.csv", "signed BFV coefficient input",
+                 signed_values_csv(bgv_coefficient_sample, "input")},
+                {"coefficient_encoded_mod_t.csv", "BFV coefficient encoding modulo t",
+                 residues_csv(bfv_coefficient_t, "coefficient_mod_t")},
+                {"batch_slots.csv", "two-row generator-3 input slots",
+                 signed_values_csv(bfv_slots_a, "input")},
+                {"batch_coefficients_mod_t.csv", "BFV batched polynomial modulo t",
+                 residues_csv(bfv_plain_a, "coefficient_mod_t")},
+                {"batch_decoded_slots.csv", "decoded BFV batch slots",
+                 signed_values_csv(
+                     hpu::scheme::bfv::decode_slots(
+                         bfv_plain_a, g_plaintext_modulus),
+                     "decoded")},
+                {"validation.txt", "BFV host Encode/Decode status",
+                 "PASS\ncoefficient_roundtrip=PASS\nbatch_roundtrip=PASS\n"},
+            });
+        DmaPlanBuilder bfv_encode_dma(read_line_catalog(
+            *suite_root / "bfv_encode" / "test_data" /
+            "hardware" / "line_map.csv"));
+        std::vector<DmaSpan> bfv_encode_input;
+        std::vector<DmaSpan> bfv_encode_output;
+        std::vector<int> bfv_encode_contexts;
+        for (std::size_t basis = 0; basis < q_moduli.size(); ++basis) {
+            bfv_encode_input.push_back(bfv_encode_dma.poly(
+                "images/input/batch_plaintext_q.u32.bin", basis,
+                "bfv_batch_plaintext_q[" + std::to_string(basis) + "]"));
+            bfv_encode_output.push_back(bfv_encode_dma.poly(
+                "images/runtime/output_ntt_q.u32.bin", basis,
+                "bfv_batch_plaintext_ntt_q[" + std::to_string(basis) + "]"));
+            bfv_encode_contexts.push_back(static_cast<int>(basis));
+        }
+        bfv_encode_dma.transform_between(
+            {bfv_encode_input}, {bfv_encode_output},
+            bfv_encode_contexts, false);
+        write_resolved_dma_plan(
+            *suite_root, "bfv_encode", bfv_encode_dma.records());
+
+        const FastBconvConstants q_to_bsk_constants =
+            make_fast_bconv_constants(q_moduli, bsk_moduli);
+        const FastBconvConstants b_to_q_constants =
+            make_fast_bconv_constants(b_moduli, q_moduli);
+        const FastBconvConstants b_to_msk_constants =
+            make_fast_bconv_constants(b_moduli, {m_sk});
+        const FastBconvConstants msk_to_q_constants =
+            make_fast_bconv_constants({m_sk}, q_moduli);
+
+        case_artifacts.clear();
+        words.clear(); append_words(words, bfv_ct_a[0]); append_words(words, bfv_ct_a[1]);
+        add_artifact(
+            case_artifacts, "input/ct_a_q.bin",
+            "zero-noise BFV ciphertext A, coefficient Q",
+            {2, g_num_q, g_n}, std::move(words),
+            {"component[c0,c1]", "basis_q", "coefficient"});
+        words.clear(); append_words(words, bfv_ct_b[0]); append_words(words, bfv_ct_b[1]);
+        add_artifact(
+            case_artifacts, "input/ct_b_q.bin",
+            "zero-noise BFV ciphertext B, coefficient Q",
+            {2, g_num_q, g_n}, std::move(words),
+            {"component[c0,c1]", "basis_q", "coefficient"});
+
+        words.clear(); append_words(words, q_to_bsk_constants.source_hat_inverse);
+        add_artifact(
+            case_artifacts, "constants/q_to_bsk_qhat_inv.bin",
+            "FastBConv Q source-hat inverses",
+            {g_num_q, g_n}, std::move(words),
+            {"source_basis_q", "coefficient"});
+        words.clear();
+        for (const BasisPoly& target : q_to_bsk_constants.source_hat_mod_target) {
+            append_words(words, target);
+        }
+        add_artifact(
+            case_artifacts, "constants/q_to_bsk_qhat_mod.bin",
+            "FastBConv Q source hats reduced in every Bsk target",
+            {bsk_moduli.size(), g_num_q, g_n}, std::move(words),
+            {"target_basis_bsk", "source_basis_q", "coefficient"});
+
+        BasisPoly t_mod_q_bsk;
+        std::vector<U64> q_bsk_moduli = q_moduli;
+        q_bsk_moduli.insert(
+            q_bsk_moduli.end(), bsk_moduli.begin(), bsk_moduli.end());
+        for (U64 modulus : q_bsk_moduli) {
+            t_mod_q_bsk.push_back(Poly(
+                g_n, g_plaintext_modulus % modulus));
+        }
+        words.clear(); append_words(words, t_mod_q_bsk);
+        add_artifact(
+            case_artifacts, "constants/t_mod_q_bsk.bin",
+            "plaintext modulus t reduced in every Q and Bsk context",
+            {q_bsk_moduli.size(), g_n}, std::move(words),
+            {"basis_q_then_bsk", "coefficient"});
+
+        BasisPoly q_inverse_bsk;
+        for (U64 modulus : bsk_moduli) {
+            q_inverse_bsk.push_back(Poly(
+                g_n, inverse_mod(product_mod(q_moduli, modulus), modulus)));
+        }
+        words.clear(); append_words(words, q_inverse_bsk);
+        add_artifact(
+            case_artifacts, "constants/q_inverse_mod_bsk.bin",
+            "Q inverse in every Bsk context for FastFloor",
+            {bsk_moduli.size(), g_n}, std::move(words),
+            {"basis_bsk", "coefficient"});
+
+        words.clear(); append_words(words, b_to_q_constants.source_hat_inverse);
+        add_artifact(
+            case_artifacts, "constants/b_qhat_inv.bin",
+            "FastBConv B source-hat inverses shared by B-to-Q and B-to-m_sk",
+            {b_moduli.size(), g_n}, std::move(words),
+            {"source_basis_b", "coefficient"});
+        words.clear();
+        for (const BasisPoly& target : b_to_q_constants.source_hat_mod_target) {
+            append_words(words, target);
+        }
+        add_artifact(
+            case_artifacts, "constants/b_qhat_mod_q.bin",
+            "FastBConv B source hats reduced in Q",
+            {g_num_q, b_moduli.size(), g_n}, std::move(words),
+            {"target_basis_q", "source_basis_b", "coefficient"});
+        words.clear();
+        for (const BasisPoly& target : b_to_msk_constants.source_hat_mod_target) {
+            append_words(words, target);
+        }
+        add_artifact(
+            case_artifacts, "constants/b_qhat_mod_msk.bin",
+            "FastBConv B source hats reduced in m_sk",
+            {1, b_moduli.size(), g_n}, std::move(words),
+            {"target_basis_msk", "source_basis_b", "coefficient"});
+        add_artifact(
+            case_artifacts, "constants/b_inverse_mod_msk.bin",
+            "B inverse modulo m_sk for branchless alpha",
+            {g_n}, Poly(g_n, inverse_mod(product_mod(b_moduli, m_sk), m_sk)));
+        words.clear(); append_words(words, msk_to_q_constants.source_hat_inverse);
+        add_artifact(
+            case_artifacts, "constants/msk_qhat_inv.bin",
+            "single-source m_sk BConv inverse",
+            {1, g_n}, std::move(words),
+            {"source_basis_msk", "coefficient"});
+        words.clear();
+        for (const BasisPoly& target : msk_to_q_constants.source_hat_mod_target) {
+            append_words(words, target);
+        }
+        add_artifact(
+            case_artifacts, "constants/msk_qhat_mod_q.bin",
+            "single-source m_sk BConv target residues",
+            {g_num_q, 1, g_n}, std::move(words),
+            {"target_basis_q", "source_basis_msk", "coefficient"});
+        BasisPoly neg_b_q;
+        for (U64 modulus : q_moduli) {
+            const U64 reduced = product_mod(b_moduli, modulus);
+            neg_b_q.push_back(Poly(
+                g_n, reduced == 0 ? 0 : modulus - reduced));
+        }
+        words.clear(); append_words(words, neg_b_q);
+        add_artifact(
+            case_artifacts, "constants/negative_b_mod_q.bin",
+            "-B reduced in every Q context",
+            {g_num_q, g_n}, std::move(words),
+            {"basis_q", "coefficient"});
+        const std::size_t bfv_behz_workspace_polys =
+            4 * bsk_moduli.size() + q_moduli.size();
+        add_artifact(
+            case_artifacts, "runtime/behz_workspace.bin",
+            "BFV BEHZ workspace with lifetime reuse",
+            {bfv_behz_workspace_polys, g_n},
+            Poly(bfv_behz_workspace_polys * g_n, 0),
+            {"workspace_polynomial", "coefficient"});
+
+        const auto add_hidden_tensor = [&case_artifacts](
+            const std::string& path, const std::string& role,
+            const TensorCiphertext& value, std::size_t bases,
+            HardwareDomain domain = HardwareDomain::kCoefficient) {
+            std::vector<U64> flattened;
+            for (const BasisPoly& component : value) {
+                append_words(flattened, component);
+            }
+            add_artifact(
+                case_artifacts, path, role,
+                {3, bases, g_n}, std::move(flattened),
+                {"tensor_component[t0,t1,t2]", "basis", "coefficient"},
+                domain, false);
+        };
+        words.clear(); append_words(words, bfv_behz_trace.left_bsk[0]);
+        append_words(words, bfv_behz_trace.left_bsk[1]);
+        append_words(words, bfv_behz_trace.right_bsk[0]);
+        append_words(words, bfv_behz_trace.right_bsk[1]);
+        add_artifact(
+            case_artifacts, "expected/inputs_bsk.bin",
+            "no-SMRQ FastBConv of four input components to Bsk",
+            {4, bsk_moduli.size(), g_n}, std::move(words),
+            {"input_component[A0,A1,B0,B1]", "basis_bsk", "coefficient"},
+            HardwareDomain::kCoefficient, false);
+        add_hidden_tensor(
+            "expected/tensor_q_ntt.bin", "BFV tensor product under Q, NTT",
+            bfv_behz_trace.tensor_q_ntt, q_moduli.size(), HardwareDomain::kNtt);
+        add_hidden_tensor(
+            "expected/tensor_bsk_ntt.bin", "BFV tensor product under Bsk, NTT",
+            bfv_behz_trace.tensor_bsk_ntt, bsk_moduli.size(), HardwareDomain::kNtt);
+        add_hidden_tensor(
+            "expected/tensor_q_coeff.bin", "BFV tensor product under Q, coefficient",
+            bfv_behz_trace.tensor_q_coeff, q_moduli.size());
+        add_hidden_tensor(
+            "expected/tensor_bsk_coeff.bin", "BFV tensor product under Bsk, coefficient",
+            bfv_behz_trace.tensor_bsk_coeff, bsk_moduli.size());
+        add_hidden_tensor(
+            "expected/scaled_q.bin", "BFV t-times tensor under Q",
+            bfv_behz_trace.scaled_q, q_moduli.size());
+        add_hidden_tensor(
+            "expected/scaled_bsk.bin", "BFV t-times tensor under Bsk",
+            bfv_behz_trace.scaled_bsk, bsk_moduli.size());
+        add_hidden_tensor(
+            "expected/fast_floor_bsk.bin", "BFV FastFloor result under Bsk",
+            bfv_behz_trace.fast_floor_bsk, bsk_moduli.size());
+        words.clear();
+        for (const Poly& alpha : bfv_behz_trace.alpha_msk) {
+            append_words(words, alpha);
+        }
+        add_artifact(
+            case_artifacts, "expected/alpha_msk.bin",
+            "branchless-SK alpha in [0,|B|]",
+            {3, 1, g_n}, std::move(words),
+            {"tensor_component[t0,t1,t2]", "basis_msk", "coefficient"},
+            HardwareDomain::kCoefficient, false);
+        add_hidden_tensor(
+            "expected/ciphertext_tensor_q.bin",
+            "phase-0 three-component BFV ciphertext output",
+            bfv_tensor_q, q_moduli.size());
+
+        write_case_package(
+            *suite_root, "bfv_ciphertext_multiply",
+            scheme_params(
+                "BFV", "ciphertext_multiply_no_smrq_branchless_sk_relinearization",
+                "two ciphertexts/coefficient/Q",
+                "two-component ciphertext/coefficient/Q",
+                bfv_context_moduli,
+                "  \"context_order\": \"Q|Pks|B|m_sk|t\",\n"
+                "  \"num_b\": " + std::to_string(g_bfv_num_b) + ",\n"
+                "  \"m_sk_mod_id\": "
+                    + std::to_string(g_num_q + g_num_p + g_bfv_num_b) + ",\n"
+                "  \"t_mod_id\": "
+                    + std::to_string(g_num_q + g_num_p + g_bfv_num_b + 1) + ",\n"
+                "  \"q_bits\": " + std::to_string(big_bit_length(q_product)) + ",\n"
+                "  \"b_bits\": " + std::to_string(product_bit_length(b_moduli)) + ",\n"
+                "  \"required_b_bits_exclusive\": "
+                    + std::to_string(required_b_bits) + ",\n"
+                "  \"smrq\": false,\n"
+                "  \"branchless_sk\": true,\n"
+                "  \"single_kernel\": true,\n"
+                "  \"terminal_psync_count\": 1,\n"
+                "  \"hpu_mem_max_lines\": "
+                    + std::to_string(g_hpu_mem_max_lines)),
+            case_artifacts, bfv_context_moduli, bfv_multiply_roots,
+            TwiddleRequirement::kRequired);
+
+        const auto bfv_behz_catalog = read_line_catalog(
+            *suite_root / "bfv_ciphertext_multiply" / "test_data" /
+            "hardware" / "line_map.csv");
+        DmaPlanBuilder bfv_behz_dma(bfv_behz_catalog);
+        const auto make_polys = [&bfv_behz_dma](
+            const std::string& artifact,
+            std::size_t first,
+            std::size_t count,
+            const std::string& label) {
+            std::vector<DmaSpan> spans;
+            for (std::size_t index = 0; index < count; ++index) {
+                spans.push_back(bfv_behz_dma.poly(
+                    artifact, first + index,
+                    label + "[" + std::to_string(index) + "]"));
+            }
+            return spans;
+        };
+        const std::string ct_a_image = "images/input/ct_a_q.u32.bin";
+        const std::string ct_b_image = "images/input/ct_b_q.u32.bin";
+        const std::string workspace_image =
+            "images/runtime/behz_workspace.u32.bin";
+        std::array<std::vector<DmaSpan>, 4> bfv_q_input{
+            make_polys(ct_a_image, 0, g_num_q, "ct_a.c0.q"),
+            make_polys(ct_a_image, g_num_q, g_num_q, "ct_a.c1.q"),
+            make_polys(ct_b_image, 0, g_num_q, "ct_b.c0.q"),
+            make_polys(ct_b_image, g_num_q, g_num_q, "ct_b.c1.q")};
+        std::array<std::vector<DmaSpan>, 4> bfv_bsk_input{
+            make_polys(workspace_image, 0, bsk_moduli.size(), "ct_a.c0.bsk"),
+            make_polys(workspace_image, bsk_moduli.size(), bsk_moduli.size(), "ct_a.c1.bsk"),
+            make_polys(workspace_image, 2 * bsk_moduli.size(), bsk_moduli.size(), "ct_b.c0.bsk"),
+            make_polys(workspace_image, 3 * bsk_moduli.size(), bsk_moduli.size(), "ct_b.c1.bsk")};
+        const auto q_bconv_inverse = make_polys(
+            "images/constants/q_to_bsk_qhat_inv.u32.bin",
+            0, g_num_q, "q_to_bsk.qhat_inv");
+        std::vector<std::vector<DmaSpan>> q_bconv_target;
+        for (std::size_t target = 0; target < bsk_moduli.size(); ++target) {
+            q_bconv_target.push_back(make_polys(
+                "images/constants/q_to_bsk_qhat_mod.u32.bin",
+                target * g_num_q, g_num_q,
+                "q_to_bsk.qhat_mod.target" + std::to_string(target)));
+        }
+        const auto q_normalized_scratch = make_polys(
+            workspace_image, 4 * bsk_moduli.size(), g_num_q,
+            "q_to_bsk.normalized");
+        for (std::size_t component = 0; component < 4; ++component) {
+            bfv_behz_dma.bconv(
+                bfv_q_input[component], q_bconv_inverse,
+                q_bconv_target, q_normalized_scratch,
+                bfv_bsk_input[component]);
+        }
+
+        std::vector<int> q_contexts;
+        for (std::size_t basis = 0; basis < q_moduli.size(); ++basis) {
+            q_contexts.push_back(static_cast<int>(basis));
+        }
+        std::vector<int> bsk_contexts;
+        for (std::size_t basis = 0; basis < bsk_moduli.size(); ++basis) {
+            bsk_contexts.push_back(
+                static_cast<int>(g_num_q + g_num_p + basis));
+        }
+        bfv_behz_dma.transform(
+            {bfv_q_input[0], bfv_q_input[1],
+             bfv_q_input[2], bfv_q_input[3]},
+            q_contexts, false);
+        bfv_behz_dma.transform(
+            {bfv_bsk_input[0], bfv_bsk_input[1],
+             bfv_bsk_input[2], bfv_bsk_input[3]},
+            bsk_contexts, false);
+
+        std::array<std::vector<DmaSpan>, 3> bfv_q_tensor{
+            bfv_q_input[0], bfv_q_input[1], bfv_q_input[2]};
+        std::array<std::vector<DmaSpan>, 3> bfv_bsk_tensor{
+            bfv_bsk_input[0], bfv_bsk_input[1], bfv_bsk_input[2]};
+        bfv_behz_dma.tensor(bfv_q_input, bfv_q_tensor);
+        bfv_behz_dma.tensor(bfv_bsk_input, bfv_bsk_tensor);
+        bfv_behz_dma.transform(
+            {bfv_q_tensor[0], bfv_q_tensor[1], bfv_q_tensor[2]},
+            q_contexts, true);
+        bfv_behz_dma.transform(
+            {bfv_bsk_tensor[0], bfv_bsk_tensor[1], bfv_bsk_tensor[2]},
+            bsk_contexts, true);
+
+        const auto t_scalar = make_polys(
+            "images/constants/t_mod_q_bsk.u32.bin", 0,
+            q_bsk_moduli.size(), "t_mod_q_bsk");
+        std::vector<std::vector<DmaSpan>> q_bsk_tensor;
+        for (std::size_t component = 0; component < 3; ++component) {
+            std::vector<DmaSpan> joined = bfv_q_tensor[component];
+            joined.insert(
+                joined.end(), bfv_bsk_tensor[component].begin(),
+                bfv_bsk_tensor[component].end());
+            q_bsk_tensor.push_back(std::move(joined));
+        }
+        bfv_behz_dma.scalar_multiply(q_bsk_tensor, t_scalar);
+
+        const auto q_inverse_spans = make_polys(
+            "images/constants/q_inverse_mod_bsk.u32.bin", 0,
+            bsk_moduli.size(), "q_inverse_mod_bsk");
+        const auto converted_bsk = make_polys(
+            workspace_image, 3 * bsk_moduli.size(), bsk_moduli.size(),
+            "fastfloor.converted_q");
+        for (std::size_t component = 0; component < 3; ++component) {
+            bfv_behz_dma.bconv(
+                bfv_q_tensor[component], q_bconv_inverse,
+                q_bconv_target, q_normalized_scratch, converted_bsk);
+            bfv_behz_dma.load_mod_context();
+            for (std::size_t basis = 0; basis < bsk_moduli.size(); ++basis) {
+                bfv_behz_dma.load(0, bfv_bsk_tensor[component][basis]);
+                bfv_behz_dma.load(1, converted_bsk[basis]);
+                bfv_behz_dma.load(2, q_inverse_spans[basis]);
+                bfv_behz_dma.store(0, bfv_bsk_tensor[component][basis]);
+            }
+        }
+
+        const auto b_inverse_spans = make_polys(
+            "images/constants/b_qhat_inv.u32.bin", 0,
+            b_moduli.size(), "b_qhat_inverse");
+        std::vector<std::vector<DmaSpan>> b_target_q;
+        for (std::size_t target = 0; target < q_moduli.size(); ++target) {
+            b_target_q.push_back(make_polys(
+                "images/constants/b_qhat_mod_q.u32.bin",
+                target * b_moduli.size(), b_moduli.size(),
+                "b_qhat_mod_q.target" + std::to_string(target)));
+        }
+        std::vector<std::vector<DmaSpan>> b_target_msk{
+            make_polys(
+                "images/constants/b_qhat_mod_msk.u32.bin", 0,
+                b_moduli.size(), "b_qhat_mod_msk")};
+        const auto b_normalized_scratch = make_polys(
+            workspace_image, 3 * bsk_moduli.size(), b_moduli.size(),
+            "branchless_sk.b_normalized");
+        const std::vector<DmaSpan> temp_msk{
+            bfv_behz_dma.poly(
+                workspace_image, 3 * bsk_moduli.size() + b_moduli.size(),
+                "branchless_sk.temp_msk")};
+        const std::vector<DmaSpan> alpha_msk{
+            bfv_behz_dma.poly(
+                workspace_image, 3 * bsk_moduli.size() + b_moduli.size(),
+                "branchless_sk.alpha_msk")};
+        const auto msk_inverse = make_polys(
+            "images/constants/msk_qhat_inv.u32.bin", 0, 1,
+            "msk_qhat_inverse");
+        std::vector<std::vector<DmaSpan>> msk_target_q;
+        for (std::size_t target = 0; target < q_moduli.size(); ++target) {
+            msk_target_q.push_back(make_polys(
+                "images/constants/msk_qhat_mod_q.u32.bin", target, 1,
+                "msk_qhat_mod_q.target" + std::to_string(target)));
+        }
+        const std::vector<DmaSpan> msk_normalized{
+            bfv_behz_dma.poly(
+                workspace_image, 4 * bsk_moduli.size(),
+                "alpha.normalized_msk")};
+        const auto alpha_q = bfv_q_input[3];
+        const auto b_inverse_msk_span = bfv_behz_dma.poly(
+            "images/constants/b_inverse_mod_msk.u32.bin", 0,
+            "b_inverse_mod_msk");
+        const auto negative_b_spans = make_polys(
+            "images/constants/negative_b_mod_q.u32.bin", 0,
+            g_num_q, "negative_b_mod_q");
+        for (std::size_t component = 0; component < 3; ++component) {
+            const std::vector<DmaSpan> source_b(
+                bfv_bsk_tensor[component].begin(),
+                bfv_bsk_tensor[component].begin()
+                    + static_cast<std::ptrdiff_t>(b_moduli.size()));
+            bfv_behz_dma.bconv(
+                source_b, b_inverse_spans, b_target_q,
+                b_normalized_scratch, bfv_q_tensor[component]);
+            bfv_behz_dma.bconv(
+                source_b, b_inverse_spans, b_target_msk,
+                b_normalized_scratch, temp_msk);
+            bfv_behz_dma.load_mod_context();
+            bfv_behz_dma.load(0, temp_msk[0]);
+            bfv_behz_dma.load(1, bfv_bsk_tensor[component].back());
+            bfv_behz_dma.load(2, b_inverse_msk_span);
+            bfv_behz_dma.store(0, alpha_msk[0]);
+            bfv_behz_dma.bconv(
+                alpha_msk, msk_inverse, msk_target_q,
+                msk_normalized, alpha_q);
+            bfv_behz_dma.load_mod_context();
+            for (std::size_t basis = 0; basis < q_moduli.size(); ++basis) {
+                bfv_behz_dma.load(2, bfv_q_tensor[component][basis]);
+                bfv_behz_dma.load(0, alpha_q[basis]);
+                bfv_behz_dma.load(1, negative_b_spans[basis]);
+                bfv_behz_dma.store(2, bfv_q_tensor[component][basis]);
+            }
+        }
+        words.clear();
+        for (const auto& digit : rlk_ntt) {
+            append_words(words, digit[0]);
+            append_words(words, digit[1]);
+        }
+        add_artifact(
+            case_artifacts, "constants/relinearization_key_ntt_qp.bin",
+            "zero-noise exact functional BFV relinearization key",
+            {g_dnum, 2, g_num_q + g_num_p, g_n}, std::move(words),
+            {"digit", "component[ks0,ks1]", "basis_q_then_p", "coefficient"},
+            HardwareDomain::kNtt);
+
+        std::vector<BasisPoly> modup_source_inverse;
+        std::vector<std::vector<BasisPoly>> modup_target_hat;
+        for (std::size_t digit = 0; digit < g_dnum; ++digit) {
+            const std::vector<U64> digit_moduli(
+                q_moduli.begin() + static_cast<std::ptrdiff_t>(digit * digit_size),
+                q_moduli.begin() + static_cast<std::ptrdiff_t>((digit + 1) * digit_size));
+            const FastBconvConstants constants = make_fast_bconv_constants(
+                digit_moduli, all_moduli);
+            modup_source_inverse.push_back(constants.source_hat_inverse);
+            modup_target_hat.push_back(constants.source_hat_mod_target);
+        }
+        words.clear();
+        for (const BasisPoly& digit : modup_source_inverse) {
+            append_words(words, digit);
+        }
+        add_artifact(
+            case_artifacts, "constants/modup_digit_qhat_inv.bin",
+            "per-digit ModUp source-hat inverses",
+            {g_dnum, digit_size, g_n}, std::move(words),
+            {"digit", "source_basis_q", "coefficient"});
+        words.clear();
+        for (const auto& digit : modup_target_hat) {
+            for (const BasisPoly& target : digit) {
+                append_words(words, target);
+            }
+        }
+        add_artifact(
+            case_artifacts, "constants/modup_digit_qhat_mod_qp.bin",
+            "per-digit ModUp source hats in every QP target",
+            {g_dnum, all_moduli.size(), digit_size, g_n}, std::move(words),
+            {"digit", "target_basis_qp", "source_basis_q", "coefficient"});
+
+        const FastBconvConstants p_to_q_constants =
+            make_fast_bconv_constants(p_moduli, q_moduli);
+        words.clear(); append_words(words, p_to_q_constants.source_hat_inverse);
+        add_artifact(
+            case_artifacts, "constants/moddown_p_qhat_inv.bin",
+            "ModDown P source-hat inverses",
+            {g_num_p, g_n}, std::move(words),
+            {"source_basis_p", "coefficient"});
+        words.clear();
+        for (const BasisPoly& target : p_to_q_constants.source_hat_mod_target) {
+            append_words(words, target);
+        }
+        add_artifact(
+            case_artifacts, "constants/moddown_p_qhat_mod_q.bin",
+            "ModDown P source hats reduced in Q",
+            {g_num_q, g_num_p, g_n}, std::move(words),
+            {"target_basis_q", "source_basis_p", "coefficient"});
+        BasisPoly p_inverse_q;
+        for (U64 modulus : q_moduli) {
+            p_inverse_q.push_back(Poly(
+                g_n, inverse_mod(product_mod(p_moduli, modulus), modulus)));
+        }
+        words.clear(); append_words(words, p_inverse_q);
+        add_artifact(
+            case_artifacts, "constants/p_inverse_mod_q.bin",
+            "P inverse in every Q context for ModDown",
+            {g_num_q, g_n}, std::move(words),
+            {"basis_q", "coefficient"});
+        add_artifact(
+            case_artifacts, "runtime/relinearization_workspace.bin",
+            "64-polynomial BFV KeySwitch workspace",
+            {64, g_n}, Poly(64 * g_n, 0),
+            {"workspace_polynomial", "coefficient"});
+
+        const auto add_hidden_basis = [&case_artifacts](
+            const std::string& path, const std::string& role,
+            const BasisPoly& value, std::vector<std::size_t> shape,
+            HardwareDomain domain = HardwareDomain::kCoefficient) {
+            std::vector<U64> flattened;
+            append_words(flattened, value);
+            add_artifact(
+                case_artifacts, path, role, std::move(shape),
+                std::move(flattened), {}, domain, false);
+        };
+        words.clear();
+        for (const BasisPoly& digit : bfv_relinearization_trace.modup_coeff) {
+            append_words(words, digit);
+        }
+        add_artifact(
+            case_artifacts, "expected/modup_t2_coeff_qp.bin",
+            "BFV t2 digit ModUp outputs",
+            {g_dnum, all_moduli.size(), g_n}, std::move(words),
+            {"digit", "basis_qp", "coefficient"},
+            HardwareDomain::kCoefficient, false);
+        add_hidden_basis(
+            "expected/keyswitch_accum_ntt_0_qp.bin",
+            "BFV KeySwitch accumulator 0, NTT",
+            bfv_relinearization_trace.keyswitch_accum_ntt[0],
+            {all_moduli.size(), g_n}, HardwareDomain::kNtt);
+        add_hidden_basis(
+            "expected/keyswitch_accum_ntt_1_qp.bin",
+            "BFV KeySwitch accumulator 1, NTT",
+            bfv_relinearization_trace.keyswitch_accum_ntt[1],
+            {all_moduli.size(), g_n}, HardwareDomain::kNtt);
+        words.clear(); append_words(words, bfv_product_q[0]); append_words(words, bfv_product_q[1]);
+        add_artifact(
+            case_artifacts, "expected/ciphertext_out_q.bin",
+            "phase-1 relinearized two-component BFV ciphertext",
+            {2, g_num_q, g_n}, std::move(words),
+            {"component[c0,c1]", "basis_q", "coefficient"},
+            HardwareDomain::kCoefficient, false);
+        add_artifact(
+            case_artifacts, "expected/plaintext_product_mod_t.bin",
+            "BFV scale-and-round decrypted plaintext product",
+            {g_n}, bfv_decrypted_coeff_t, {},
+            HardwareDomain::kCoefficient, false);
+        write_case_package(
+            *suite_root, "bfv_ciphertext_multiply",
+            scheme_params(
+                "BFV", "ciphertext_multiply_no_smrq_branchless_sk_relinearization",
+                "two ciphertexts/coefficient/Q",
+                "two-component ciphertext/coefficient/Q",
+                bfv_context_moduli,
+                "  \"context_order\": \"Q|Pks|B|m_sk|t\",\n"
+                "  \"num_b\": " + std::to_string(g_bfv_num_b) + ",\n"
+                "  \"m_sk_mod_id\": "
+                    + std::to_string(g_num_q + g_num_p + g_bfv_num_b) + ",\n"
+                "  \"t_mod_id\": "
+                    + std::to_string(g_num_q + g_num_p + g_bfv_num_b + 1) + ",\n"
+                "  \"q_bits\": " + std::to_string(big_bit_length(q_product)) + ",\n"
+                "  \"b_bits\": " + std::to_string(product_bit_length(b_moduli)) + ",\n"
+                "  \"required_b_bits_exclusive\": "
+                    + std::to_string(required_b_bits) + ",\n"
+                "  \"smrq\": false,\n"
+                "  \"branchless_sk\": true,\n"
+                "  \"single_kernel\": true,\n"
+                "  \"terminal_psync_count\": 1,\n"
+                "  \"hpu_mem_max_lines\": "
+                    + std::to_string(g_hpu_mem_max_lines)),
+            std::move(case_artifacts), bfv_context_moduli,
+            bfv_multiply_roots,
+            TwiddleRequirement::kRequired);
+        const auto bfv_multiply_catalog = read_line_catalog(
+            *suite_root / "bfv_ciphertext_multiply" / "test_data" /
+            "hardware" / "line_map.csv");
+        DmaPlanBuilder bfv_relin_dma(bfv_multiply_catalog);
+        const auto make_relin_polys = [&bfv_relin_dma](
+            const std::string& artifact,
+            std::size_t first,
+            std::size_t count,
+            const std::string& label) {
+            std::vector<DmaSpan> spans;
+            for (std::size_t index = 0; index < count; ++index) {
+                spans.push_back(bfv_relin_dma.poly(
+                    artifact, first + index,
+                    label + "[" + std::to_string(index) + "]"));
+            }
+            return spans;
+        };
+        const std::string bfv_relin_workspace =
+            "images/runtime/relinearization_workspace.u32.bin";
+        const auto& bfv_relin_tensor = bfv_q_tensor;
+        const std::size_t total_qp = all_moduli.size();
+        const auto modup_workspace = make_relin_polys(
+            bfv_relin_workspace, 0, total_qp, "modup.current_qp");
+        std::array<std::vector<DmaSpan>, 2> keyswitch_accumulator{
+            make_relin_polys(
+                bfv_relin_workspace, total_qp, total_qp,
+                "keyswitch.accum0.qp"),
+            make_relin_polys(
+                bfv_relin_workspace, 2 * total_qp, total_qp,
+                "keyswitch.accum1.qp")};
+        const auto moddown_normalized = make_relin_polys(
+            bfv_relin_workspace, 3 * total_qp,
+            std::max(digit_size, p_moduli.size()),
+            "keyswitch.bconv_normalized");
+        const auto moddown_correction = make_relin_polys(
+            bfv_relin_workspace,
+            3 * total_qp + std::max(digit_size, p_moduli.size()),
+            q_moduli.size(), "keyswitch.moddown_correction_q");
+        std::vector<int> qp_contexts;
+        for (std::size_t basis = 0; basis < total_qp; ++basis) {
+            qp_contexts.push_back(static_cast<int>(basis));
+        }
+
+        for (std::size_t digit = 0; digit < g_dnum; ++digit) {
+            const std::size_t q_offset = digit * digit_size;
+            std::vector<DmaSpan> digit_source;
+            std::vector<DmaSpan> digit_inverse;
+            std::vector<DmaSpan> digit_normalized;
+            for (std::size_t source = 0; source < digit_size; ++source) {
+                digit_source.push_back(bfv_relin_tensor[2][q_offset + source]);
+                digit_inverse.push_back(bfv_relin_dma.poly(
+                    "images/constants/modup_digit_qhat_inv.u32.bin",
+                    digit * digit_size + source,
+                    "modup.d" + std::to_string(digit)
+                        + ".qhat_inv" + std::to_string(source)));
+                digit_normalized.push_back(moddown_normalized[source]);
+                bfv_relin_dma.load(0, digit_source.back());
+                bfv_relin_dma.store(0, modup_workspace[q_offset + source]);
+            }
+            std::vector<std::vector<DmaSpan>> digit_target_constants;
+            std::vector<DmaSpan> digit_targets;
+            for (std::size_t target = 0; target < total_qp; ++target) {
+                if (target >= q_offset && target < q_offset + digit_size) {
+                    continue;
+                }
+                std::vector<DmaSpan> target_row;
+                for (std::size_t source = 0; source < digit_size; ++source) {
+                    target_row.push_back(bfv_relin_dma.poly(
+                        "images/constants/modup_digit_qhat_mod_qp.u32.bin",
+                        (digit * total_qp + target) * digit_size + source,
+                        "modup.d" + std::to_string(digit)
+                            + ".target" + std::to_string(target)
+                            + ".source" + std::to_string(source)));
+                }
+                digit_target_constants.push_back(std::move(target_row));
+                digit_targets.push_back(modup_workspace[target]);
+            }
+            bfv_relin_dma.bconv(
+                digit_source, digit_inverse, digit_target_constants,
+                digit_normalized, digit_targets);
+            bfv_relin_dma.transform(
+                {modup_workspace}, qp_contexts, false);
+
+            for (std::size_t component = 0; component < 2; ++component) {
+                for (std::size_t basis = 0; basis < total_qp; ++basis) {
+                    const std::size_t key_index =
+                        (digit * 2 + component) * total_qp + basis;
+                    const DmaSpan key_span = bfv_relin_dma.poly(
+                        "images/constants/relinearization_key_ntt_qp.u32.bin",
+                        key_index,
+                        "rlk.d" + std::to_string(digit)
+                            + ".c" + std::to_string(component)
+                            + ".basis" + std::to_string(basis));
+                    bfv_relin_dma.load(0, modup_workspace[basis]);
+                    bfv_relin_dma.load(1, key_span);
+                    if (digit != 0) {
+                        bfv_relin_dma.load(
+                            2, keyswitch_accumulator[component][basis]);
+                    }
+                    bfv_relin_dma.store(
+                        2, keyswitch_accumulator[component][basis]);
+                }
+            }
+        }
+
+        bfv_relin_dma.transform(
+            {keyswitch_accumulator[0], keyswitch_accumulator[1]},
+            qp_contexts, true);
+        const auto p_source_inverse = make_relin_polys(
+            "images/constants/moddown_p_qhat_inv.u32.bin", 0,
+            p_moduli.size(), "moddown.p_qhat_inverse");
+        std::vector<std::vector<DmaSpan>> p_target_q;
+        for (std::size_t target = 0; target < q_moduli.size(); ++target) {
+            p_target_q.push_back(make_relin_polys(
+                "images/constants/moddown_p_qhat_mod_q.u32.bin",
+                target * p_moduli.size(), p_moduli.size(),
+                "moddown.p_qhat_mod_q.target" + std::to_string(target)));
+        }
+        const auto p_inverse_q_spans = make_relin_polys(
+            "images/constants/p_inverse_mod_q.u32.bin", 0,
+            q_moduli.size(), "moddown.p_inverse_mod_q");
+        for (std::size_t component = 0; component < 2; ++component) {
+            const std::vector<DmaSpan> source_p(
+                keyswitch_accumulator[component].begin()
+                    + static_cast<std::ptrdiff_t>(g_num_q),
+                keyswitch_accumulator[component].end());
+            const std::vector<DmaSpan> normalized_p(
+                moddown_normalized.begin(),
+                moddown_normalized.begin()
+                    + static_cast<std::ptrdiff_t>(p_moduli.size()));
+            bfv_relin_dma.bconv(
+                source_p, p_source_inverse, p_target_q,
+                normalized_p, moddown_correction);
+            bfv_relin_dma.load_mod_context();
+            for (std::size_t basis = 0; basis < q_moduli.size(); ++basis) {
+                bfv_relin_dma.load(
+                    0, keyswitch_accumulator[component][basis]);
+                bfv_relin_dma.load(1, moddown_correction[basis]);
+                bfv_relin_dma.load(2, p_inverse_q_spans[basis]);
+                bfv_relin_dma.store(
+                    0, keyswitch_accumulator[component][basis]);
+            }
+        }
+        bfv_relin_dma.load_mod_context();
+        for (std::size_t basis = 0; basis < q_moduli.size(); ++basis) {
+            bfv_relin_dma.load(0, keyswitch_accumulator[0][basis]);
+            bfv_relin_dma.load(1, bfv_relin_tensor[0][basis]);
+            bfv_relin_dma.store(2, bfv_relin_tensor[0][basis]);
+        }
+        bfv_relin_dma.load_mod_context();
+        for (std::size_t basis = 0; basis < q_moduli.size(); ++basis) {
+            bfv_relin_dma.load(0, bfv_relin_tensor[1][basis]);
+            bfv_relin_dma.load(1, keyswitch_accumulator[1][basis]);
+            bfv_relin_dma.store(2, bfv_relin_tensor[1][basis]);
+        }
+        std::vector<PlannedDma> bfv_multiply_dma = rebase_dma_records(
+            bfv_behz_dma.records(), bfv_behz_catalog, bfv_multiply_catalog);
+        bfv_multiply_dma.insert(
+            bfv_multiply_dma.end(),
+            bfv_relin_dma.records().begin(), bfv_relin_dma.records().end());
+        write_resolved_dma_plan(
+            *suite_root, "bfv_ciphertext_multiply", bfv_multiply_dma);
+        write_text(
+            *suite_root / "bfv_ciphertext_multiply" / "test_data" /
+                "SCHEME_VALIDATION.txt",
+            "PASS\nsingle_kernel=PASS\nno_host_tensor_copy=PASS\n"
+            "no_smrq_q_to_bsk=PASS\nntt_tensor_product=PASS\n"
+            "fast_floor=PASS\nbranchless_sk=PASS\nalpha_range=PASS\n"
+            "m_tilde_absent=PASS\ncomparison_instruction_absent=PASS\n"
+            "modup=PASS\n"
+            "evaluation_key_product=PASS\nmoddown=PASS\n"
+            "three_to_two_components=PASS\ndecryption_preserved=PASS\n");
+        write_text(
+            *suite_root / "bfv_ciphertext_multiply" / "test_data" /
+                "memory_lifetime.csv",
+            "phase,live_data,released_or_reused_after_phase\n"
+            "q_to_bsk,ct_q+ct_bsk+conversion_constants,none\n"
+            "ntt,ct_q_ntt+ct_bsk_ntt+twiddles,coefficient_input_regions\n"
+            "tensor,tensor_q_ntt+tensor_bsk_ntt,consumed_input_component_regions\n"
+            "intt_scale,tensor_q+tensor_bsk,NTT input regions\n"
+            "fastfloor,z_bsk,Q_to_Bsk temporary and consumed scaled-Q regions\n"
+            "branchless_sk,tensor_q,BEHZ workspace and Bsk data are dead\n"
+            "relinearization,ciphertext_out_q,t2 and KeySwitch workspace are dead\n");
+
+        case_artifacts.clear();
+        words.clear(); append_words(words, bfv_product_q[0]); append_words(words, bfv_product_q[1]);
+        add_artifact(
+            case_artifacts, "input/ciphertext_q.bin",
+            "two-component BFV ciphertext before rounded ModSwitch",
+            {2, g_num_q, g_n}, std::move(words),
+            {"component[c0,c1]", "basis_q", "coefficient"});
+        words.clear(); append_words(words, half_constants);
+        add_artifact(
+            case_artifacts, "constants/q_last_half_mod_q.bin",
+            "floor(q_last/2) reduced in every Q context",
+            {g_num_q, g_n}, std::move(words),
+            {"basis_q", "coefficient"});
+        add_artifact(
+            case_artifacts, "constants/qhat_inv_drop.bin",
+            "single-source drop-last BConv inverse",
+            {1, g_n}, Poly(g_n, 1));
+        words.clear(); append_words(words, qhat_mod_qprime);
+        add_artifact(
+            case_artifacts, "constants/qhat_mod_qprime.bin",
+            "single-source drop-last target residues",
+            {g_num_q - 1, g_n}, std::move(words),
+            {"basis_qprime", "coefficient"});
+        words.clear(); append_words(words, dropped_inverse);
+        add_artifact(
+            case_artifacts, "constants/q_last_inverse_mod_qprime.bin",
+            "q_last inverse in every retained Q context",
+            {g_num_q - 1, g_n}, std::move(words),
+            {"basis_qprime", "coefficient"});
+        add_artifact(
+            case_artifacts, "runtime/output_qprime.bin",
+            "zero-initialized BFV ModSwitch destination",
+            {2, g_num_q - 1, g_n}, Poly(2 * (g_num_q - 1) * g_n, 0),
+            {"component[c0,c1]", "basis_qprime", "coefficient"});
+        words.clear(); append_words(words, bfv_product_qprime[0]);
+        append_words(words, bfv_product_qprime[1]);
+        add_artifact(
+            case_artifacts, "expected/ciphertext_qprime.bin",
+            "golden rounded BFV ciphertext after dropping q_last",
+            {2, g_num_q - 1, g_n}, std::move(words),
+            {"component[c0,c1]", "basis_qprime", "coefficient"},
+            HardwareDomain::kCoefficient, false);
+        add_artifact(
+            case_artifacts, "expected/plaintext_product_mod_t.bin",
+            "BFV scale-and-round plaintext after ModSwitch",
+            {g_n}, bfv_switched_coeff_t, {},
+            HardwareDomain::kCoefficient, false);
+        write_case_package(
+            *suite_root, "bfv_modswitch",
+            scheme_params(
+                "BFV", "rounded_modswitch_drop_last",
+                "ciphertext/coefficient/Q",
+                "ciphertext/coefficient/Q_without_last",
+                q_moduli,
+                "  \"q_last\": " + std::to_string(q_moduli.back()) + ",\n"
+                "  \"level_delta\": -1,\n"
+                "  \"scale_metadata\": null,\n"
+                "  \"correction_factor_metadata\": null"),
+            std::move(case_artifacts), q_moduli, q_roots,
+            TwiddleRequirement::kNone);
+        DmaPlanBuilder bfv_modswitch_dma(read_line_catalog(
+            *suite_root / "bfv_modswitch" / "test_data" /
+            "hardware" / "line_map.csv"));
+        std::vector<DmaSpan> bfv_half_spans;
+        std::vector<DmaSpan> bfv_drop_targets;
+        std::vector<DmaSpan> bfv_drop_inverse;
+        for (std::size_t basis = 0; basis < q_moduli.size(); ++basis) {
+            bfv_half_spans.push_back(bfv_modswitch_dma.poly(
+                "images/constants/q_last_half_mod_q.u32.bin", basis,
+                "q_last_half_mod_q[" + std::to_string(basis) + "]"));
+            if (basis + 1 < q_moduli.size()) {
+                bfv_drop_targets.push_back(bfv_modswitch_dma.poly(
+                    "images/constants/qhat_mod_qprime.u32.bin", basis,
+                    "drop_qhat_mod_qprime[" + std::to_string(basis) + "]"));
+                bfv_drop_inverse.push_back(bfv_modswitch_dma.poly(
+                    "images/constants/q_last_inverse_mod_qprime.u32.bin", basis,
+                    "q_last_inverse_mod_qprime[" + std::to_string(basis) + "]"));
+            }
+        }
+        const DmaSpan bfv_drop_source_inverse = bfv_modswitch_dma.poly(
+            "images/constants/qhat_inv_drop.u32.bin", 0,
+            "drop_qhat_inverse");
+        for (std::size_t component = 0; component < 2; ++component) {
+            std::vector<DmaSpan> rounded_q;
+            std::vector<DmaSpan> output_qprime;
+            for (std::size_t basis = 0; basis < q_moduli.size(); ++basis) {
+                rounded_q.push_back(bfv_modswitch_dma.poly(
+                    "images/input/ciphertext_q.u32.bin",
+                    component * q_moduli.size() + basis,
+                    "rounded_ciphertext.c" + std::to_string(component)
+                        + ".q" + std::to_string(basis)));
+                if (basis + 1 < q_moduli.size()) {
+                    output_qprime.push_back(bfv_modswitch_dma.poly(
+                        "images/runtime/output_qprime.u32.bin",
+                        component * (q_moduli.size() - 1) + basis,
+                        "bfv_modswitch_out.c" + std::to_string(component)
+                            + ".q" + std::to_string(basis)));
+                }
+            }
+            bfv_modswitch_dma.load_mod_context();
+            for (std::size_t basis = 0; basis < q_moduli.size(); ++basis) {
+                bfv_modswitch_dma.load(0, rounded_q[basis]);
+                bfv_modswitch_dma.load(1, bfv_half_spans[basis]);
+                bfv_modswitch_dma.store(0, rounded_q[basis]);
+            }
+            std::vector<std::vector<DmaSpan>> target_matrix;
+            for (const DmaSpan& target : bfv_drop_targets) {
+                target_matrix.push_back({target});
+            }
+            bfv_modswitch_dma.bconv(
+                {rounded_q.back()}, {bfv_drop_source_inverse},
+                target_matrix, {rounded_q.back()}, output_qprime);
+            bfv_modswitch_dma.load_mod_context();
+            for (std::size_t basis = 0; basis + 1 < q_moduli.size(); ++basis) {
+                bfv_modswitch_dma.load(0, rounded_q[basis]);
+                bfv_modswitch_dma.load(1, output_qprime[basis]);
+                bfv_modswitch_dma.load(2, bfv_drop_inverse[basis]);
+                bfv_modswitch_dma.store(0, output_qprime[basis]);
+            }
+        }
+        write_resolved_dma_plan(
+            *suite_root, "bfv_modswitch", bfv_modswitch_dma.records());
+        write_text(
+            *suite_root / "bfv_modswitch" / "test_data" / "SCHEME_VALIDATION.txt",
+            "PASS\nrounded_drop_last=PASS\ndirect_crt_check=PASS\n"
+            "decrypt_scale_and_round=PASS\nplaintext_preserved=PASS\n");
+
+        write_host_package(
+            *suite_root / "bfv_ciphertext_multiply" / "test_data",
+            {
+                {"noise_smoke/input_error_a.csv", "deterministic nonzero BFV error A",
+                 signed_values_csv(bfv_noise_a, "error")},
+                {"noise_smoke/input_error_b.csv", "deterministic nonzero BFV error B",
+                 signed_values_csv(bfv_noise_b, "error")},
+                {"noise_smoke/decoded_product.csv", "nonzero-noise expected and decoded coefficients",
+                 residues_comparison_csv(
+                     bfv_expected_coeff_t, bfv_noise_result)},
+                {"noise_smoke/validation.txt", "nonzero-noise end-to-end status",
+                 "PASS\nencode=PASS\nencrypt_nonzero_error=PASS\n"
+                 "behz_multiply=PASS\nrelinearize=PASS\nmodswitch=PASS\n"
+                 "decrypt_scale_and_round=PASS\ndecode=PASS\n"
+                 "security_status=FUNCTIONAL_TEST_ONLY\n"},
+            });
+
         case_artifacts.clear();
         add_artifact(case_artifacts, "input_a.bin", "left polynomial", {g_n},
                      ct_a_ntt[0][0], {}, HardwareDomain::kNtt);
@@ -3772,10 +5752,12 @@ int main(int argc, char* argv[])
         g_n = config.N;
         g_num_q = config.num_q;
         g_num_p = config.num_p;
+        g_bfv_num_b = config.bfv_num_b;
         g_dnum = config.dnum;
         g_auto_index = config.auto_index;
         g_plaintext_modulus = config.plaintext_modulus;
         g_seed = config.seed;
+        g_hpu_mem_max_lines = config.hpu_mem_max_lines;
 
         const std::filesystem::path output = !positional.empty()
             ? positional[0]
@@ -3785,7 +5767,9 @@ int main(int argc, char* argv[])
             : std::filesystem::path();
         std::cout << "Loaded shared FHE config from " << config_path
                   << " (N=" << g_n << ", Q=" << g_num_q
-                  << ", P=" << g_num_p << ", dnum=" << g_dnum << ")\n";
+                  << ", P=" << g_num_p << ", B=" << g_bfv_num_b
+                  << ", dnum=" << g_dnum
+                  << ", HPU_MEM_MAX=" << g_hpu_mem_max_lines << ")\n";
         generate(output, positional.size() > 1 ? &suite : nullptr);
         return 0;
     } catch (const std::exception& exception) {

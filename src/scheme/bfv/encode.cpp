@@ -1,11 +1,11 @@
-#include "scheme/bgv/encode.hpp"
+#include "scheme/bfv/encode.hpp"
 
 #include "operator/plaintext_ntt.hpp"
 #include "scheme/detail/integer_encode.hpp"
 
 #include <sstream>
 
-namespace hpu::scheme::bgv {
+namespace hpu::scheme::bfv {
 
 std::vector<std::uint64_t> encode_coefficients(
     const std::vector<std::int64_t>& signed_coefficients,
@@ -13,7 +13,7 @@ std::vector<std::uint64_t> encode_coefficients(
     std::uint64_t plaintext_modulus)
 {
     return hpu::scheme::detail::encode_integer_coefficients(
-        signed_coefficients, N, plaintext_modulus, "BGV");
+        signed_coefficients, N, plaintext_modulus, "BFV");
 }
 
 std::vector<std::int64_t> decode_coefficients(
@@ -21,7 +21,7 @@ std::vector<std::int64_t> decode_coefficients(
     std::uint64_t plaintext_modulus)
 {
     return hpu::scheme::detail::decode_integer_coefficients(
-        coefficients, plaintext_modulus, "BGV");
+        coefficients, plaintext_modulus, "BFV");
 }
 
 std::vector<std::uint64_t> encode_slots(
@@ -30,7 +30,7 @@ std::vector<std::uint64_t> encode_slots(
     std::uint64_t plaintext_modulus)
 {
     return hpu::scheme::detail::encode_integer_slots(
-        slots, N, plaintext_modulus, "BGV");
+        slots, N, plaintext_modulus, "BFV");
 }
 
 std::vector<std::int64_t> decode_slots(
@@ -38,7 +38,7 @@ std::vector<std::int64_t> decode_slots(
     std::uint64_t plaintext_modulus)
 {
     return hpu::scheme::detail::decode_integer_slots(
-        coefficients, plaintext_modulus, "BGV");
+        coefficients, plaintext_modulus, "BFV");
 }
 
 std::string generate_encode_body_asm(
@@ -50,10 +50,10 @@ std::string generate_encode_body_asm(
     std::ostringstream asm_code;
     if (!hpu::scheme::detail::is_valid_integer_encode_config(
             N, num_q, plaintext_modulus)) {
-        asm_code << "        // Invalid BGV Encode config: batching requires prime t and 2N | (t-1)\n";
+        asm_code << "        // Invalid BFV Encode config: batching requires prime t and 2N | (t-1)\n";
         return asm_code.str();
     }
-    asm_code << "        /* BGV ENCODE: host coefficient/batching map -> HPU NTT-Q */\n";
+    asm_code << "        /* BFV ENCODE: host coefficient/batching map -> HPU NTT-Q */\n";
     asm_code << generate_plaintext_ntt_body_asm(N, num_q, append_psync);
     return asm_code.str();
 }
@@ -65,10 +65,10 @@ std::string generate_encode_asm(
     bool append_psync)
 {
     std::ostringstream asm_code;
-    asm_code << "void hpu_bgv_encode_N" << N << "_Q" << num_q << "(void) {\n";
+    asm_code << "void hpu_bfv_encode_N" << N << "_Q" << num_q << "(void) {\n";
     if (!hpu::scheme::detail::is_valid_integer_encode_config(
             N, num_q, plaintext_modulus)) {
-        asm_code << "    // Invalid BGV Encode config\n}\n";
+        asm_code << "    // Invalid BFV Encode config\n}\n";
         return asm_code.str();
     }
     asm_code << "    __asm__ volatile(\n";
@@ -78,4 +78,4 @@ std::string generate_encode_asm(
     return asm_code.str();
 }
 
-} // namespace hpu::scheme::bgv
+} // namespace hpu::scheme::bfv

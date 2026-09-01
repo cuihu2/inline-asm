@@ -19,6 +19,9 @@
 #include "scheme/bgv/encode.hpp"
 #include "scheme/bgv/ciphertext_multiply.hpp"
 #include "scheme/bgv/modswitch.hpp"
+#include "scheme/bfv/encode.hpp"
+#include "scheme/bfv/ciphertext_multiply.hpp"
+#include "scheme/bfv/modswitch.hpp"
 #include "scheme/ckks/encode.hpp"
 #include "scheme/ckks/ciphertext_multiply.hpp"
 #include "scheme/ckks/rescale.hpp"
@@ -126,6 +129,15 @@ struct BgvModswitchConfig {
 	int num_components;
 };
 
+struct BfvConfig {
+	int N;
+	int num_q;
+	int num_p;
+	int num_b;
+	int dnum;
+	std::uint64_t plaintext_modulus;
+};
+
 NttConfig g_ntt_cfg{};
 constexpr MmConfig kMmCfg{0, 1, 2, 3};
 // 为了缩短独立 BConv 示例，采用 num_q = num_p = 1；模上下文使用独立 8-bit MOD_ID
@@ -138,6 +150,7 @@ CiphertextMultiplyConfig g_ciphertext_multiply_cfg{};
 EncodeConfig g_encode_cfg{};
 RescaleConfig g_rescale_cfg{};
 BgvModswitchConfig g_bgv_modswitch_cfg{};
+BfvConfig g_bfv_cfg{};
 
 void configure_generators(const hpu::test::FheTestConfig& config)
 {
@@ -156,6 +169,57 @@ void configure_generators(const hpu::test::FheTestConfig& config)
 	g_encode_cfg = {N, num_q, config.plaintext_modulus};
 	g_rescale_cfg = {num_q, 2};
 	g_bgv_modswitch_cfg = {num_q, num_p, 2};
+	g_bfv_cfg = {
+		N, num_q, num_p, static_cast<int>(config.bfv_num_b), dnum,
+		config.plaintext_modulus};
+}
+
+void test_bfv_encode_codegen()
+{
+	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
+		std::ofstream("output/bfv_encode.cpp")
+			<< hpu::scheme::bfv::generate_encode_asm(
+				g_bfv_cfg.N, g_bfv_cfg.num_q,
+				g_bfv_cfg.plaintext_modulus, true);
+	}
+	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
+		std::ofstream("output/bfv_encode.asm")
+			<< hpu::scheme::bfv::generate_encode_body_asm(
+				g_bfv_cfg.N, g_bfv_cfg.num_q,
+				g_bfv_cfg.plaintext_modulus, true);
+	}
+}
+
+void test_bfv_ciphertext_multiply_codegen()
+{
+	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
+		std::ofstream("output/bfv_ciphertext_multiply.cpp")
+			<< hpu::scheme::bfv::generate_ciphertext_multiply_asm(
+				g_bfv_cfg.N, g_bfv_cfg.num_q, g_bfv_cfg.num_p,
+				g_bfv_cfg.num_b, g_bfv_cfg.dnum,
+				g_bfv_cfg.plaintext_modulus, true);
+	}
+	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
+		std::ofstream("output/bfv_ciphertext_multiply.asm")
+			<< hpu::scheme::bfv::generate_ciphertext_multiply_body_asm(
+				g_bfv_cfg.N, g_bfv_cfg.num_q, g_bfv_cfg.num_p,
+				g_bfv_cfg.num_b, g_bfv_cfg.dnum,
+				g_bfv_cfg.plaintext_modulus, true);
+	}
+}
+
+void test_bfv_modswitch_codegen()
+{
+	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
+		std::ofstream("output/bfv_modswitch.cpp")
+			<< hpu::scheme::bfv::generate_modswitch_asm(
+				g_bfv_cfg.num_q, 2, true);
+	}
+	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
+		std::ofstream("output/bfv_modswitch.asm")
+			<< hpu::scheme::bfv::generate_modswitch_body_asm(
+				g_bfv_cfg.num_q, 2, true);
+	}
 }
 
 void test_ckks_encode_codegen()
@@ -608,17 +672,24 @@ int main(int argc, char* argv[])
 		configure_generators(config);
 		std::cout << "Loaded shared FHE config from " << config_path
 			<< " (N=" << config.N << ", Q=" << config.num_q
-			<< ", P=" << config.num_p << ", dnum=" << config.dnum << ")\n";
+			<< ", P=" << config.num_p << ", B=" << config.bfv_num_b
+			<< ", dnum=" << config.dnum
+			<< ", HPU_MEM_MAX=" << config.hpu_mem_max_lines << ")\n";
 
 		std::filesystem::create_directory("output");
 		std::filesystem::remove("output/rescale.asm");
 		std::filesystem::remove("output/rescale.cpp");
 		std::filesystem::remove("output/encode.asm");
 		std::filesystem::remove("output/encode.cpp");
+		std::filesystem::remove("output/bfv_behz_multiply.asm");
+		std::filesystem::remove("output/bfv_behz_multiply.cpp");
+		std::filesystem::remove("output/bfv_relinearization.asm");
+		std::filesystem::remove("output/bfv_relinearization.cpp");
 		test_ntt_codegen();
 		test_intt_codegen();
 		test_ckks_encode_codegen();
 		test_bgv_encode_codegen();
+		test_bfv_encode_codegen();
 		test_ckks_rescale_codegen();
 		test_mm_codegen();
 		test_bconv_codegen();
@@ -633,6 +704,8 @@ int main(int argc, char* argv[])
 		test_ckks_ciphertext_multiply_codegen();
 		test_bgv_ciphertext_multiply_codegen();
 		test_bgv_modswitch_codegen();
+		test_bfv_ciphertext_multiply_codegen();
+		test_bfv_modswitch_codegen();
 		return 0;
 	} catch (const std::exception& exception) {
 		std::cerr << "Instruction generation failed: " << exception.what() << '\n';

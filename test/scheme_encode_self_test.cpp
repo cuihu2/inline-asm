@@ -1,5 +1,6 @@
 #include "scheme/bgv/encode.hpp"
 #include "scheme/ckks/encode.hpp"
+#include "scheme/bfv/encode.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -153,6 +154,55 @@ void test_bgv()
         "BGV non-batching t");
 }
 
+void test_bfv()
+{
+    constexpr std::size_t N = 16;
+    constexpr std::uint64_t t = 65537;
+    const std::vector<std::int64_t> coefficients{0, 1, -1, 17, -17};
+    const auto encoded_coefficients = hpu::scheme::bfv::encode_coefficients(
+        coefficients, N, t);
+    const auto decoded_coefficients = hpu::scheme::bfv::decode_coefficients(
+        encoded_coefficients, t);
+    require(std::equal(coefficients.begin(), coefficients.end(),
+                       decoded_coefficients.begin()),
+            "BFV coefficient round-trip");
+
+    std::vector<std::int64_t> slots(N);
+    for (std::size_t i = 0; i < N; ++i) {
+        slots[i] = static_cast<std::int64_t>(i) - 8;
+    }
+    const auto encoded_slots = hpu::scheme::bfv::encode_slots(slots, N, t);
+    require(hpu::scheme::bfv::decode_slots(encoded_slots, t) == slots,
+            "BFV batch round-trip");
+
+    const auto rotated_coefficients = apply_galois_3(encoded_slots, t);
+    const auto rotated_slots = hpu::scheme::bfv::decode_slots(
+        rotated_coefficients, t);
+    const std::size_t row_size = N / 2;
+    for (std::size_t row = 0; row < 2; ++row) {
+        for (std::size_t column = 0; column < row_size; ++column) {
+            require(
+                rotated_slots[row * row_size + column]
+                    == slots[row * row_size + (column + 1) % row_size],
+                "BFV generator-3 row rotation");
+        }
+    }
+
+    expect_failure(
+        [] { hpu::scheme::bfv::encode_coefficients({32769}, N, t); },
+        "BFV centered range");
+    expect_failure(
+        [] { hpu::scheme::bfv::encode_slots(
+            std::vector<std::int64_t>(N + 1), N, t); },
+        "BFV slot overflow");
+    expect_failure(
+        [] { hpu::scheme::bfv::encode_slots({}, N, 81921); },
+        "BFV composite t");
+    expect_failure(
+        [] { hpu::scheme::bfv::encode_slots({}, N, 65539); },
+        "BFV non-batching t");
+}
+
 } // namespace
 
 int main()
@@ -160,7 +210,8 @@ int main()
     try {
         test_ckks();
         test_bgv();
-        std::cout << "CKKS/BGV scheme Encode self-test passed\n";
+        test_bfv();
+        std::cout << "CKKS/BGV/BFV scheme Encode self-test passed\n";
         return 0;
     } catch (const std::exception& exception) {
         std::cerr << "Scheme Encode self-test failed: " << exception.what() << '\n';

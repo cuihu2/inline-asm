@@ -1,6 +1,6 @@
 #include "scheme/ckks/rescale.hpp"
 
-#include "poly/moddown.hpp"
+#include "operator/rounded_drop_last.hpp"
 #include "util/hpu_asm.hpp"
 #include "util/validation.hpp"
 
@@ -30,44 +30,10 @@ std::string generate_rescale_body_asm(
         return asm_code.str();
     }
 
-    const int POBJ_VALUE = 0;
-    const int POBJ_HALF = 1;
-    const int POBJ_MOD_CTX = 4;
-    const int dropped_context = num_q - 1;
-
-    asm_code << "        /* CKKS RESCALE: rounded drop-last q_" << dropped_context
+    asm_code << "        /* CKKS RESCALE: rounded drop-last q_" << (num_q - 1)
              << " for " << num_components << " component(s) */\n";
-    asm_code << "        /* Formula: round(x/q_last) = ModDown(x + floor(q_last/2), q_last). */\n";
-
-    for (int component = 0; component < num_components; ++component) {
-        asm_code << "        /* CKKS RESCALE component " << component
-                 << " stage-1: add floor(q_last/2) in every Q context */\n";
-        asm_code << hpu::dload(
-            POBJ_MOD_CTX, hpu::DataType::mod_ctx, hpu::DloadFlag::small_bank);
-        for (int i = 0; i < num_q; ++i) {
-            asm_code << "        /* component " << component << ", q_" << i << " */\n";
-            asm_code << hpu::pmodld(i);
-            asm_code << "        // dload input limb and floor(q_last/2) mod q_i\n";
-            asm_code << hpu::dload(POBJ_VALUE, hpu::DataType::poly);
-            asm_code << hpu::dload(POBJ_HALF, hpu::DataType::poly);
-            asm_code << hpu::padd(POBJ_VALUE, POBJ_VALUE, POBJ_HALF);
-            asm_code << hpu::pfree(POBJ_HALF);
-            asm_code << "        // dstore rounded numerator limb to scratch\n";
-            asm_code << hpu::dstore(POBJ_VALUE, 1);
-        }
-        asm_code << hpu::pfree(POBJ_MOD_CTX);
-
-        asm_code << "        /* CKKS RESCALE component " << component
-                 << " stage-2: reuse ModDown with Q'=q_0..q_"
-                 << (dropped_context - 1) << " and P={q_" << dropped_context
-                 << "} */\n";
-        asm_code << ::generate_hpu_moddown_body_asm(
-            dropped_context, 1, false);
-    }
-
-    if (append_psync) {
-        asm_code << hpu::psync();
-    }
+    asm_code << ::generate_hpu_rounded_drop_last_body_asm(
+        num_q, num_components, append_psync);
     return asm_code.str();
 }
 

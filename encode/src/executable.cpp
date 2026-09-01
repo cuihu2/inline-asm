@@ -190,15 +190,21 @@ std::string render_executable_header(
 
 std::string render_executable_source(
     const std::string& stem,
-    const std::vector<EncodedInstruction>& encoded) {
+    const std::vector<EncodedInstruction>& encoded,
+    std::uint64_t hpu_mem_line_count) {
+    if (hpu_mem_line_count == 0) {
+        throw std::runtime_error("HPU_MEM line count must be nonzero");
+    }
     validate_executable_program(encoded);
     const std::string id = c_identifier(stem);
     const auto relocations = collect_dma_relocations(encoded);
     std::ostringstream output;
     output << "/* Generated file: fixed HPU instruction words plus per-DMA relocation. */\n"
            << "#include \"" << stem << ".h\"\n\n"
-           << "enum { HPU_MEM_LINE_COUNT = " << kHpuMemLineCount
-           << ", HPU_SMALL_BANK_LINE_COUNT = " << kSmallBankLineCount << " };\n\n"
+           << "#define HPU_MEM_LINE_COUNT UINT64_C(" << hpu_mem_line_count
+           << ")\n"
+           << "enum { HPU_SMALL_BANK_LINE_COUNT = "
+           << kSmallBankLineCount << " };\n\n"
            << "int hpu_program_" << id
            << "(const hpu_dma_span_t *spans, size_t span_count) {\n"
            << "    if (span_count != HPU_PROGRAM_";

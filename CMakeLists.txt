@@ -16,6 +16,14 @@ set(HPU_TEST_CONFIG
         CACHE FILEPATH
         "Shared HPU instruction/reference test configuration")
 
+option(HPU_ENABLE_SEAL_BFV_ORACLE
+        "Build an optional BFV differential oracle against the modified SEAL tree"
+        OFF)
+set(HPU_SEAL_SOURCE_DIR
+        "/home/songyexin/fhe/SEAL"
+        CACHE PATH
+        "Modified SEAL source tree used only by the optional BFV oracle")
+
 add_library(hpu_test_config STATIC
         src/config/fhe_test_config.cpp
 )
@@ -31,8 +39,10 @@ target_compile_definitions(hpu_test_config
 add_library(hpu_scheme_encoding STATIC
         src/util/ntt.cpp
         src/operator/plaintext_ntt.cpp
+        src/scheme/detail/integer_encode.cpp
         src/scheme/ckks/encode.cpp
         src/scheme/bgv/encode.cpp
+        src/scheme/bfv/encode.cpp
 )
 target_include_directories(hpu_scheme_encoding
         PUBLIC
@@ -51,10 +61,13 @@ add_executable(inline_asm_codegen
         src/operator/keyswitch.cpp
         src/operator/relinearization.cpp
         src/operator/ciphertext_multiply.cpp
+        src/operator/rounded_drop_last.cpp
         src/scheme/ckks/rescale.cpp
         src/scheme/ckks/ciphertext_multiply.cpp
         src/scheme/bgv/ciphertext_multiply.cpp
         src/scheme/bgv/modswitch.cpp
+        src/scheme/bfv/ciphertext_multiply.cpp
+        src/scheme/bfv/modswitch.cpp
 )
 
 target_include_directories(inline_asm_codegen
@@ -73,7 +86,8 @@ if(BUILD_TESTING)
             invalid_num_q
             invalid_plaintext_modulus
             invalid_bgv_batching_modulus
-            invalid_composite_plaintext_modulus)
+            invalid_composite_plaintext_modulus
+            invalid_bfv_num_b)
         add_test(
                 NAME hpu_config_rejects_${INVALID_CONFIG}
                 COMMAND inline_asm_codegen
@@ -95,6 +109,28 @@ if(BUILD_TESTING)
     add_test(NAME hpu_scheme_encode_self_test COMMAND hpu_scheme_encode_self_test)
 endif()
 
+if(HPU_ENABLE_SEAL_BFV_ORACLE)
+    if(NOT EXISTS "${HPU_SEAL_SOURCE_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR
+            "HPU_ENABLE_SEAL_BFV_ORACLE requires a SEAL source tree at ${HPU_SEAL_SOURCE_DIR}")
+    endif()
+    set(SEAL_EXPERIMENTAL_BFV_NO_SMRQ ON CACHE BOOL "" FORCE)
+    set(SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK ON CACHE BOOL "" FORCE)
+    set(SEAL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(SEAL_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(SEAL_BUILD_BENCH OFF CACHE BOOL "" FORCE)
+    set(SEAL_BUILD_DEPS ON CACHE BOOL "" FORCE)
+    add_subdirectory(
+        "${HPU_SEAL_SOURCE_DIR}"
+        "${CMAKE_CURRENT_BINARY_DIR}/seal_bfv_oracle"
+        EXCLUDE_FROM_ALL)
+    add_executable(hpu_seal_bfv_oracle test/seal_bfv_oracle.cpp)
+    target_link_libraries(hpu_seal_bfv_oracle PRIVATE SEAL::seal)
+    if(BUILD_TESTING)
+        add_test(NAME hpu_seal_bfv_oracle COMMAND hpu_seal_bfv_oracle)
+    endif()
+endif()
+
 add_subdirectory(test/encode)
 add_subdirectory(test/reference)
 
@@ -108,6 +144,15 @@ if(BUILD_TESTING)
     set_tests_properties(
             hpu_reference_rejects_noninvertible_plaintext_modulus
             PROPERTIES WILL_FAIL TRUE TIMEOUT 120)
+    add_test(
+            NAME hpu_reference_rejects_insufficient_bfv_b_range
+            COMMAND hpu_reference_vectors
+                    ${CMAKE_CURRENT_BINARY_DIR}/insufficient_bfv_b_range_test_data
+                    --config ${CMAKE_CURRENT_SOURCE_DIR}/test/config/invalid_bfv_b_range.conf
+    )
+    set_tests_properties(
+            hpu_reference_rejects_insufficient_bfv_b_range
+            PROPERTIES WILL_FAIL TRUE TIMEOUT 120)
 endif()
 
 set(HPU_DELIVERY_TEST_DEPENDENCIES)
@@ -120,6 +165,7 @@ add_custom_target(hpu_delivery
                 both
                 --config ${HPU_TEST_CONFIG}
         COMMAND $<TARGET_FILE:inline_asm_encode_outputs>
+                --config ${HPU_TEST_CONFIG}
         COMMAND $<TARGET_FILE:hpu_reference_vectors>
                 ${CMAKE_CURRENT_SOURCE_DIR}/outputs/ciphertext_multiply/test_data
                 ${CMAKE_CURRENT_SOURCE_DIR}/outputs

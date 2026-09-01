@@ -10,6 +10,8 @@ struct FheTestConfig {
     std::size_t N;
     std::size_t num_q;
     std::size_t num_p;
+    std::size_t bfv_num_b;
+    std::uint64_t hpu_mem_max_lines;
     std::size_t dnum;
     std::size_t auto_index;
     std::uint64_t plaintext_modulus;

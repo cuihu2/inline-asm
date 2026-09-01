@@ -142,8 +142,9 @@ context 数也已按 8-bit `MOD_ID` 限制为 256。
 
 文档来源：《HPU 集成与编程手册》3.1.2、3.4；《HPU 控制逻辑设计文档》allocator 章节。
 
-外部 HPU_MEM 的 scratch line layout 和 19201-line window 越界检查已经由
-Nexus-AM runtime 固化。剩余工作是目标 allocator 对 8 个并发对象以及普通
+外部 HPU_MEM 的 scratch line layout 和可配置 window 越界检查已经由软件交付门禁
+覆盖；当前 `hpu_mem_max_lines=65536`，BFV 单 kernel 实际使用 30913 line。
+剩余工作是目标 allocator 对 8 个并发对象以及普通
 bank/half-bank 峰值驻留的硬件资格验证；这与外部 HPU_MEM span 是否已绑定是
 两个问题。对象数与 RNS limb/context 数仍必须分开建模。
 

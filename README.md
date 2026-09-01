@@ -35,14 +35,17 @@
 - **`scheme/bgv/encode.hpp/cpp`**：提供 signed coefficient encoding 和 generator-3 两行 batching；要求 `t` 为素数且 `2N | (t-1)`。
 - **`scheme/bgv/ciphertext_multiply.hpp/cpp`**：复用公共乘法，并提供 `correction_factor_a * correction_factor_b mod t` 元数据更新。
 - **`scheme/bgv/modswitch.hpp/cpp`**：执行 BGV `mod t and divide q_last`，输出 `Q_without_last` 并更新 correction factor。
+- **`scheme/bfv/encode.hpp/cpp`**：提供 BFV signed coefficient encoding 与 generator-3 两行 batching；Decode 在 host 执行。
+- **`scheme/bfv/ciphertext_multiply.hpp/cpp`**：在单个 kernel 中连续生成 comparison-free `NO_SMRQ + BRANCHLESS_SK` BEHZ 与 Q/Pks Relinearization。
+- **`scheme/bfv/modswitch.hpp/cpp`**：复用公共 rounded drop-last 后端计算 `round(c/q_last)`，输出 `Q_without_last`。
 
-公共层不声明自己属于 CKKS、BGV 或 BFV。CKKS/BGV 的 Encode/Decode 数学在 host 方案层执行；两者共享的 `plaintext_ntt` 只负责 HPU 上的逐 Q limb NTT。
+公共层不声明自己属于 CKKS、BGV 或 BFV。三种方案的 Encode/Decode 数学在 host 方案层执行；共享的 `plaintext_ntt` 只负责 HPU 上的逐 Q limb NTT。
 
 | 方案 | Encode/Decode | 乘法后处理 | 当前范围 |
 | --- | --- | --- | --- |
 | CKKS | `N/2` 复数槽位、generator-3 共轭嵌入 | Relinearization + Rescale | 确定性功能通路 |
 | BGV | signed coefficients、`N` 槽两行 batching | Relinearization + ModSwitch | 确定性功能通路 |
-| BFV | 未生成 | 未生成 | 等待 centered correction 硬件能力 |
+| BFV | signed coefficients、`N` 槽两行 batching | 单 kernel BEHZ + Relinearization；独立 ModSwitch | comparison-free 功能通路 |
 
 ### 5) 指令编码模块 (`encode`)
 将生成出的 HPU 汇编进一步转译为 32 位机器码文本：
@@ -60,7 +63,7 @@
 - **`hpu_reference_vectors`**：构建后生成的 reference 数据工具；它不生成 HPU 指令，也不替代 `src/main.cpp`。
 
 ### 8) 项目文档 (`doc`)
-- **`doc/HPU_PROGRAMMING_MANUAL.md`**：11 条 HPU 指令、对象/DMA 绑定、公共与方案算子、BFV 等能力缺口。
+- **`doc/HPU_PROGRAMMING_MANUAL.md`**：11 条 HPU 指令、对象/DMA 绑定及 CKKS/BGV/BFV 方案算子。
 - **`doc/HPU_TEST_DELIVERY.md`**：生成与编码流程、测试数据、autotest 对照、验收命令和硬件联调签字项。
 - **`doc/HPU_LATEST_SPEC_AUDIT.md`**：项目与最新飞书集成/控制/RV/PE 文档的逐项符合性审计、来源和修改顺序。
 
@@ -109,6 +112,16 @@ cmake --build build -j --target hpu_delivery
 ctest --test-dir build --output-on-failure
 ```
 
+可选修改版 SEAL 差分 oracle 默认关闭，不构成交付依赖。需要验证其
+`NO_SMRQ + BRANCHLESS_SK` 实验路径时使用：
+
+```bash
+cmake -S . -B build-seal -DHPU_ENABLE_SEAL_BFV_ORACLE=ON \
+  -DHPU_SEAL_SOURCE_DIR=/home/songyexin/fhe/SEAL
+cmake --build build-seal -j --target hpu_seal_bfv_oracle
+ctest --test-dir build-seal -R hpu_seal_bfv_oracle --output-on-failure
+```
+
 主生成程序仍保持主分支的输出方式，先在根目录生成扁平的 `output/` 文件夹；编码辅助工具随后会把 `.cpp` 与 `.asm` 归档到 `outputs/<case>/`，并将可直接编码的结果写回同一目录。仍含符号寄存器占位符的文件会被显式跳过。
 
 执行 `inline_asm_codegen` 后会先得到主分支约定的扁平输出：
@@ -127,6 +140,9 @@ ctest --test-dir build --output-on-failure
 - `outputs/ckks_ciphertext_multiply/`
 - `outputs/bgv_ciphertext_multiply/`
 - `outputs/bgv_modswitch/`
+- `outputs/bfv_encode/`
+- `outputs/bfv_ciphertext_multiply/`
+- `outputs/bfv_modswitch/`
 - `outputs/mm/`
 - `outputs/bconv/`
 - `outputs/pmult/`
@@ -169,7 +185,8 @@ relocation manifest、line map 与 HPU_MEM 镜像。
 
 唯一输入配置为 `config/fhe_test.conf`。`inline_asm_codegen` 和
 `hpu_reference_vectors` 都通过共享解析库读取其中的 `N`、`num_q`、`num_p`、
-`dnum`、`auto_index`、`plaintext_modulus` 和 `seed`；未知、重复、缺失或非法字段
+`bfv_num_b`、`hpu_mem_max_lines`、`dnum`、`auto_index`、`plaintext_modulus` 和
+`seed`；未知、重复、缺失或非法字段
 会使生成立即失败。`outputs/*/test_data/params.json` 仍是生成结果，不能作为配置
 入口，直接修改后会在下一次生成时被覆盖。
 
@@ -179,10 +196,13 @@ relocation manifest、line map 与 HPU_MEM 镜像。
 
 配置必须满足 `N` 为不小于 128 的 2 次幂、`ceil(N/64) <= 1024`（即
 `128 <= N <= 65536`）、`num_q >= 2`、`num_q % dnum == 0`、
-`num_q + num_p + 1 <= 256`，且当前 Auto 仅支持 `auto_index=1`。额外的一个
-context 用于 BGV 明文模数 `t`，固定 MOD_ID 顺序为 `Q|P|t`。`plaintext_modulus`
+`num_q + num_p + bfv_num_b + 2 <= 256`，且当前 Auto 仅支持 `auto_index=1`。
+BGV 固定 MOD_ID 顺序为 `Q|P|t`；BFV 固定为 `Q|Pks|B|m_sk|t`。`plaintext_modulus`
 必须是硬件可加载的奇数并满足 `65537 <= t <= 2^32-1`；默认值为
-`N=4096, Q=4, P=3, dnum=2, t=65537`。small Bank 5 为 32 line，固定范围
+`N=4096, Q=4, Pks=3, B=6, dnum=2, t=65537, hpu_mem_max_lines=65536`。
+`hpu_mem_max_lines` 必须适配 33-bit `HPU_MEM_SIZE_LINES` CSR；它是软件验收上限，
+每个包仍按自身真实镜像大小配置 window。BFV reference 还检查
+`log2(B) > 33 + bitlen(t) + bitlen(Q) + ceil(log2(num_q^2))`。small Bank 5 为 32 line，固定范围
 `0x1400..0x141F`，物理可放 512 个 context；由于 `MOD_ID` 只有 8 bit，软件可
 寻址上限为 256。它与 8 个并发对象槽位是两个独立资源。
 
@@ -191,7 +211,8 @@ context 用于 BGV 明文模数 `t`，固定 MOD_ID 顺序为 `Q|P|t`。`plainte
 上下文、256B line offset/count，并只为实际包含 `pntt/pintt` 的算子包生成逐
 stage twiddle；MM、BConv、ModUp/ModDown、PMult/CMult、CKKS Rescale 和 BGV
 ModSwitch 的最小硬件镜像不携带 twiddle。数据从同一 reference 拆分出
-NTT、INTT、CKKS/BGV Encode、CKKS Rescale、CKKS/BGV CiphertextMultiply、BGV ModSwitch、
+NTT、INTT、CKKS/BGV/BFV Encode、CKKS Rescale、CKKS/BGV CiphertextMultiply、BGV ModSwitch、
+BFV CiphertextMultiply、BFV ModSwitch、
 MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、KeySwitch 和 Relinearization
 的独立 UT 数据包。
 
@@ -211,13 +232,16 @@ MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、KeySwitch 和 Relinearizat
   `cmult` 只负责 FHE 密文乘法中的张量积阶段，即 $t_0=a_0b_0$、$t_1=a_0b_1+a_1b_0$、$t_2=a_1b_1$。`relinearization` 调用 `KeySwitch(base=t0, switching_component=t2, evk=rlk)` 得到 $(t_0+ks_0,ks_1)$，再生成 $t_1+ks_1$；`ciphertext_multiply` 直接复用该算子。
 
 - **方案 Encode 的软硬件边界：**
-  CKKS host API 把最多 `N/2` 个复数槽位映射为带 scale 的 signed 系数；BGV host API 支持 signed coefficient encoding 和 `N` 槽两行 batching。host 再将结果嵌入 RNS-Q，HPU 共享后端逐 limb 执行显式 pre-twist、NTT stages 与写回，输出可直接供 PMULT 使用的 `plaintext_ntt_q`。Decode 完全在 host 执行。
+  CKKS host API 把最多 `N/2` 个复数槽位映射为带 scale 的 signed 系数；BGV/BFV host API 支持 signed coefficient encoding 和 `N` 槽两行 batching。host 再将结果嵌入 RNS-Q，HPU 共享后端逐 limb 执行显式 pre-twist、NTT stages 与写回，输出可直接供 PMULT 使用的 `plaintext_ntt_q`。Decode 完全在 host 执行。
 
 - **CKKS Rescale 舍入语义：**
   对 `Q={q_0,...,q_last}` 上的每个密文分量，先在每个 limb 加入 `floor(q_last/2)`，再把最后一个 context 当作单元素 P 基复用 ModDown。输出基为 `Q'={q_0,...,q_{last-1}}`，计算的是 `round(x/q_last) mod Q'`；指令流只处理系数域数据，方案层的 `rescale_scale` 负责计算软件元数据 `scale/q_last`。
 
 - **方案元数据与 BGV ModSwitch：**
   CKKS 的 `scale` 和 BGV 的 `correction_factor` 不编码进 HPU 指令，由方案层 API 与未来 runtime/compiler 保存。BGV 使用 `Q|P|t` context 顺序；降层时先计算 `u=-c_last*q_last^-1 mod t`，再对每个保留 limb 计算 `(c_i-c_last-q_last*u)*q_last^-1 mod q_i`。默认 `t=65537` 可由 PE 直接加载。
+
+- **BFV comparison-free 单 kernel 乘法：**
+  BFV 固定使用 `Q|Pks|B|m_sk|t`。输入先执行不带 `m_tilde/SmMRq` 的 `Q -> Bsk` FastBConv，再在 Q/Bsk 下做 tensor product、FastFloor 和 branchless-SK；校正为 `out=y+alpha*(-B) mod Q`。三分量 Q 结果写回统一 HPU_MEM 后立即由同一指令流执行 Q/Pks Relinearization，中间没有 `psync`、host copy 或 window 切换，完整流只有末尾一个 `psync`。默认统一镜像为 30913 line，低于配置的 65536-line 上限。BFV ModSwitch 仍是独立算子，复用 `round(c/q_last)`。
 
 - **生成与编码分层解耦：**
   `inline-asm` 仍负责汇编生成，`encode` 模块则负责解析、归一化和 32 位编码。两者保留独立边界，但通过同一 CMake 工程统一构建，从而降低汇编语义更新后生成器与编码器失配的风险。
@@ -237,12 +261,12 @@ MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、KeySwitch 和 Relinearizat
 
 - `N` 为 2 的幂且 `128 <= N <= 65536`；下界来自 NTT 的 128-register batch，上界来自普通 bank 的 1024 line
 - ISA 提供 8 个逻辑对象号 `p0..p7`；当前复合算子最多同时使用 `p0..p4`，具体角色见 `doc/HPU_PROGRAMMING_MANUAL.md` 附录 C
-- 复杂算子（CKKS/BGV Encode、CKKS Rescale、BGV ModSwitch、PMULT/CMULT/MODUP/MODDOWN）使用 `dload/dstore` 流式搬运，不在本地长期保留多基对象
+- 复杂算子（CKKS/BGV/BFV Encode、CKKS Rescale、BGV/BFV ModSwitch、BFV BEHZ、PMULT/CMULT/MODUP/MODDOWN）使用 `dload/dstore` 流式搬运，不在本地长期保留多基对象
 - `dload type=2, flag[0]=1` 将模表逻辑对象分配到 small Bank 5；DMA 与后续指令的一致性由硬件维护，可直接使用 `pmodld MOD_ID` 激活表项
 - 每个可编码算子同时生成 `.inst32` 和 `.cmd26`；`cmd26[25]` 区分 custom0/custom1，custom0 直接携带 `inst[31:7]`，custom1 按控制逻辑字段重排并另带 offset/count sideband
 - `psync` 只在完整程序的最后发出，用于通知 CPU 整个 HPU 程序已经完成；不得将其插入算子内部作为 DMA 等待或阶段屏障
 - 所有 custom1 指令固定编码 `x10/x11`。可执行 runtime 必须在每条 DMA 前把当前对象的 HPU_MEM line offset/count 装入这两个寄存器；`auto` 也进入统一编码链路。
-- `cmult`、`keyswitch`、`relinearization`、公共/CKKS/BGV `ciphertext_multiply` 与 BGV `modswitch` 均已进入统一 `.asm -> .inst32/.cmd26` 生成链路；方案流还要求 `num_q + num_p + 1 <= 256`
+- `cmult`、`keyswitch`、`relinearization`、公共/CKKS/BGV `ciphertext_multiply`、BGV `modswitch` 和三个 BFV kernel 均已进入统一 `.asm -> .inst32/.cmd26` 生成链路。BFV 额外要求 `Q|Pks|B|m_sk|t` 总 context 不超过 256，并满足 B 位宽门禁。
 - `ciphertext_multiply/test_data` 已由软件 reference 自动生成；二进制格式、shape 和校验值见其中的 `params.json` 与 `artifact_manifest.csv`
 - 顶层 `.bin` 是 `uint64` 数学 golden；真正面向 HPU 加载的是 `test_data/hardware/` 下按 256B line 补齐的 `.u32.bin`
 - `hardware/line_map.csv` 给出每个对象的 byte address、line offset 和 line count；custom1 固定使用 `GPR[rs1]=line_offset`、`GPR[rs2]=line_count`（256B line 单位），`hpu_mem_config.json` 给出 HPU_MEM window 值和 `0x00..0x18` CSR 编程顺序
@@ -252,7 +276,7 @@ MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、KeySwitch 和 Relinearizat
 
 ## 6. 当前交付边界
 
-软件侧已完成公共算子以及 CKKS Rescale/Multiply、BGV Multiply/ModSwitch 的指令生成、编码、reference golden、独立 `uint32` 硬件镜像、`q32+mu48+reserved48` 模上下文、每 stage 固定 `N/2` 个物理 twiddle、显式 negacyclic pre/post factor、256B line 映射、类型化 DMA span、生命周期门禁和 RV 可执行后端。BFV 未生成指令，原因与启用条件见 `doc/HPU_PROGRAMMING_MANUAL.md` 第 8.8 节。Nexus-AM IT runtime 已完成 HPU_MEM CSR、cache、FAULT/IRQ、scratch 与 DMA relocation 绑定；硬件 qualification 仍需目标 RTL/板级运行和外部 monitor 证据。详细签字项见 `doc/HPU_TEST_DELIVERY.md`。
+软件侧已完成公共算子、CKKS Rescale/Multiply、BGV Multiply/ModSwitch，以及 BFV Encode、comparison-free 单 kernel Multiply/Relinearization、ModSwitch 的指令生成、编码、reference golden、独立 `uint32` 硬件镜像、`q32+mu48+reserved48` 模上下文、物理 twiddle、256B line 映射、生命周期门禁和 RV 可执行后端。BFV 主硬件包使用零噪声精确功能 key，另有非零误差 host smoke；两者都标记为 `FUNCTIONAL_TEST_ONLY`。硬件 qualification 仍需目标 RTL/板级运行和外部 monitor 证据。详细签字项见 `doc/HPU_TEST_DELIVERY.md`。
 
 当前 golden 使用确定性零噪声和 P 可整除的功能测试评估密钥，适合 UT/IT 的
 逐字定位，不是安全性或噪声预算测试向量。Nexus-AM 的 host 模式只验证 testcase、
