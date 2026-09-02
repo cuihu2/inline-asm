@@ -140,8 +140,7 @@ struct BfvConfig {
 
 NttConfig g_ntt_cfg{};
 constexpr MmConfig kMmCfg{0, 1, 2, 3};
-// 为了缩短独立 BConv 示例，采用 num_q = num_p = 1；模上下文使用独立 8-bit MOD_ID
-constexpr BconvConfig kBconvCfg{1, 1, 0, 1, 2, 3, 4, 5, 6};
+BconvConfig g_bconv_cfg{};
 PmultConfig g_pmult_cfg{};
 CmultConfig g_cmult_cfg{};
 ModdownConfig g_moddown_cfg{};
@@ -161,6 +160,9 @@ void configure_generators(const hpu::test::FheTestConfig& config)
 	const int auto_index = static_cast<int>(config.auto_index);
 
 	g_ntt_cfg = {N, 0, 1, 2};
+	g_bconv_cfg = {
+		num_q, num_p,
+		0, 1, 2, 3, 4, 5, 6};
 	g_pmult_cfg = {num_q, 0, 1, 2, 3, 4, 5};
 	g_cmult_cfg = {num_q, 0, 1, 2, 3, 4, 5, 6, 7};
 	g_moddown_cfg = {num_q, num_p, 0, 1, 2, 3, 4, 5, 6, 7};
@@ -430,8 +432,8 @@ void test_bconv_codegen()
 {
 	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
 		std::string bconv = generate_hpu_bconv_asm(
-		kBconvCfg.num_q,
-		kBconvCfg.num_p,
+		g_bconv_cfg.num_q,
+		g_bconv_cfg.num_p,
 		0,
 		true);
 	std::ofstream("output/bconv.cpp") << bconv;
@@ -440,8 +442,8 @@ void test_bconv_codegen()
 
 	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
 		std::string bconv_body = generate_hpu_bconv_body_asm(
-		kBconvCfg.num_q,
-		kBconvCfg.num_p,
+		g_bconv_cfg.num_q,
+		g_bconv_cfg.num_p,
 		0,
 		true);
 	std::ofstream("output/bconv.asm") << bconv_body;

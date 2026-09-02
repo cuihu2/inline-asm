@@ -89,6 +89,11 @@ set(REQUIRED_FILES
     "outputs/ciphertext_multiply/test_data/VALIDATION.txt"
     "outputs/modup/test_data/input_digit_q.bin"
     "outputs/modup/test_data/expected_qp.bin"
+    "outputs/bconv/test_data/constants/qhat_inv_q.bin"
+    "outputs/bconv/test_data/constants/qhat_mod_p.bin"
+    "outputs/bconv/test_data/runtime/normalized_q.bin"
+    "outputs/bconv/test_data/runtime/output_p.bin"
+    "outputs/bconv/test_data/dma_plan.csv"
     "outputs/ciphertext_multiply/test_data/hardware/abi.json"
     "outputs/ciphertext_multiply/test_data/hardware/hardware_manifest.csv"
     "outputs/ciphertext_multiply/test_data/hardware/hpu_mem_image.u32.bin"
@@ -176,7 +181,7 @@ foreach(CASE_NAME IN LISTS PACKAGED_CASES)
         "outputs/${CASE_NAME}/${CASE_NAME}.cmd26")
 endforeach()
 
-function(CHECK_BFV_RESOLVED_DMA_PLAN CASE_NAME)
+function(CHECK_RESOLVED_DMA_PLAN CASE_NAME)
     file(STRINGS
         "${ROOT}/outputs/${CASE_NAME}/test_data/dma_plan.csv"
         DMA_PLAN_LINES)
@@ -213,8 +218,8 @@ function(CHECK_BFV_RESOLVED_DMA_PLAN CASE_NAME)
     endforeach()
 endfunction()
 
-foreach(BFV_CASE bfv_encode bfv_ciphertext_multiply bfv_modswitch)
-    CHECK_BFV_RESOLVED_DMA_PLAN(${BFV_CASE})
+foreach(RESOLVED_DMA_CASE bfv_encode bfv_ciphertext_multiply bfv_modswitch bconv)
+    CHECK_RESOLVED_DMA_PLAN(${RESOLVED_DMA_CASE})
 endforeach()
 
 foreach(CASE_NAME IN LISTS PACKAGED_CASES)

@@ -5541,16 +5541,100 @@ void generate(const std::filesystem::path& output_root,
                            TwiddleRequirement::kNone);
 
         case_artifacts.clear();
-        add_artifact(case_artifacts, "input_q.bin", "single Q limb", {g_n}, tensor[2][0]);
-        const BasisPoly bconv_source{tensor[2][0]};
-        add_artifact(case_artifacts, "expected_p.bin", "Q0 to P0 basis conversion", {g_n},
-                     bconv_to_target(bconv_source, {q_moduli[0]}, p_moduli[0]));
+        const BasisPoly& bconv_source = tensor[2];
+        const std::vector<U64>& bconv_source_moduli = q_moduli;
+        words.clear(); append_words(words, bconv_source);
+        add_artifact(
+            case_artifacts, "input_q.bin", "complete Q-basis source limbs",
+            {g_num_q, g_n}, std::move(words),
+            {"source_basis_q", "coefficient"});
+
+        const FastBconvConstants bconv_constants =
+            make_fast_bconv_constants(bconv_source_moduli, p_moduli);
+        words.clear(); append_words(words, bconv_constants.source_hat_inverse);
+        add_artifact(
+            case_artifacts, "constants/qhat_inv_q.bin",
+            "Q source-hat inverses in each source context",
+            {g_num_q, g_n}, std::move(words),
+            {"source_basis_q", "coefficient"});
+        words.clear();
+        for (const BasisPoly& target : bconv_constants.source_hat_mod_target) {
+            append_words(words, target);
+        }
+        add_artifact(
+            case_artifacts, "constants/qhat_mod_p.bin",
+            "Q source hats reduced in every P target context",
+            {g_num_p, g_num_q, g_n}, std::move(words),
+            {"target_basis_p", "source_basis_q", "coefficient"});
+        add_artifact(
+            case_artifacts, "runtime/normalized_q.bin",
+            "zero-initialized normalized source scratch",
+            {g_num_q, g_n}, Poly(g_num_q * g_n, 0),
+            {"source_basis_q", "coefficient"});
+        add_artifact(
+            case_artifacts, "runtime/output_p.bin",
+            "zero-initialized BConv destination",
+            {g_num_p, g_n}, Poly(g_num_p * g_n, 0),
+            {"target_basis_p", "coefficient"});
+
+        const BasisPoly bconv_expected_p = fast_bconv(
+            bconv_source, bconv_source_moduli, p_moduli);
+        for (const Poly& source_limb : bconv_source) {
+            if (bconv_expected_p.front() == source_limb) {
+                throw std::runtime_error(
+                    "standalone BConv fixture degenerated to an identity mapping");
+            }
+        }
+        words.clear(); append_words(words, bconv_expected_p);
+        add_artifact(
+            case_artifacts, "expected_p.bin",
+            "non-trivial complete-Q to P basis conversion",
+            {g_num_p, g_n}, std::move(words),
+            {"target_basis_p", "coefficient"},
+            HardwareDomain::kCoefficient, false);
+
         write_case_package(*suite_root, "bconv",
-                           common_params("bconv", "coefficient/Q0", "coefficient/P0",
-                                         {q_moduli[0], p_moduli[0]}),
+                           common_params("bconv", "coefficient/Q", "coefficient/P",
+                                         all_moduli),
                            std::move(case_artifacts),
-                           {q_moduli[0], p_moduli[0]}, {q_roots[0], all_roots[g_num_q]},
+                           all_moduli, all_roots,
                            TwiddleRequirement::kNone);
+        DmaPlanBuilder bconv_dma(read_line_catalog(
+            *suite_root / "bconv" / "test_data" / "hardware" / "line_map.csv"));
+        std::vector<DmaSpan> bconv_inputs;
+        std::vector<DmaSpan> bconv_inverses;
+        std::vector<DmaSpan> bconv_scratch;
+        for (std::size_t source = 0; source < g_num_q; ++source) {
+            bconv_inputs.push_back(bconv_dma.poly(
+                "images/input_q.u32.bin", source,
+                "bconv.input_q[" + std::to_string(source) + "]"));
+            bconv_inverses.push_back(bconv_dma.poly(
+                "images/constants/qhat_inv_q.u32.bin", source,
+                "bconv.qhat_inv[" + std::to_string(source) + "]"));
+            bconv_scratch.push_back(bconv_dma.poly(
+                "images/runtime/normalized_q.u32.bin", source,
+                "bconv.normalized_q[" + std::to_string(source) + "]"));
+        }
+        std::vector<std::vector<DmaSpan>> bconv_target_constants;
+        std::vector<DmaSpan> bconv_outputs;
+        for (std::size_t target = 0; target < g_num_p; ++target) {
+            std::vector<DmaSpan> target_constants;
+            for (std::size_t source = 0; source < g_num_q; ++source) {
+                target_constants.push_back(bconv_dma.poly(
+                    "images/constants/qhat_mod_p.u32.bin",
+                    target * g_num_q + source,
+                    "bconv.qhat_mod_p[" + std::to_string(target) + "]["
+                        + std::to_string(source) + "]"));
+            }
+            bconv_target_constants.push_back(std::move(target_constants));
+            bconv_outputs.push_back(bconv_dma.poly(
+                "images/runtime/output_p.u32.bin", target,
+                "bconv.output_p[" + std::to_string(target) + "]"));
+        }
+        bconv_dma.bconv(
+            bconv_inputs, bconv_inverses, bconv_target_constants,
+            bconv_scratch, bconv_outputs);
+        write_resolved_dma_plan(*suite_root, "bconv", bconv_dma.records());
 
         case_artifacts.clear();
         words.clear();
