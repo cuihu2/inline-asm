@@ -60,7 +60,7 @@ else()
 endif()
 
 set(TWIDDLE_CASES
-    ntt intt ckks_encode bgv_encode bfv_encode
+    ntt intt
     ckks_ciphertext_multiply bgv_ciphertext_multiply
     bfv_ciphertext_multiply
     keyswitch relinearization auto ciphertext_multiply)
@@ -112,17 +112,19 @@ set(REQUIRED_FILES
     "outputs/rv_interface_smoke/test_data/negative_cases.asm.txt"
     "outputs/intt/test_data/input.dec.txt"
     "outputs/intt/test_data/expected.dec.txt"
-    "outputs/ckks_encode/test_data/input/plaintext_a_coeff_q.bin"
-    "outputs/ckks_encode/test_data/expected/plaintext_a_ntt_q.bin"
+    "outputs/ckks_encode/test_data/params.json"
+    "outputs/ckks_encode/test_data/README.md"
     "outputs/ckks_encode/test_data/host/slots_a.csv"
     "outputs/ckks_encode/test_data/host/decoded_a.csv"
+    "outputs/ckks_encode/test_data/host/coefficients_a.csv"
     "outputs/ckks_encode/test_data/host/error_stats.csv"
     "outputs/ckks_encode/test_data/host/host_manifest.csv"
     "outputs/ckks_encode/test_data/host/validation.txt"
-    "outputs/bgv_encode/test_data/input/coefficient_plaintext_q.bin"
-    "outputs/bgv_encode/test_data/input/batch_plaintext_q.bin"
-    "outputs/bgv_encode/test_data/expected/batch_plaintext_ntt_q.bin"
+    "outputs/bgv_encode/test_data/params.json"
+    "outputs/bgv_encode/test_data/README.md"
+    "outputs/bgv_encode/test_data/host/coefficient_encoded_mod_t.csv"
     "outputs/bgv_encode/test_data/host/batch_slots.csv"
+    "outputs/bgv_encode/test_data/host/batch_coefficients_mod_t.csv"
     "outputs/bgv_encode/test_data/host/batch_decoded_slots.csv"
     "outputs/bgv_encode/test_data/host/auto_x3_decoded_slots.csv"
     "outputs/bgv_encode/test_data/host/host_manifest.csv"
@@ -146,10 +148,14 @@ set(REQUIRED_FILES
     "outputs/bgv_modswitch/test_data/constants/q_last_inv_mod_qprime.bin"
     "outputs/bgv_modswitch/test_data/intermediate/u_mod_t.bin"
     "outputs/bgv_modswitch/test_data/expected_qprime.bin"
-    "outputs/bfv_encode/test_data/input/batch_plaintext_q.bin"
-    "outputs/bfv_encode/test_data/expected/batch_plaintext_ntt_q.bin"
+    "outputs/bfv_encode/test_data/params.json"
+    "outputs/bfv_encode/test_data/README.md"
+    "outputs/bfv_encode/test_data/host/coefficient_encoded_mod_t.csv"
+    "outputs/bfv_encode/test_data/host/batch_slots.csv"
+    "outputs/bfv_encode/test_data/host/batch_coefficients_mod_t.csv"
+    "outputs/bfv_encode/test_data/host/batch_decoded_slots.csv"
+    "outputs/bfv_encode/test_data/host/host_manifest.csv"
     "outputs/bfv_encode/test_data/host/validation.txt"
-    "outputs/bfv_encode/test_data/dma_plan.csv"
     "outputs/bfv_ciphertext_multiply/test_data/constants/q_to_bsk_qhat_inv.bin"
     "outputs/bfv_ciphertext_multiply/test_data/constants/q_to_bsk_qhat_mod.bin"
     "outputs/bfv_ciphertext_multiply/test_data/constants/q_inverse_mod_bsk.bin"
@@ -218,7 +224,7 @@ function(CHECK_RESOLVED_DMA_PLAN CASE_NAME)
     endforeach()
 endfunction()
 
-foreach(RESOLVED_DMA_CASE bfv_encode bfv_ciphertext_multiply bfv_modswitch bconv)
+foreach(RESOLVED_DMA_CASE bfv_ciphertext_multiply bfv_modswitch bconv)
     CHECK_RESOLVED_DMA_PLAN(${RESOLVED_DMA_CASE})
 endforeach()
 
@@ -252,6 +258,22 @@ if(EXISTS "${ROOT}/output/encode.asm"
         OR EXISTS "${ROOT}/outputs/encode")
     message(FATAL_ERROR "Legacy common Encode artifacts remain after scheme migration")
 endif()
+foreach(SCHEME_ENCODE ckks_encode bgv_encode bfv_encode)
+    foreach(LEGACY_SUFFIX asm cpp c h inst32 cmd26)
+        if(EXISTS "${ROOT}/output/${SCHEME_ENCODE}.${LEGACY_SUFFIX}"
+                OR EXISTS "${ROOT}/outputs/${SCHEME_ENCODE}/${SCHEME_ENCODE}.${LEGACY_SUFFIX}")
+            message(FATAL_ERROR
+                "${SCHEME_ENCODE}: legacy HPU Encode artifact remains")
+        endif()
+    endforeach()
+    if(EXISTS "${ROOT}/outputs/${SCHEME_ENCODE}/dma_relocation_manifest.csv"
+            OR EXISTS "${ROOT}/outputs/${SCHEME_ENCODE}/test_data/dma_plan.csv"
+            OR EXISTS "${ROOT}/outputs/${SCHEME_ENCODE}/test_data/artifact_manifest.csv"
+            OR EXISTS "${ROOT}/outputs/${SCHEME_ENCODE}/test_data/hardware")
+        message(FATAL_ERROR
+            "${SCHEME_ENCODE}: host-only package still contains HPU delivery data")
+    endif()
+endforeach()
 if(EXISTS "${ROOT}/output/bfv_behz_multiply.asm"
         OR EXISTS "${ROOT}/output/bfv_behz_multiply.cpp"
         OR EXISTS "${ROOT}/output/bfv_relinearization.asm"
@@ -588,55 +610,46 @@ if(INTT_STAGE_POSITION EQUAL -1
     message(FATAL_ERROR "INTT stream does not execute normalization/inverse twist after its stages")
 endif()
 
-foreach(SCHEME_ENCODE ckks_encode bgv_encode bfv_encode)
-    file(READ "${ROOT}/output/${SCHEME_ENCODE}.asm" ENCODE_ASM)
-    string(FIND "${ENCODE_ASM}"
-        "PLAINTEXT NTT BACKEND: coefficient RNS-Q -> NTT RNS-Q"
-        ENCODE_BOUNDARY_POSITION)
-    string(FIND "${ENCODE_ASM}"
-        "Negacyclic pre-twist: explicit PMUL" ENCODE_NTT_POSITION)
-    if(ENCODE_BOUNDARY_POSITION EQUAL -1
-            OR ENCODE_NTT_POSITION EQUAL -1
-            OR ENCODE_BOUNDARY_POSITION GREATER_EQUAL ENCODE_NTT_POSITION)
-        message(FATAL_ERROR
-            "${SCHEME_ENCODE} does not transform host-encoded RNS plaintext")
-    endif()
-endforeach()
 file(READ "${ROOT}/outputs/ckks_encode/test_data/params.json" CKKS_ENCODE_PARAMS)
 if(NOT CKKS_ENCODE_PARAMS MATCHES "\"scheme\": \"CKKS\""
-        OR NOT CKKS_ENCODE_PARAMS MATCHES "generator-3 canonical embedding"
-        OR NOT CKKS_ENCODE_PARAMS MATCHES "\"decode_location\": \"host_only\"")
+        OR NOT CKKS_ENCODE_PARAMS MATCHES "SEAL generator-3 canonical embedding"
+        OR NOT CKKS_ENCODE_PARAMS MATCHES "\"execution_location\": \"host\""
+        OR NOT CKKS_ENCODE_PARAMS MATCHES "\"hpu_operation\": \"none\"")
     message(FATAL_ERROR "CKKS Encode package does not freeze its host scheme boundary")
 endif()
 file(READ "${ROOT}/outputs/bgv_encode/test_data/params.json" BGV_ENCODE_PARAMS)
 if(NOT BGV_ENCODE_PARAMS MATCHES "\"scheme\": \"BGV\""
         OR NOT BGV_ENCODE_PARAMS MATCHES "two rows of N/2"
-        OR NOT BGV_ENCODE_PARAMS MATCHES "2N divides t-1")
+        OR NOT BGV_ENCODE_PARAMS MATCHES "2N divides t-1"
+        OR NOT BGV_ENCODE_PARAMS MATCHES "\"execution_location\": \"host\""
+        OR NOT BGV_ENCODE_PARAMS MATCHES "\"hpu_operation\": \"none\"")
     message(FATAL_ERROR "BGV Encode package does not freeze its batching boundary")
 endif()
 file(READ "${ROOT}/outputs/bfv_encode/test_data/params.json" BFV_ENCODE_PARAMS)
 if(NOT BFV_ENCODE_PARAMS MATCHES "\"scheme\": \"BFV\""
         OR NOT BFV_ENCODE_PARAMS MATCHES "two rows of N/2"
-        OR NOT BFV_ENCODE_PARAMS MATCHES "2N divides t-1")
+        OR NOT BFV_ENCODE_PARAMS MATCHES "2N divides t-1"
+        OR NOT BFV_ENCODE_PARAMS MATCHES "\"execution_location\": \"host\""
+        OR NOT BFV_ENCODE_PARAMS MATCHES "\"hpu_operation\": \"none\"")
     message(FATAL_ERROR "BFV Encode package does not freeze its batching boundary")
 endif()
-file(READ "${ROOT}/outputs/ckks_encode/test_data/artifact_manifest.csv"
+file(READ "${ROOT}/outputs/ckks_encode/test_data/host/host_manifest.csv"
     CKKS_ENCODE_MANIFEST)
 if(NOT CKKS_ENCODE_MANIFEST MATCHES
-        "plaintext_a_ntt_q.bin[^\n]*${FHE_NUM_Q}x${FHE_N}")
-    message(FATAL_ERROR "CKKS Encode output does not match configured Q and N")
+        "coefficients_a.csv")
+    message(FATAL_ERROR "CKKS host Encode package lacks coefficient output")
 endif()
-file(READ "${ROOT}/outputs/bgv_encode/test_data/artifact_manifest.csv"
+file(READ "${ROOT}/outputs/bgv_encode/test_data/host/host_manifest.csv"
     BGV_ENCODE_MANIFEST)
 if(NOT BGV_ENCODE_MANIFEST MATCHES
-        "batch_plaintext_ntt_q.bin[^\n]*${FHE_NUM_Q}x${FHE_N}")
-    message(FATAL_ERROR "BGV Encode output does not match configured Q and N")
+        "batch_coefficients_mod_t.csv")
+    message(FATAL_ERROR "BGV host Encode package lacks batched coefficients")
 endif()
-file(READ "${ROOT}/outputs/bfv_encode/test_data/artifact_manifest.csv"
+file(READ "${ROOT}/outputs/bfv_encode/test_data/host/host_manifest.csv"
     BFV_ENCODE_MANIFEST)
 if(NOT BFV_ENCODE_MANIFEST MATCHES
-        "batch_plaintext_ntt_q.bin[^\n]*${FHE_NUM_Q}x${FHE_N}")
-    message(FATAL_ERROR "BFV Encode output does not match configured Q and N")
+        "batch_coefficients_mod_t.csv")
+    message(FATAL_ERROR "BFV host Encode package lacks batched coefficients")
 endif()
 
 file(READ "${ROOT}/output/ckks_rescale.asm" RESCALE_ASM)
@@ -880,7 +893,7 @@ function(CHECK_OBJECT_LIFECYCLE RELATIVE_PATH)
     endforeach()
 endfunction()
 
-foreach(CASE_NAME ntt intt ckks_encode bgv_encode bfv_encode ckks_rescale ckks_ciphertext_multiply
+foreach(CASE_NAME ntt intt ckks_rescale ckks_ciphertext_multiply
         bgv_ciphertext_multiply bgv_modswitch bfv_ciphertext_multiply
         bfv_modswitch mm bconv pmult cmult modup
         moddown auto keyswitch relinearization ciphertext_multiply)
@@ -899,7 +912,7 @@ function(CHECK_MOD_CONTEXT_LOAD RELATIVE_PATH)
     endforeach()
 endfunction()
 
-foreach(CASE_NAME ntt intt ckks_encode bgv_encode bfv_encode ckks_rescale ckks_ciphertext_multiply
+foreach(CASE_NAME ntt intt ckks_rescale ckks_ciphertext_multiply
         bgv_ciphertext_multiply bgv_modswitch bfv_ciphertext_multiply
         bfv_modswitch bconv pmult cmult modup
         moddown auto keyswitch relinearization ciphertext_multiply)
@@ -928,7 +941,7 @@ function(CHECK_TERMINAL_PSYNC RELATIVE_PATH)
     endif()
 endfunction()
 
-foreach(CASE_NAME ntt intt ckks_encode bgv_encode bfv_encode ckks_rescale ckks_ciphertext_multiply
+foreach(CASE_NAME ntt intt ckks_rescale ckks_ciphertext_multiply
         bgv_ciphertext_multiply bgv_modswitch bfv_ciphertext_multiply
         bfv_modswitch mm bconv pmult cmult modup
         moddown auto keyswitch relinearization ciphertext_multiply)
@@ -936,7 +949,7 @@ foreach(CASE_NAME ntt intt ckks_encode bgv_encode bfv_encode ckks_rescale ckks_c
 endforeach()
 CHECK_TERMINAL_PSYNC("outputs/rv_interface_smoke/rv_interface_smoke.asm")
 
-foreach(CASE_NAME ntt intt ckks_encode bgv_encode bfv_encode ckks_rescale ckks_ciphertext_multiply
+foreach(CASE_NAME ntt intt ckks_rescale ckks_ciphertext_multiply
         bgv_ciphertext_multiply bgv_modswitch bfv_ciphertext_multiply
         bfv_modswitch mm bconv pmult cmult modup
         moddown auto keyswitch relinearization ciphertext_multiply)
@@ -994,22 +1007,6 @@ list(LENGTH RELIN_CMD26_LINES RELIN_CMD26_COUNT)
 if(NOT RELIN_CMD26_COUNT EQUAL RELIN_INST32_COUNT)
     message(FATAL_ERROR "Relinearization 32-bit instruction and 26-bit precode counts differ")
 endif()
-
-foreach(SCHEME_ENCODE ckks_encode bgv_encode bfv_encode)
-    file(STRINGS "${ROOT}/outputs/${SCHEME_ENCODE}/${SCHEME_ENCODE}.inst32"
-        ENCODE_INST32_LINES)
-    list(LENGTH ENCODE_INST32_LINES ENCODE_INST32_COUNT)
-    file(STRINGS "${ROOT}/outputs/${SCHEME_ENCODE}/${SCHEME_ENCODE}.cmd26"
-        ENCODE_CMD26_LINES)
-    list(LENGTH ENCODE_CMD26_LINES ENCODE_CMD26_COUNT)
-    if(ENCODE_INST32_COUNT EQUAL 0
-            OR NOT ENCODE_CMD26_COUNT EQUAL ENCODE_INST32_COUNT)
-        message(FATAL_ERROR
-            "${SCHEME_ENCODE} instruction/precode stream is missing or inconsistent")
-    endif()
-    string(TOUPPER "${SCHEME_ENCODE}" SCHEME_ENCODE_UPPER)
-    set(${SCHEME_ENCODE_UPPER}_INST32_COUNT ${ENCODE_INST32_COUNT})
-endforeach()
 
 file(STRINGS "${ROOT}/outputs/ckks_rescale/ckks_rescale.inst32" RESCALE_INST32_LINES)
 list(LENGTH RESCALE_INST32_LINES RESCALE_INST32_COUNT)
@@ -1086,9 +1083,9 @@ file(WRITE "${ROOT}/outputs/DELIVERY_REPORT.txt"
     "BFV_NONZERO_NOISE_SMOKE=PASS\n"
     "BFV_MODSWITCH_ROUNDED_DROP_LAST=PASS\n"
     "BFV_CONTEXT_ORDER_Q_PKS_B_MSK_T=PASS\n"
-    "CKKS_ENCODE_INST32_COUNT=${CKKS_ENCODE_INST32_COUNT}\n"
-    "BGV_ENCODE_INST32_COUNT=${BGV_ENCODE_INST32_COUNT}\n"
-    "BFV_ENCODE_INST32_COUNT=${BFV_ENCODE_INST32_COUNT}\n"
+    "CKKS_ENCODE_EXECUTION=HOST_ONLY\n"
+    "BGV_ENCODE_EXECUTION=HOST_ONLY\n"
+    "BFV_ENCODE_EXECUTION=HOST_ONLY\n"
     "CKKS_RESCALE_INST32_COUNT=${RESCALE_INST32_COUNT}\n"
     "CKKS_CIPHERTEXT_MULTIPLY_INST32_COUNT=${CKKS_CIPHERTEXT_MULTIPLY_INST32_COUNT}\n"
     "BGV_CIPHERTEXT_MULTIPLY_INST32_COUNT=${BGV_CIPHERTEXT_MULTIPLY_INST32_COUNT}\n"

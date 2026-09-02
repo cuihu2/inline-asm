@@ -15,13 +15,10 @@ namespace {
 const std::vector<std::string> kEncodableOutputs{
     "ntt",
     "intt",
-    "ckks_encode",
-    "bgv_encode",
     "ckks_rescale",
     "ckks_ciphertext_multiply",
     "bgv_ciphertext_multiply",
     "bgv_modswitch",
-    "bfv_encode",
     "bfv_ciphertext_multiply",
     "bfv_modswitch",
     "mm",
@@ -39,13 +36,10 @@ const std::vector<std::string> kEncodableOutputs{
 const std::vector<std::string> kAllOutputs{
     "ntt",
     "intt",
-    "ckks_encode",
-    "bgv_encode",
     "ckks_rescale",
     "ckks_ciphertext_multiply",
     "bgv_ciphertext_multiply",
     "bgv_modswitch",
-    "bfv_encode",
     "bfv_ciphertext_multiply",
     "bfv_modswitch",
     "mm",
@@ -287,6 +281,9 @@ int main(int argc, char** argv) {
         std::filesystem::remove_all(outputs_root / "bfv_behz_multiply");
         std::filesystem::remove_all(outputs_root / "bfv_relinearization");
         std::filesystem::remove_all(outputs_root / "bfv_ciphertext_multiply");
+        std::filesystem::remove_all(outputs_root / "ckks_encode");
+        std::filesystem::remove_all(outputs_root / "bgv_encode");
+        std::filesystem::remove_all(outputs_root / "bfv_encode");
 
         for (const auto& stem : kAllOutputs) {
             package_case(source_root, outputs_root, stem);

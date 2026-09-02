@@ -47,8 +47,6 @@ target_compile_definitions(hpu_test_config
 )
 
 add_library(hpu_scheme_encoding STATIC
-        src/util/ntt.cpp
-        src/operator/plaintext_ntt.cpp
         src/scheme/detail/integer_encode.cpp
         src/scheme/ckks/encode.cpp
         src/scheme/bgv/encode.cpp
@@ -61,6 +59,7 @@ target_include_directories(hpu_scheme_encoding
 
 add_executable(inline_asm_codegen
         src/main.cpp
+        src/util/ntt.cpp
         src/util/mm.cpp
         src/util/bconv.cpp
         src/poly/auto.cpp
@@ -87,7 +86,6 @@ target_include_directories(inline_asm_codegen
 target_link_libraries(inline_asm_codegen
         PRIVATE
         hpu_test_config
-        hpu_scheme_encoding
 )
 
 if(BUILD_TESTING)

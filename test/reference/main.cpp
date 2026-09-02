@@ -2118,6 +2118,25 @@ void write_host_package(
     write_text(host_root / "host_manifest.csv", manifest.str());
 }
 
+void write_host_only_scheme_package(
+    const std::filesystem::path& suite_root,
+    const std::string& case_name,
+    const std::string& params,
+    const std::vector<HostArtifact>& artifacts)
+{
+    const auto case_root = suite_root / case_name;
+    const auto test_data_root = case_root / "test_data";
+    std::filesystem::remove_all(case_root);
+    write_text(test_data_root / "params.json", params);
+    write_host_package(test_data_root, artifacts);
+    write_text(
+        test_data_root / "README.md",
+        "Encode and Decode are host-only scheme operations. This package contains "
+        "human-readable inputs, encoded plaintext coefficients, decoded values, "
+        "round-trip validation, and checksums. It intentionally contains no HPU "
+        "instruction stream, DMA plan, MOD context, twiddle, or HPU_MEM image.\n");
+}
+
 std::string complex_slots_csv(
     const std::vector<std::complex<double>>& values,
     const std::string& value_name)
@@ -4054,6 +4073,23 @@ void generate(const std::filesystem::path& output_root,
             return out.str();
         };
 
+        const auto host_encode_params = [&](const std::string& scheme,
+                                            const std::string& operation,
+                                            const std::string& input_domain,
+                                            const std::string& output_domain,
+                                            const std::string& metadata_fields) {
+            std::ostringstream out;
+            out << "{\n  \"format_version\": 3,\n  \"scheme\": \""
+                << scheme << "\",\n  \"operation\": \"" << operation
+                << "\",\n  \"N\": " << g_n
+                << ",\n  \"execution_location\": \"host\",\n"
+                << "  \"hpu_operation\": \"none\",\n"
+                << "  \"input_domain\": \"" << input_domain
+                << "\",\n  \"output_domain\": \"" << output_domain
+                << "\",\n" << metadata_fields << "\n}\n";
+            return out.str();
+        };
+
         std::vector<Artifact> case_artifacts;
         add_artifact(case_artifacts, "input.bin", "NTT input, coefficient domain",
                      {g_n}, ct_a[0][0]);
@@ -4076,53 +4112,18 @@ void generate(const std::filesystem::path& output_root,
                            {q_moduli[0]}, {q_roots[0]},
                            TwiddleRequirement::kRequired);
 
-        const BasisPoly ckks_encode_a_q = encode_basis(
-            ckks_encoded_a.coefficients, q_moduli);
-        const BasisPoly ckks_encode_b_q = encode_basis(
-            ckks_encoded_b.coefficients, q_moduli);
-        const BasisPoly ckks_encode_a_ntt = transform_basis(
-            ckks_encode_a_q, q_moduli, q_roots, false);
-        const BasisPoly ckks_encode_b_ntt = transform_basis(
-            ckks_encode_b_q, q_moduli, q_roots, false);
-        case_artifacts.clear();
-        words.clear(); append_words(words, ckks_encode_a_q);
-        add_artifact(case_artifacts, "input/plaintext_a_coeff_q.bin",
-                     "CKKS host-encoded plaintext A, coefficient RNS-Q",
-                     {g_num_q, g_n}, std::move(words),
-                     {"basis_q", "coefficient"});
-        words.clear(); append_words(words, ckks_encode_b_q);
-        add_artifact(case_artifacts, "input/plaintext_b_coeff_q.bin",
-                     "CKKS host-encoded plaintext B, coefficient RNS-Q",
-                     {g_num_q, g_n}, std::move(words),
-                     {"basis_q", "coefficient"});
-        words.clear(); append_words(words, ckks_encode_a_ntt);
-        add_artifact(case_artifacts, "expected/plaintext_a_ntt_q.bin",
-                     "CKKS plaintext A ready for PMult, NTT RNS-Q",
-                     {g_num_q, g_n}, std::move(words),
-                     {"basis_q", "coefficient"}, HardwareDomain::kNtt);
-        words.clear(); append_words(words, ckks_encode_b_ntt);
-        add_artifact(case_artifacts, "expected/plaintext_b_ntt_q.bin",
-                     "CKKS plaintext B ready for PMult, NTT RNS-Q",
-                     {g_num_q, g_n}, std::move(words),
-                     {"basis_q", "coefficient"}, HardwareDomain::kNtt);
-        write_case_package(
-            *suite_root, "ckks_encode",
-            scheme_params(
-                "CKKS", "encode",
-                "host complex slots -> signed coefficients -> coefficient/RNS-Q",
-                "plaintext/NTT/Q", q_moduli,
+        write_host_only_scheme_package(
+            *suite_root,
+            "ckks_encode",
+            host_encode_params(
+                "CKKS", "encode_decode",
+                "complex slots", "signed coefficient plaintext",
                 "  \"slot_count\": " + std::to_string(g_n / 2) + ",\n"
-                "  \"slot_layout\": \"generator-3 canonical embedding with conjugate half\",\n"
+                "  \"slot_layout\": \"SEAL generator-3 canonical embedding with conjugate half\",\n"
                 "  \"scale\": " + std::to_string(ckks_input_scale) + ",\n"
                 "  \"level\": " + std::to_string(g_num_q - 1) + ",\n"
                 "  \"roundtrip_error_bound\": "
-                    + std::to_string(ckks_encode_bound) + ",\n"
-                "  \"decode_location\": \"host_only\",\n"
-                "  \"hpu_operation\": \"per-Q-limb negacyclic NTT\""),
-            std::move(case_artifacts), q_moduli, q_roots,
-            TwiddleRequirement::kRequired);
-        write_host_package(
-            *suite_root / "ckks_encode" / "test_data",
+                    + std::to_string(ckks_encode_bound)),
             {
                 {"slots_a.csv", "input complex slots A",
                  complex_slots_csv(ckks_slots_a, "input")},
@@ -4149,15 +4150,6 @@ void generate(const std::filesystem::path& output_root,
                  "PASS\nslot_layout=generator-3\nzero_fill=PASS\n"
                  "roundtrip_error_within_bound=PASS\n"},
             });
-        write_text(
-            *suite_root / "ckks_encode" / "test_data" / "dma_plan.csv",
-            "vector,phase,operation,logical_object,domain,basis,status\n"
-            "A,input,dload,plaintext_a_coeff_q,coefficient,Q,READY\n"
-            "A,transform,pntt,plaintext_a,NTT,Q,READY\n"
-            "A,output,dstore,plaintext_a_ntt_q,NTT,Q,READY\n"
-            "B,input,dload,plaintext_b_coeff_q,coefficient,Q,READY\n"
-            "B,transform,pntt,plaintext_b,NTT,Q,READY\n"
-            "B,output,dstore,plaintext_b_ntt_q,NTT,Q,READY\n");
 
         std::vector<std::int64_t> bgv_coefficient_sample(g_n, 0);
         const std::vector<std::int64_t> bgv_coefficient_prefix{
@@ -4170,51 +4162,17 @@ void generate(const std::filesystem::path& output_root,
             bgv_coefficient_sample, g_n, g_plaintext_modulus);
         const auto bgv_coefficient_decoded = hpu::scheme::bgv::decode_coefficients(
             bgv_coefficient_t, g_plaintext_modulus);
-        const BasisPoly bgv_coefficient_q = lift_basis(
-            bgv_coefficient_t, q_moduli);
-        const BasisPoly bgv_batch_q = lift_basis(bgv_plain_a, q_moduli);
-        const BasisPoly bgv_coefficient_ntt = transform_basis(
-            bgv_coefficient_q, q_moduli, q_roots, false);
-        const BasisPoly bgv_batch_ntt = transform_basis(
-            bgv_batch_q, q_moduli, q_roots, false);
-        case_artifacts.clear();
-        words.clear(); append_words(words, bgv_coefficient_q);
-        add_artifact(case_artifacts, "input/coefficient_plaintext_q.bin",
-                     "BGV coefficient-encoded plaintext, coefficient RNS-Q",
-                     {g_num_q, g_n}, std::move(words),
-                     {"basis_q", "coefficient"});
-        words.clear(); append_words(words, bgv_batch_q);
-        add_artifact(case_artifacts, "input/batch_plaintext_q.bin",
-                     "BGV generator-3 batched plaintext, coefficient RNS-Q",
-                     {g_num_q, g_n}, std::move(words),
-                     {"basis_q", "coefficient"});
-        words.clear(); append_words(words, bgv_coefficient_ntt);
-        add_artifact(case_artifacts, "expected/coefficient_plaintext_ntt_q.bin",
-                     "BGV coefficient plaintext ready for PMult, NTT RNS-Q",
-                     {g_num_q, g_n}, std::move(words),
-                     {"basis_q", "coefficient"}, HardwareDomain::kNtt);
-        words.clear(); append_words(words, bgv_batch_ntt);
-        add_artifact(case_artifacts, "expected/batch_plaintext_ntt_q.bin",
-                     "BGV batched plaintext ready for PMult, NTT RNS-Q",
-                     {g_num_q, g_n}, std::move(words),
-                     {"basis_q", "coefficient"}, HardwareDomain::kNtt);
-        write_case_package(
-            *suite_root, "bgv_encode",
-            scheme_params(
-                "BGV", "coefficient_encode_and_batch_encode",
-                "host signed coefficients or N slots -> coefficient/RNS-Q",
-                "plaintext/NTT/Q", q_moduli,
+        write_host_only_scheme_package(
+            *suite_root,
+            "bgv_encode",
+            host_encode_params(
+                "BGV", "coefficient_encode_decode_and_batch_encode_decode",
+                "signed coefficients or N slots", "coefficient plaintext modulo t",
                 "  \"plaintext_modulus\": "
                     + std::to_string(g_plaintext_modulus) + ",\n"
                 "  \"slot_count\": " + std::to_string(g_n) + ",\n"
-                "  \"slot_layout\": \"generator-3, two rows of N/2\",\n"
-                "  \"batching_condition\": \"t prime and 2N divides t-1\",\n"
-                "  \"decode_location\": \"host_only\",\n"
-                "  \"hpu_operation\": \"per-Q-limb negacyclic NTT\""),
-            std::move(case_artifacts), q_moduli, q_roots,
-            TwiddleRequirement::kRequired);
-        write_host_package(
-            *suite_root / "bgv_encode" / "test_data",
+                "  \"slot_layout\": \"SEAL generator-3, two rows of N/2\",\n"
+                "  \"batching_condition\": \"t prime and 2N divides t-1\""),
             {
                 {"coefficient_input.csv", "signed coefficient input",
                  signed_values_csv(bgv_coefficient_sample, "input")},
@@ -4239,15 +4197,6 @@ void generate(const std::filesystem::path& output_root,
                  "PASS\ncoefficient_roundtrip=PASS\nbatch_roundtrip=PASS\n"
                  "auto_x_to_x3_ciphertext_keyswitch_two_rows_left_rotate=PASS\n"},
             });
-        write_text(
-            *suite_root / "bgv_encode" / "test_data" / "dma_plan.csv",
-            "vector,phase,operation,logical_object,domain,basis,status\n"
-            "coefficient,input,dload,coefficient_plaintext_q,coefficient,Q,READY\n"
-            "coefficient,transform,pntt,coefficient_plaintext,NTT,Q,READY\n"
-            "coefficient,output,dstore,coefficient_plaintext_ntt_q,NTT,Q,READY\n"
-            "batch,input,dload,batch_plaintext_q,coefficient,Q,READY\n"
-            "batch,transform,pntt,batch_plaintext,NTT,Q,READY\n"
-            "batch,output,dstore,batch_plaintext_ntt_q,NTT,Q,READY\n");
 
         case_artifacts.clear();
         words.clear(); append_words(words, ct_a[0]); append_words(words, ct_a[1]);
@@ -4621,52 +4570,17 @@ void generate(const std::filesystem::path& output_root,
 
         const Poly bfv_coefficient_t = hpu::scheme::bfv::encode_coefficients(
             bgv_coefficient_sample, g_n, g_plaintext_modulus);
-        const BasisPoly bfv_coefficient_q = lift_basis(
-            bfv_coefficient_t, q_moduli);
-        const BasisPoly bfv_batch_q = lift_basis(bfv_plain_a, q_moduli);
-        const BasisPoly bfv_batch_ntt = transform_basis(
-            bfv_batch_q, q_moduli, q_roots, false);
-        case_artifacts.clear();
-        words.clear(); append_words(words, bfv_coefficient_q);
-        add_artifact(
-            case_artifacts, "host/coefficient_plaintext_q.bin",
-            "BFV coefficient encoding example, coefficient RNS-Q",
-            {g_num_q, g_n}, std::move(words),
-            {"basis_q", "coefficient"}, HardwareDomain::kCoefficient, false);
-        words.clear(); append_words(words, bfv_batch_q);
-        add_artifact(
-            case_artifacts, "input/batch_plaintext_q.bin",
-            "BFV generator-3 batched plaintext, coefficient RNS-Q",
-            {g_num_q, g_n}, std::move(words),
-            {"basis_q", "coefficient"});
-        add_artifact(
-            case_artifacts, "runtime/output_ntt_q.bin",
-            "zero-initialized destination for the BFV Encode kernel",
-            {g_num_q, g_n}, Poly(g_num_q * g_n, 0),
-            {"basis_q", "coefficient"}, HardwareDomain::kNtt);
-        words.clear(); append_words(words, bfv_batch_ntt);
-        add_artifact(
-            case_artifacts, "expected/batch_plaintext_ntt_q.bin",
-            "golden BFV plaintext ready for PMult, NTT RNS-Q",
-            {g_num_q, g_n}, std::move(words),
-            {"basis_q", "coefficient"}, HardwareDomain::kNtt, false);
-        write_case_package(
-            *suite_root, "bfv_encode",
-            scheme_params(
-                "BFV", "coefficient_encode_and_batch_encode",
-                "host signed coefficients or N slots -> coefficient/RNS-Q",
-                "plaintext/NTT/Q", q_moduli,
+        write_host_only_scheme_package(
+            *suite_root,
+            "bfv_encode",
+            host_encode_params(
+                "BFV", "coefficient_encode_decode_and_batch_encode_decode",
+                "signed coefficients or N slots", "coefficient plaintext modulo t",
                 "  \"plaintext_modulus\": "
                     + std::to_string(g_plaintext_modulus) + ",\n"
                 "  \"slot_count\": " + std::to_string(g_n) + ",\n"
-                "  \"slot_layout\": \"generator-3, two rows of N/2\",\n"
-                "  \"batching_condition\": \"t prime and 2N divides t-1\",\n"
-                "  \"decode_location\": \"host_only\",\n"
-                "  \"hpu_operation\": \"per-Q-limb negacyclic NTT\""),
-            std::move(case_artifacts), q_moduli, q_roots,
-            TwiddleRequirement::kRequired);
-        write_host_package(
-            *suite_root / "bfv_encode" / "test_data",
+                "  \"slot_layout\": \"SEAL generator-3, two rows of N/2\",\n"
+                "  \"batching_condition\": \"t prime and 2N divides t-1\""),
             {
                 {"coefficient_input.csv", "signed BFV coefficient input",
                  signed_values_csv(bgv_coefficient_sample, "input")},
@@ -4687,26 +4601,6 @@ void generate(const std::filesystem::path& output_root,
                 {"validation.txt", "BFV host Encode/Decode status",
                  "PASS\ncoefficient_roundtrip=PASS\nbatch_roundtrip=PASS\n"},
             });
-        DmaPlanBuilder bfv_encode_dma(read_line_catalog(
-            *suite_root / "bfv_encode" / "test_data" /
-            "hardware" / "line_map.csv"));
-        std::vector<DmaSpan> bfv_encode_input;
-        std::vector<DmaSpan> bfv_encode_output;
-        std::vector<int> bfv_encode_contexts;
-        for (std::size_t basis = 0; basis < q_moduli.size(); ++basis) {
-            bfv_encode_input.push_back(bfv_encode_dma.poly(
-                "images/input/batch_plaintext_q.u32.bin", basis,
-                "bfv_batch_plaintext_q[" + std::to_string(basis) + "]"));
-            bfv_encode_output.push_back(bfv_encode_dma.poly(
-                "images/runtime/output_ntt_q.u32.bin", basis,
-                "bfv_batch_plaintext_ntt_q[" + std::to_string(basis) + "]"));
-            bfv_encode_contexts.push_back(static_cast<int>(basis));
-        }
-        bfv_encode_dma.transform_between(
-            {bfv_encode_input}, {bfv_encode_output},
-            bfv_encode_contexts, false);
-        write_resolved_dma_plan(
-            *suite_root, "bfv_encode", bfv_encode_dma.records());
 
         const FastBconvConstants q_to_bsk_constants =
             make_fast_bconv_constants(q_moduli, bsk_moduli);

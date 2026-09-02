@@ -73,9 +73,9 @@ HPU 算术通过证据。目标证据必须来自 RISC-V 分支真正发出的 H
 
 | 检查项 | 结果 |
 | --- | --- |
-| 算子数据包 | 21 个：公共/多项式算子，以及 CKKS/BGV/BFV Encode、三种方案的乘法/降层 kernel |
+| 算子数据包 | 21 个目录：18 个 HPU 算子包，以及 3 个 CKKS/BGV/BFV host-only Encode/Decode 包 |
 | 数学与硬件文件 | 所有 manifest 路径、字节数、FNV-1a、256B line geometry、主镜像切片和连续 line map 均通过 |
-| Nexus-AM 同步副本 | BFV 变更为 Encode、单 kernel CiphertextMultiply、ModSwitch 三个用例后必须重新同步；旧双 kernel 包不作为本版签字依据 |
+| Nexus-AM 同步副本 | BFV 硬件用例为单 kernel CiphertextMultiply 和 ModSwitch；Encode/Decode 不再同步为 HPU 用例，旧双 kernel 包不作为本版签字依据 |
 | HPU_MEM 容量 | BFV CiphertextMultiply 统一镜像为 30913 line；所有包均由交付门禁检查不超过配置的 65536 line |
 | 本仓库自检 | 指令编码、方案 Encode 和 reference 均通过 |
 | Nexus-AM host 自检 | 53 项无内部失败，但 53 项均按 `PASS_PROBE` 标为 `qualification-pending/Skipped` |
@@ -150,9 +150,9 @@ Encrypt(ctA, ctB)
 `t=65537`、`hpu_mem_max_lines=65536`。主硬件数据使用确定性零噪声、Pks 可整除的功能测试评估密钥，以获得
 逐位可比结果；BFV 另生成非零误差 host smoke。两者用于 UT/IT 定位，不代表生产密钥安全性。
 
-方案闭环从 Encode 开始：CKKS 对 `N/2` 个复数槽位执行 generator-3 canonical
-embedding，BGV/BFV 对 `N` 个槽位执行 generator-3 两行 batching。三者均由 host 产生
-RNS-Q 系数 limbs，再由 HPU 流执行 NTT。公共乘法之后，CKKS 执行 rounded Rescale 并验证
+方案闭环从 host Encode 开始：CKKS 对 `N/2` 个复数槽位执行 generator-3 canonical
+embedding，BGV/BFV 对 `N` 个槽位执行 generator-3 两行 batching；Decode 同样在 host
+执行。三者不再生成 HPU Encode 指令、RNS-Q NTT 镜像或 DMA。公共乘法之后，CKKS 执行 rounded Rescale 并验证
 `scale_out=scale_a*scale_b/q_last` 与近似误差；BGV 使用 correction factor `3`、`5`
 执行乘法，再按 `u=-c_last*q_last^-1 mod t` 降层并验证
 `cf_out=cf_in*q_last^-1 mod t`；`X->X^3` 还经过功能密文 Auto、Galois KeySwitch、
@@ -199,9 +199,9 @@ host copy 或第二次 window commit。随后可独立执行 rounded ModSwitch�
 | `hpu_mem_config.json` | HPU_MEM base/size、256B line 参数、`0x00..0x18` CSR 偏移和编程顺序 |
 | `abi.json` | `uint32`、小端、Bank 5、mod context word 布局；`twiddle_images_included` 标明当前包是否携带 NTT/INTT twiddle |
 
-每个方案 kernel 均独立生成 `dma_plan.csv`。`ckks_encode`、`bgv_encode` 和 `bfv_encode` 还包含
-`host/host_manifest.csv`：其中的槽位、signed 系数、Decode 和误差 CSV 仅供 host
-验收，不进入 HPU_MEM；只有 RNS-Q 输入与 NTT-Q 输出出现在 `hardware/`。
+每个 HPU 方案 kernel 均独立生成 `dma_plan.csv`。`ckks_encode`、`bgv_encode` 和
+`bfv_encode` 则是纯 host 包，只包含 `params.json`、可读 CSV、round-trip 结果、
+`host/host_manifest.csv` 和说明文件；它们不包含 `hardware/`、DMA plan 或指令文件。
 BGV ModSwitch 将 `q_last -> t` 和面向 `Q'` 的 BConv target 常量拆成不同文件，
 runtime 不应跨目标基复用其物理 span。
 BFV CiphertextMultiply 另外生成 `memory_lifetime.csv`；BEHZ 输出三分量直接占用后续
@@ -238,7 +238,6 @@ image、NTT image、pre/post factor 和全部 stage twiddle。默认 Q0 的冻�
 | --- | --- |
 | `ckks_encode/host/decoded_*.csv` | generator-3 映射、共轭布局、FFT 方向、scale |
 | `bgv_encode/host/batch_decoded_slots.csv` | generator-3 两行映射、模 t NTT、batching 参数 |
-| `*_encode/.../plaintext*_ntt_q` | host RNS lift、pre-twist、stage twiddle、HPU NTT |
 | `inputs_ntt_q` | NTT、twiddle、模上下文、数据排列 |
 | `tensor_ntt_q` | PE 的 `pmul/pmac`、活动模上下文 |
 | `tensor_coeff_q` | INTT、归一化因子、输出排列 |
@@ -256,7 +255,7 @@ image、NTT image、pre/post factor 和全部 stage twiddle。默认 Q0 的冻�
 | `bfv_modswitch/expected/ciphertext_qprime` | rounded drop-last 与 BFV scale-and-round 解密 |
 | 最终解密 | 上述节点均通过时再检查方案参数和 host 数据解释 |
 
-同一 reference 还会拆分到 `outputs/{ntt,intt,ckks_encode,bgv_encode,bfv_encode,ckks_rescale,ckks_ciphertext_multiply,bgv_ciphertext_multiply,bgv_modswitch,bfv_ciphertext_multiply,bfv_modswitch,mm,bconv,modup,pmult,cmult,moddown,keyswitch,relinearization,auto,ciphertext_multiply}/test_data/`。每个目录均包含独立 `params.json`、数学输入/期望输出、checksum，以及按实际指令需求裁剪的 `hardware/` 镜像、上下文和 line map，可直接交给对应模块负责人跑 UT。NTT、INTT、三种方案 Encode、三种方案 CiphertextMultiply、KeySwitch、Relinearization、Auto 和公共 CiphertextMultiply 包含 twiddle；其余系数或逐点算子不包含。方案 Encode 的 host 数学、RNS-Q/NTT-Q 边界、元数据和 DLOAD/DSTORE 绑定分别冻结在 `host/`、`params.json` 与 `HPU_PROGRAMMING_MANUAL.md` 附录 C 中。
+同一 reference 还会拆分到 `outputs/{ntt,intt,ckks_encode,bgv_encode,bfv_encode,ckks_rescale,ckks_ciphertext_multiply,bgv_ciphertext_multiply,bgv_modswitch,bfv_ciphertext_multiply,bfv_modswitch,mm,bconv,modup,pmult,cmult,moddown,keyswitch,relinearization,auto,ciphertext_multiply}/test_data/`。其中 18 个 HPU 算子目录包含 `params.json`、数学输入/期望输出、checksum，以及按实际指令需求裁剪的 `hardware/` 镜像、上下文和 line map。三个 `*_encode` 目录只保留 host 数学、元数据、可读向量与 `host_manifest.csv`。NTT、INTT、三种方案 CiphertextMultiply、KeySwitch、Relinearization、Auto 和公共 CiphertextMultiply 包含 twiddle；其余硬件算子不包含。
 
 BFV/BGV host batching 使用与 SEAL 一致的最小 primitive `2N` 次单位根和
 generator-3 两行映射。启用差分门禁后，两个整数方案对 N 个编码系数和全部 N 个

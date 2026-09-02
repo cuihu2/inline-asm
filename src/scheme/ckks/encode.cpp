@@ -1,13 +1,10 @@
 #include "scheme/ckks/encode.hpp"
 
-#include "operator/plaintext_ntt.hpp"
-#include "util/hpu_asm.hpp"
 #include "util/validation.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <sstream>
 #include <stdexcept>
 
 namespace hpu::scheme::ckks {
@@ -98,11 +95,6 @@ void validate_ring(std::size_t N)
     }
 }
 
-bool valid_codegen_config(int N, int num_q)
-{
-    return hpu::is_valid_plaintext_ntt_config(N, num_q);
-}
-
 } // namespace
 
 EncodedPlaintext encode_slots(
@@ -184,32 +176,6 @@ std::vector<std::complex<double>> decode_slots(
         slots[slot] = values[roots[slot]];
     }
     return slots;
-}
-
-std::string generate_encode_body_asm(int N, int num_q, bool append_psync)
-{
-    std::ostringstream asm_code;
-    if (!valid_codegen_config(N, num_q)) {
-        asm_code << "        // Invalid CKKS Encode config\n";
-        return asm_code.str();
-    }
-    asm_code << "        /* CKKS ENCODE: host canonical embedding -> HPU NTT-Q */\n";
-    asm_code << generate_plaintext_ntt_body_asm(N, num_q, append_psync);
-    return asm_code.str();
-}
-
-std::string generate_encode_asm(int N, int num_q, bool append_psync)
-{
-    std::ostringstream asm_code;
-    asm_code << "void hpu_ckks_encode_N" << N << "_Q" << num_q << "(void) {\n";
-    if (!valid_codegen_config(N, num_q)) {
-        asm_code << "    // Invalid CKKS Encode config\n}\n";
-        return asm_code.str();
-    }
-    asm_code << "    __asm__ volatile(\n";
-    asm_code << generate_encode_body_asm(N, num_q, append_psync);
-    asm_code << "        : \n        : \n        : \"memory\"\n    );\n}\n";
-    return asm_code.str();
 }
 
 } // namespace hpu::scheme::ckks

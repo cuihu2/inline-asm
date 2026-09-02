@@ -16,13 +16,10 @@
 #include "operator/keyswitch.hpp"
 #include "operator/relinearization.hpp"
 #include "operator/ciphertext_multiply.hpp"
-#include "scheme/bgv/encode.hpp"
 #include "scheme/bgv/ciphertext_multiply.hpp"
 #include "scheme/bgv/modswitch.hpp"
-#include "scheme/bfv/encode.hpp"
 #include "scheme/bfv/ciphertext_multiply.hpp"
 #include "scheme/bfv/modswitch.hpp"
-#include "scheme/ckks/encode.hpp"
 #include "scheme/ckks/ciphertext_multiply.hpp"
 #include "scheme/ckks/rescale.hpp"
 
@@ -112,12 +109,6 @@ struct CiphertextMultiplyConfig {
 	int dnum;
 };
 
-struct EncodeConfig {
-	int N;
-	int num_q;
-	std::uint64_t plaintext_modulus;
-};
-
 struct RescaleConfig {
 	int num_q;
 	int num_components;
@@ -146,7 +137,6 @@ CmultConfig g_cmult_cfg{};
 ModdownConfig g_moddown_cfg{};
 AutoConfig g_auto_cfg{};
 CiphertextMultiplyConfig g_ciphertext_multiply_cfg{};
-EncodeConfig g_encode_cfg{};
 RescaleConfig g_rescale_cfg{};
 BgvModswitchConfig g_bgv_modswitch_cfg{};
 BfvConfig g_bfv_cfg{};
@@ -168,28 +158,11 @@ void configure_generators(const hpu::test::FheTestConfig& config)
 	g_moddown_cfg = {num_q, num_p, 0, 1, 2, 3, 4, 5, 6, 7};
 	g_auto_cfg = {N, num_q, num_p, dnum, auto_index};
 	g_ciphertext_multiply_cfg = {N, num_q, num_p, dnum};
-	g_encode_cfg = {N, num_q, config.plaintext_modulus};
 	g_rescale_cfg = {num_q, 2};
 	g_bgv_modswitch_cfg = {num_q, num_p, 2};
 	g_bfv_cfg = {
 		N, num_q, num_p, static_cast<int>(config.bfv_num_b), dnum,
 		config.plaintext_modulus};
-}
-
-void test_bfv_encode_codegen()
-{
-	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
-		std::ofstream("output/bfv_encode.cpp")
-			<< hpu::scheme::bfv::generate_encode_asm(
-				g_bfv_cfg.N, g_bfv_cfg.num_q,
-				g_bfv_cfg.plaintext_modulus, true);
-	}
-	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
-		std::ofstream("output/bfv_encode.asm")
-			<< hpu::scheme::bfv::generate_encode_body_asm(
-				g_bfv_cfg.N, g_bfv_cfg.num_q,
-				g_bfv_cfg.plaintext_modulus, true);
-	}
 }
 
 void test_bfv_ciphertext_multiply_codegen()
@@ -221,46 +194,6 @@ void test_bfv_modswitch_codegen()
 		std::ofstream("output/bfv_modswitch.asm")
 			<< hpu::scheme::bfv::generate_modswitch_body_asm(
 				g_bfv_cfg.num_q, 2, true);
-	}
-}
-
-void test_ckks_encode_codegen()
-{
-	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
-		std::ofstream("output/ckks_encode.cpp")
-			<< hpu::scheme::ckks::generate_encode_asm(
-				g_encode_cfg.N, g_encode_cfg.num_q, true);
-		std::cout << "Saved CKKS Encode ASM to output/ckks_encode.cpp\n";
-	}
-
-	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
-		std::ofstream("output/ckks_encode.asm")
-			<< hpu::scheme::ckks::generate_encode_body_asm(
-				g_encode_cfg.N, g_encode_cfg.num_q, true);
-		std::cout << "Saved CKKS Encode body ASM to output/ckks_encode.asm\n";
-	}
-}
-
-void test_bgv_encode_codegen()
-{
-	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
-		std::ofstream("output/bgv_encode.cpp")
-			<< hpu::scheme::bgv::generate_encode_asm(
-				g_encode_cfg.N,
-				g_encode_cfg.num_q,
-				g_encode_cfg.plaintext_modulus,
-				true);
-		std::cout << "Saved BGV Encode ASM to output/bgv_encode.cpp\n";
-	}
-
-	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
-		std::ofstream("output/bgv_encode.asm")
-			<< hpu::scheme::bgv::generate_encode_body_asm(
-				g_encode_cfg.N,
-				g_encode_cfg.num_q,
-				g_encode_cfg.plaintext_modulus,
-				true);
-		std::cout << "Saved BGV Encode body ASM to output/bgv_encode.asm\n";
 	}
 }
 
@@ -687,11 +620,14 @@ int main(int argc, char* argv[])
 		std::filesystem::remove("output/bfv_behz_multiply.cpp");
 		std::filesystem::remove("output/bfv_relinearization.asm");
 		std::filesystem::remove("output/bfv_relinearization.cpp");
+		for (const char* scheme : {"ckks", "bgv", "bfv"}) {
+			std::filesystem::remove(
+				std::filesystem::path("output") / (std::string(scheme) + "_encode.asm"));
+			std::filesystem::remove(
+				std::filesystem::path("output") / (std::string(scheme) + "_encode.cpp"));
+		}
 		test_ntt_codegen();
 		test_intt_codegen();
-		test_ckks_encode_codegen();
-		test_bgv_encode_codegen();
-		test_bfv_encode_codegen();
 		test_ckks_rescale_codegen();
 		test_mm_codegen();
 		test_bconv_codegen();

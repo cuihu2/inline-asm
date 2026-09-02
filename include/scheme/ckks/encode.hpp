@@ -3,10 +3,11 @@
 #include <complex>
 #include <cstddef>
 #include <cstdint>
-#include <string>
 #include <vector>
 
 namespace hpu::scheme::ckks {
+
+// Host-only codec. These APIs perform no HPU instruction generation.
 
 struct EncodedPlaintext {
     std::vector<std::int64_t> coefficients;
@@ -25,15 +26,4 @@ std::vector<std::complex<double>> decode_slots(
     const std::vector<std::int64_t>& centered_coefficients,
     double scale);
 
-std::string generate_encode_body_asm(
-    int N,
-    int num_q,
-    bool append_psync = false);
-
-std::string generate_encode_asm(
-    int N,
-    int num_q,
-    bool append_psync = true);
-
 } // namespace hpu::scheme::ckks
-

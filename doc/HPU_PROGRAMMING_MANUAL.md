@@ -774,12 +774,12 @@ Relinearization 和原始 CiphertextMultiply。`scheme/ckks`、`scheme/bgv` 与 
 位于其上，只组合方案特有步骤并维护软件元数据。方案层当前统一采用系数域输入、
 系数域输出边界；内部 NTT/INTT 仍由公共算子生成。
 
-三个 `scheme/*/encode` 分别定义方案数学。CKKS 使用 generator-3
+三个 `scheme/*/encode` 分别定义纯 host 的方案数学。CKKS 使用 generator-3
 槽位映射、共轭半区和 radix-2 复数 FFT，把最多 `N/2` 个复数槽位量化为带 scale
 的 signed 系数；BGV/BFV 支持 signed coefficient encoding，并在 `t` 为素数且
 `2N | (t-1)` 时以 generator-3 映射提供两行、共 `N` 槽 batching。Decode 均在
-host 执行。三种 Encode 把 RNS-Q 系数 limbs 交给公共 `plaintext_ntt` 后端，由 HPU
-执行逐 limb 负循环 NTT。
+host 执行。三种 Encode/Decode 都不生成 HPU 指令；Encrypt/runtime 或具体同态算子
+若需要 RNS-Q、NTT-Q 表示，必须在自身边界内完成 lift 和域转换。
 
 BGV/BFV 的模 `t` 负循环 NTT 从全部 primitive `2N` 次单位根中选择数值最小者，
 再应用 generator-3 两行索引映射；该选择与本项目使用的 SEAL BatchEncoder ABI
@@ -841,9 +841,9 @@ correction_factor_out = correction_factor_in * q_last^-1 mod t
 
 | 方案能力 | 状态 | 当前边界 |
 | --- | --- | --- |
-| CKKS Encode/Decode / Rescale / Multiply | 已实现 | host 复数编解码 + HPU RNS-Q NTT/方案算子 |
-| BGV coefficient/batch Encode/Decode / Multiply / ModSwitch | 已实现 | host 模 t 编解码 + HPU RNS-Q NTT/方案算子 |
-| BFV coefficient/batch Encode/Decode | 已实现 | host 模 t 编解码 + HPU RNS-Q NTT |
+| CKKS Encode/Decode / Rescale / Multiply | 已实现 | host-only 复数编解码 + HPU Rescale/Multiply |
+| BGV coefficient/batch Encode/Decode / Multiply / ModSwitch | 已实现 | host-only 模 t 编解码 + HPU Multiply/ModSwitch |
+| BFV coefficient/batch Encode/Decode | 已实现 | host-only 模 t 编解码 |
 | BFV BEHZ Multiply / Relinearization / ModSwitch | 已实现 | no-SMRQ + branchless-SK 单 kernel 乘法功能通路 |
 
 BFV 使用修改版 SEAL 对应的 `NO_SMRQ + BRANCHLESS_SK` 关系，不生成 `m_tilde`，
@@ -938,7 +938,7 @@ ctest --test-dir build --output-on-failure
 
 | 文件 | 内容 |
 | --- | --- |
-| `outputs/<case>/<case>.asm` | HPU 汇编指令流 |
+| `outputs/<case>/<case>.asm` | HPU 汇编指令流；三个 `*_encode` host-only 包不生成 |
 | `outputs/<case>/<case>.cpp` | C++ 内联汇编形式 |
 | `outputs/<case>/<case>.inst32` | 每行一个 32-bit 二进制字符串 |
 | `outputs/<case>/<case>.cmd26` | 每行一个控制逻辑 26-bit 二进制命令 |
@@ -1042,7 +1042,7 @@ ModDown 的 source context 是 P，target context 是 Q：
 | Stage 2，每个 `q_i` | `p2` | `P^-1 mod q_i` | - |
 | Stage 2，每个 `q_i` | `p0` | - | `(q-correction)*P^-1 mod q_i` |
 
-### C.3 NTT、INTT 与方案 Encode
+### C.3 NTT、INTT 与 host Encode/Decode
 
 NTT/INTT body 假定数据对象和活动模上下文已由外层准备。独立用例使用 `p0` 作为
 数据、`p1` 作为 twiddle；复合算子使用 `p0` 和 `p3`。
@@ -1058,15 +1058,14 @@ NTT/INTT body 假定数据对象和活动模上下文已由外层准备。独立
 OBJ_ID，但控制器可按 out-of-place 协议提交新的物理 base。
 
 CKKS Encode 的 host 顺序是：generator-3 槽位映射、填充共轭半区、复数逆嵌入、
-乘 scale 并舍入为 `int64`、按每个 `q_i` 转为 canonical residue。BGV coefficient
+乘 scale 并舍入为 `int64`。BGV coefficient
 Encode 将 centered signed 值映射到 `mod t`；BatchEncode 把两行 `N/2` 槽写入
 generator-3 根次序，以最小 primitive `2N` 次单位根执行模 `t` 逆负循环 NTT，
-再将系数 canonical lift 到 Q。
+得到明文系数。BFV 使用相同的 BatchEncoder 布局，但保留独立的方案 API。
 
-三种方案交给 HPU 的逻辑输入都是 `[num_q,N]` 系数域 limbs。指令顺序为：加载
-`p4=Q table`；对每个 `q_i` 执行 `pmodld i`、`dload p0=plaintext_coeff_q[i]`、
-加载 `p3` pre-twist/stage twiddle 并完成 NTT，最后
-`dstore p0=plaintext_ntt_q[i],rel=1`。Decode 不生成 HPU 指令。
+Decode 执行上述映射的逆过程。三种方案的 Encode/Decode 均由普通 C++ 在 host CPU
+执行，不产生 `.asm/.inst32/.cmd26`，也没有对象槽位、DMA、模表、twiddle 或
+HPU_MEM 绑定。独立 `ntt/intt` UT 和同态算子内部的 NTT 不受此边界影响。
 
 ### C.4 PMULT 与 CMULT
 
@@ -1182,8 +1181,8 @@ p0 = p0 * q_last^-1
 
 ### C.8 BFV 单 kernel 方案算子
 
-`bfv_encode` 的 HPU 边界与 BGV Encode 相同：host 先完成 coefficient/batch
-Encode 和 RNS-Q lift，HPU 只执行逐 Q limb NTT，Decode 留在 host。
+`bfv_encode` 与 `bgv_encode` 都是纯 host 包：完成 coefficient/batch Encode、Decode
+和 round-trip 验证，不再生成 RNS-Q NTT 硬件流。
 
 `bfv_ciphertext_multiply` 的前半段按指令出现顺序绑定四个 Q 输入分量、
 `Q->Bsk` FastBConv 常量、Q/Bsk twiddle、`t mod Q/Bsk`、`Q^-1 mod Bsk`、

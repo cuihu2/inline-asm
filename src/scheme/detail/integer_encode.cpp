@@ -1,6 +1,5 @@
 #include "scheme/detail/integer_encode.hpp"
 
-#include "operator/plaintext_ntt.hpp"
 #include "util/validation.hpp"
 
 #include <algorithm>
@@ -281,20 +280,6 @@ std::vector<std::int64_t> decode_integer_slots(
             evaluations[roots[slot]], plaintext_modulus);
     }
     return slots;
-}
-
-bool is_valid_integer_encode_config(int N, int num_q, U64 plaintext_modulus)
-{
-    if (!hpu::is_valid_plaintext_ntt_config(N, num_q)) {
-        return false;
-    }
-    try {
-        validate_plaintext_modulus(
-            static_cast<std::size_t>(N), plaintext_modulus, true, "integer");
-        return true;
-    } catch (const std::invalid_argument&) {
-        return false;
-    }
 }
 
 } // namespace hpu::scheme::detail

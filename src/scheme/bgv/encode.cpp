@@ -1,9 +1,6 @@
 #include "scheme/bgv/encode.hpp"
 
-#include "operator/plaintext_ntt.hpp"
 #include "scheme/detail/integer_encode.hpp"
-
-#include <sstream>
 
 namespace hpu::scheme::bgv {
 
@@ -39,43 +36,6 @@ std::vector<std::int64_t> decode_slots(
 {
     return hpu::scheme::detail::decode_integer_slots(
         coefficients, plaintext_modulus, "BGV");
-}
-
-std::string generate_encode_body_asm(
-    int N,
-    int num_q,
-    std::uint64_t plaintext_modulus,
-    bool append_psync)
-{
-    std::ostringstream asm_code;
-    if (!hpu::scheme::detail::is_valid_integer_encode_config(
-            N, num_q, plaintext_modulus)) {
-        asm_code << "        // Invalid BGV Encode config: batching requires prime t and 2N | (t-1)\n";
-        return asm_code.str();
-    }
-    asm_code << "        /* BGV ENCODE: host coefficient/batching map -> HPU NTT-Q */\n";
-    asm_code << generate_plaintext_ntt_body_asm(N, num_q, append_psync);
-    return asm_code.str();
-}
-
-std::string generate_encode_asm(
-    int N,
-    int num_q,
-    std::uint64_t plaintext_modulus,
-    bool append_psync)
-{
-    std::ostringstream asm_code;
-    asm_code << "void hpu_bgv_encode_N" << N << "_Q" << num_q << "(void) {\n";
-    if (!hpu::scheme::detail::is_valid_integer_encode_config(
-            N, num_q, plaintext_modulus)) {
-        asm_code << "    // Invalid BGV Encode config\n}\n";
-        return asm_code.str();
-    }
-    asm_code << "    __asm__ volatile(\n";
-    asm_code << generate_encode_body_asm(
-        N, num_q, plaintext_modulus, append_psync);
-    asm_code << "        : \n        : \n        : \"memory\"\n    );\n}\n";
-    return asm_code.str();
 }
 
 } // namespace hpu::scheme::bgv

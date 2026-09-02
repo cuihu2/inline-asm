@@ -29,9 +29,6 @@ std::vector<std::int64_t> decode_integer_slots(
     std::uint64_t plaintext_modulus,
     const char* scheme_name);
 
-bool is_valid_integer_encode_config(
-    int N, int num_q, std::uint64_t plaintext_modulus);
-
 } // namespace hpu::scheme::detail
 
 #endif // HPU_SCHEME_DETAIL_INTEGER_ENCODE_HPP
