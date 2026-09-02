@@ -16,13 +16,23 @@ set(HPU_TEST_CONFIG
         CACHE FILEPATH
         "Shared HPU instruction/reference test configuration")
 
+option(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE
+        "Build the optional BFV/BGV/CKKS differential oracle against SEAL"
+        OFF)
 option(HPU_ENABLE_SEAL_BFV_ORACLE
-        "Build an optional BFV differential oracle against the modified SEAL tree"
+        "Deprecated alias for HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE"
         OFF)
 set(HPU_SEAL_SOURCE_DIR
         "/home/songyexin/fhe/SEAL"
         CACHE PATH
-        "Modified SEAL source tree used only by the optional BFV oracle")
+        "Modified SEAL source tree used only by the optional differential oracle")
+
+if(HPU_ENABLE_SEAL_BFV_ORACLE)
+    message(DEPRECATION
+        "HPU_ENABLE_SEAL_BFV_ORACLE is deprecated; use "
+        "HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE instead")
+    set(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE ON CACHE BOOL "" FORCE)
+endif()
 
 add_library(hpu_test_config STATIC
         src/config/fhe_test_config.cpp
@@ -109,10 +119,10 @@ if(BUILD_TESTING)
     add_test(NAME hpu_scheme_encode_self_test COMMAND hpu_scheme_encode_self_test)
 endif()
 
-if(HPU_ENABLE_SEAL_BFV_ORACLE)
+if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE)
     if(NOT EXISTS "${HPU_SEAL_SOURCE_DIR}/CMakeLists.txt")
         message(FATAL_ERROR
-            "HPU_ENABLE_SEAL_BFV_ORACLE requires a SEAL source tree at ${HPU_SEAL_SOURCE_DIR}")
+            "HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE requires a SEAL source tree at ${HPU_SEAL_SOURCE_DIR}")
     endif()
     set(SEAL_EXPERIMENTAL_BFV_NO_SMRQ ON CACHE BOOL "" FORCE)
     set(SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK ON CACHE BOOL "" FORCE)
@@ -120,15 +130,50 @@ if(HPU_ENABLE_SEAL_BFV_ORACLE)
     set(SEAL_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(SEAL_BUILD_BENCH OFF CACHE BOOL "" FORCE)
     set(SEAL_BUILD_DEPS ON CACHE BOOL "" FORCE)
+    set(ZLIB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
     add_subdirectory(
         "${HPU_SEAL_SOURCE_DIR}"
-        "${CMAKE_CURRENT_BINARY_DIR}/seal_bfv_oracle"
+        "${CMAKE_CURRENT_BINARY_DIR}/seal_differential_oracle"
         EXCLUDE_FROM_ALL)
-    add_executable(hpu_seal_bfv_oracle test/seal_bfv_oracle.cpp)
-    target_link_libraries(hpu_seal_bfv_oracle PRIVATE SEAL::seal)
-    if(BUILD_TESTING)
-        add_test(NAME hpu_seal_bfv_oracle COMMAND hpu_seal_bfv_oracle)
+
+    execute_process(
+        COMMAND git -C "${HPU_SEAL_SOURCE_DIR}" rev-parse HEAD
+        OUTPUT_VARIABLE HPU_SEAL_GIT_COMMIT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE HPU_SEAL_GIT_RESULT)
+    if(NOT HPU_SEAL_GIT_RESULT EQUAL 0)
+        set(HPU_SEAL_GIT_COMMIT "unknown")
     endif()
+    execute_process(
+        COMMAND git -C "${HPU_SEAL_SOURCE_DIR}" status --porcelain
+        OUTPUT_VARIABLE HPU_SEAL_GIT_STATUS
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(HPU_SEAL_GIT_STATUS STREQUAL "")
+        set(HPU_SEAL_WORKTREE_STATE "CLEAN")
+    else()
+        set(HPU_SEAL_WORKTREE_STATE "DIRTY")
+    endif()
+    file(SHA256 "${HPU_SEAL_SOURCE_DIR}/CMakeLists.txt" HPU_SEAL_CMAKE_SHA256)
+    file(SHA256 "${HPU_SEAL_SOURCE_DIR}/native/src/seal/evaluator.cpp"
+        HPU_SEAL_EVALUATOR_SHA256)
+    file(SHA256 "${HPU_SEAL_SOURCE_DIR}/native/src/seal/util/rns.cpp"
+        HPU_SEAL_RNS_CPP_SHA256)
+    file(SHA256 "${HPU_SEAL_SOURCE_DIR}/native/src/seal/util/rns.h"
+        HPU_SEAL_RNS_HPP_SHA256)
+
+    add_executable(
+        hpu_seal_differential_test
+        test/seal_differential_oracle.cpp)
+    target_link_libraries(hpu_seal_differential_test PRIVATE SEAL::seal)
+    target_compile_definitions(hpu_seal_differential_test PRIVATE
+        HPU_SEAL_GIT_COMMIT="${HPU_SEAL_GIT_COMMIT}"
+        HPU_SEAL_WORKTREE_STATE="${HPU_SEAL_WORKTREE_STATE}"
+        HPU_SEAL_CMAKE_SHA256="${HPU_SEAL_CMAKE_SHA256}"
+        HPU_SEAL_EVALUATOR_SHA256="${HPU_SEAL_EVALUATOR_SHA256}"
+        HPU_SEAL_RNS_CPP_SHA256="${HPU_SEAL_RNS_CPP_SHA256}"
+        HPU_SEAL_RNS_HPP_SHA256="${HPU_SEAL_RNS_HPP_SHA256}")
 endif()
 
 add_subdirectory(test/encode)
@@ -157,7 +202,9 @@ endif()
 
 set(HPU_DELIVERY_TEST_DEPENDENCIES)
 if(BUILD_TESTING)
-    list(APPEND HPU_DELIVERY_TEST_DEPENDENCIES hpu_encode_self_test)
+    list(APPEND HPU_DELIVERY_TEST_DEPENDENCIES
+        hpu_encode_self_test
+        hpu_scheme_encode_self_test)
 endif()
 
 add_custom_target(hpu_delivery
@@ -181,3 +228,49 @@ add_custom_target(hpu_delivery
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         COMMENT "Generating HPU instruction streams and FHE reference deliverables"
 )
+
+if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE)
+    add_custom_target(hpu_delivery_with_seal
+        COMMAND $<TARGET_FILE:hpu_seal_differential_test>
+                --outputs-root ${CMAKE_CURRENT_SOURCE_DIR}/outputs
+                --report-dir ${CMAKE_CURRENT_BINARY_DIR}/seal_oracle
+        DEPENDS
+        hpu_delivery
+        hpu_seal_differential_test
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Running HPU delivery checks and the SEAL three-scheme oracle"
+    )
+
+    if(BUILD_TESTING)
+        add_test(
+            NAME hpu_seal_oracle_prepare_delivery
+            COMMAND ${CMAKE_COMMAND} --build ${CMAKE_CURRENT_BINARY_DIR}
+                    --target hpu_delivery)
+        set_tests_properties(hpu_seal_oracle_prepare_delivery PROPERTIES
+            FIXTURES_SETUP HPU_SEAL_ORACLE_FIXTURE
+            RUN_SERIAL TRUE
+            TIMEOUT 300)
+
+        add_test(
+            NAME hpu_seal_differential_oracle
+            COMMAND hpu_seal_differential_test
+                    --outputs-root ${CMAKE_CURRENT_SOURCE_DIR}/outputs
+                    --report-dir ${CMAKE_CURRENT_BINARY_DIR}/seal_oracle)
+        set_tests_properties(hpu_seal_differential_oracle PROPERTIES
+            FIXTURES_REQUIRED HPU_SEAL_ORACLE_FIXTURE
+            RUN_SERIAL TRUE
+            TIMEOUT 300)
+
+        add_test(
+            NAME hpu_seal_oracle_rejects_corrupted_fixture
+            COMMAND ${CMAKE_COMMAND}
+                    -DORACLE=$<TARGET_FILE:hpu_seal_differential_test>
+                    -DSOURCE_OUTPUTS=${CMAKE_CURRENT_SOURCE_DIR}/outputs
+                    -DWORK_ROOT=${CMAKE_CURRENT_BINARY_DIR}/seal_oracle_corruption
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/test/seal_oracle_corruption_test.cmake)
+        set_tests_properties(hpu_seal_oracle_rejects_corrupted_fixture PROPERTIES
+            FIXTURES_REQUIRED HPU_SEAL_ORACLE_FIXTURE
+            RUN_SERIAL TRUE
+            TIMEOUT 300)
+    endif()
+endif()

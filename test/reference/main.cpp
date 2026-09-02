@@ -2144,6 +2144,54 @@ std::string signed_values_csv(
     return output.str();
 }
 
+template <typename T>
+std::vector<T> rotate_slots_left(const std::vector<T>& values)
+{
+    if (values.empty()) {
+        return {};
+    }
+    std::vector<T> rotated(values.size());
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        rotated[index] = values[(index + 1) % values.size()];
+    }
+    return rotated;
+}
+
+std::string seal_oracle_parameters_csv(
+    const std::vector<U64>& q_moduli,
+    const std::vector<U64>& p_moduli,
+    double ckks_input_scale,
+    double ckks_output_scale,
+    double ckks_roundtrip_error_bound,
+    double ckks_multiply_error_bound,
+    double ckks_rotation_error_bound)
+{
+    if (p_moduli.empty()) {
+        throw std::runtime_error("SEAL oracle requires at least one special modulus");
+    }
+
+    std::ostringstream output;
+    output << "name,index,value\n";
+    output << "poly_modulus_degree,," << g_n << '\n';
+    for (std::size_t index = 0; index < q_moduli.size(); ++index) {
+        output << "coeff_modulus_q," << index << ',' << q_moduli[index] << '\n';
+    }
+    output << "special_modulus_p,0," << p_moduli.front() << '\n';
+    output << "plain_modulus,," << g_plaintext_modulus << '\n';
+    output << "seed,," << g_seed << '\n';
+    output << std::setprecision(17);
+    output << "ckks_input_scale,," << ckks_input_scale << '\n';
+    output << "ckks_output_scale,," << ckks_output_scale << '\n';
+    output << "ckks_roundtrip_error_bound,,"
+           << ckks_roundtrip_error_bound << '\n';
+    output << "ckks_multiply_error_bound,,"
+           << ckks_multiply_error_bound << '\n';
+    output << "ckks_rotation_error_bound,,"
+           << ckks_rotation_error_bound << '\n';
+    output << "rotation_step,,1\n";
+    return output.str();
+}
+
 std::string residues_csv(const Poly& values, const std::string& value_name)
 {
     std::ostringstream output;
@@ -3479,6 +3527,7 @@ void generate(const std::filesystem::path& output_root,
             (static_cast<double>((7 * slot + 3) % 13) - 6.0) / 8.0,
             (static_cast<double>((2 * slot + 1) % 7) - 3.0) / 16.0};
     }
+    const auto ckks_rotated_slots_a = rotate_slots_left(ckks_slots_a);
     const auto ckks_encoded_a = hpu::scheme::ckks::encode_slots(
         ckks_slots_a, g_n, ckks_input_scale);
     const auto ckks_encoded_b = hpu::scheme::ckks::encode_slots(
@@ -3539,6 +3588,8 @@ void generate(const std::filesystem::path& output_root,
     }
     const double ckks_error_bound = std::max(
         1e-6, 64.0 * static_cast<double>(g_n) / ckks_input_scale);
+    const double ckks_rotation_error_bound = std::max(
+        1e-6, 128.0 * static_cast<double>(g_n) / ckks_input_scale);
     if (ckks_max_abs_error > ckks_error_bound) {
         throw std::runtime_error("CKKS slot product exceeds functional error bound");
     }
@@ -3724,10 +3775,10 @@ void generate(const std::filesystem::path& output_root,
         &bfv_relinearization_trace);
     const Poly bfv_decrypted_coeff_t = decrypt_bfv_scale_and_round(
         bfv_product_q, secret_q, q_moduli, q_roots);
+    const auto bfv_decoded_slots = hpu::scheme::bfv::decode_slots(
+        bfv_decrypted_coeff_t, g_plaintext_modulus);
     if (bfv_decrypted_coeff_t != bfv_expected_coeff_t
-        || hpu::scheme::bfv::decode_slots(
-               bfv_decrypted_coeff_t, g_plaintext_modulus)
-            != bfv_expected_slots) {
+        || bfv_decoded_slots != bfv_expected_slots) {
         throw std::runtime_error("BFV BEHZ multiply/relinearize Decode failed");
     }
 
@@ -4085,6 +4136,9 @@ void generate(const std::filesystem::path& output_root,
                  signed_values_csv(ckks_encoded_a.coefficients, "coefficient")},
                 {"coefficients_b.csv", "signed scaled CKKS coefficients B",
                  signed_values_csv(ckks_encoded_b.coefficients, "coefficient")},
+                {"rotate_left_1_expected_slots.csv",
+                 "expected CKKS vector rotation left by one slot",
+                 complex_slots_csv(ckks_rotated_slots_a, "expected")},
                 {"error_stats.csv", "CKKS Encode/Decode error summary",
                  "vector,max_abs_error,error_bound,pass\nA,"
                     + std::to_string(ckks_encode_max_error_a) + ","
@@ -4627,6 +4681,9 @@ void generate(const std::filesystem::path& output_root,
                      hpu::scheme::bfv::decode_slots(
                          bfv_plain_a, g_plaintext_modulus),
                      "decoded")},
+                {"rotate_left_1_expected_slots.csv",
+                 "expected BFV two-row rotation left by one slot",
+                 signed_values_csv(bgv_expected_auto_slots, "expected")},
                 {"validation.txt", "BFV host Encode/Decode status",
                  "PASS\ncoefficient_roundtrip=PASS\nbatch_roundtrip=PASS\n"},
             });
@@ -5513,6 +5570,13 @@ void generate(const std::filesystem::path& output_root,
         write_host_package(
             *suite_root / "bfv_ciphertext_multiply" / "test_data",
             {
+                {"input_slots_a.csv", "BFV batched input slots A",
+                 signed_values_csv(bfv_slots_a, "input")},
+                {"input_slots_b.csv", "BFV batched input slots B",
+                 signed_values_csv(bfv_slots_b, "input")},
+                {"decoded_product.csv", "expected and decoded BFV slot product",
+                 signed_comparison_csv(
+                     bfv_expected_slots, bfv_decoded_slots)},
                 {"noise_smoke/input_error_a.csv", "deterministic nonzero BFV error A",
                  signed_values_csv(bfv_noise_a, "error")},
                 {"noise_smoke/input_error_b.csv", "deterministic nonzero BFV error B",
@@ -5526,6 +5590,13 @@ void generate(const std::filesystem::path& output_root,
                  "decrypt_scale_and_round=PASS\ndecode=PASS\n"
                  "security_status=FUNCTIONAL_TEST_ONLY\n"},
             });
+
+        write_text(
+            *suite_root / "seal_oracle" / "parameters.csv",
+            seal_oracle_parameters_csv(
+                q_moduli, p_moduli, ckks_input_scale, ckks_output_scale,
+                ckks_encode_bound, ckks_error_bound,
+                ckks_rotation_error_bound));
 
         case_artifacts.clear();
         add_artifact(case_artifacts, "input_a.bin", "left polynomial", {g_n},

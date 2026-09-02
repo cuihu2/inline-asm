@@ -781,6 +781,11 @@ Relinearization 和原始 CiphertextMultiply。`scheme/ckks`、`scheme/bgv` 与 
 host 执行。三种 Encode 把 RNS-Q 系数 limbs 交给公共 `plaintext_ntt` 后端，由 HPU
 执行逐 limb 负循环 NTT。
 
+BGV/BFV 的模 `t` 负循环 NTT 从全部 primitive `2N` 次单位根中选择数值最小者，
+再应用 generator-3 两行索引映射；该选择与本项目使用的 SEAL BatchEncoder ABI
+一致。选择另一个 primitive root 虽可形成自洽 Encode/Decode，但会改变明文
+多项式系数，不能混入本交付数据。
+
 ### 8.6 CKKS Rescale 与完整乘法
 
 CKKS Rescale 对每个密文分量执行：
@@ -1055,7 +1060,8 @@ OBJ_ID，但控制器可按 out-of-place 协议提交新的物理 base。
 CKKS Encode 的 host 顺序是：generator-3 槽位映射、填充共轭半区、复数逆嵌入、
 乘 scale 并舍入为 `int64`、按每个 `q_i` 转为 canonical residue。BGV coefficient
 Encode 将 centered signed 值映射到 `mod t`；BatchEncode 把两行 `N/2` 槽写入
-generator-3 根次序并执行模 `t` 逆负循环 NTT，再将系数 canonical lift 到 Q。
+generator-3 根次序，以最小 primitive `2N` 次单位根执行模 `t` 逆负循环 NTT，
+再将系数 canonical lift 到 Q。
 
 三种方案交给 HPU 的逻辑输入都是 `[num_q,N]` 系数域 limbs。指令顺序为：加载
 `p4=Q table`；对每个 `q_i` 执行 `pmodld i`、`dload p0=plaintext_coeff_q[i]`、

@@ -112,15 +112,20 @@ cmake --build build -j --target hpu_delivery
 ctest --test-dir build --output-on-failure
 ```
 
-可选修改版 SEAL 差分 oracle 默认关闭，不构成交付依赖。需要验证其
-`NO_SMRQ + BRANCHLESS_SK` 实验路径时使用：
+可选 SEAL 三方案差分 oracle 默认关闭，不构成普通 `hpu_delivery` 的依赖。启用后
+使用同一批 reference fixture 验证 BFV/BGV/CKKS 的 Encode、乘法、重线形化、
+ModSwitch/Rescale 和旋转：
 
 ```bash
-cmake -S . -B build-seal -DHPU_ENABLE_SEAL_BFV_ORACLE=ON \
+cmake -S . -B build-seal -DHPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE=ON \
   -DHPU_SEAL_SOURCE_DIR=/home/songyexin/fhe/SEAL
-cmake --build build-seal -j --target hpu_seal_bfv_oracle
-ctest --test-dir build-seal -R hpu_seal_bfv_oracle --output-on-failure
+cmake --build build-seal -j --target hpu_delivery_with_seal
+ctest --test-dir build-seal -R hpu_seal --output-on-failure
 ```
+
+`hpu_delivery_with_seal` 先完成普通交付门禁，再运行 oracle；结果位于
+`build-seal/seal_oracle/{report.csv,metadata.txt}`。旧开关
+`HPU_ENABLE_SEAL_BFV_ORACLE` 仅作为弃用兼容别名保留。
 
 主生成程序仍保持主分支的输出方式，先在根目录生成扁平的 `output/` 文件夹；编码辅助工具随后会把 `.cpp` 与 `.asm` 归档到 `outputs/<case>/`，并将可直接编码的结果写回同一目录。仍含符号寄存器占位符的文件会被显式跳过。
 
@@ -154,6 +159,7 @@ ctest --test-dir build-seal -R hpu_seal_bfv_oracle --output-on-failure
 - `outputs/relinearization/`
 - `outputs/ciphertext_multiply/`
 - `outputs/rv_interface_smoke/`
+- `outputs/seal_oracle/`（三方案 oracle 的统一参数快照）
 
 例如 `outputs/ntt/` 下会包含：
 

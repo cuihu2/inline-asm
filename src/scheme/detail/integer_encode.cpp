@@ -102,7 +102,16 @@ U64 find_primitive_2n_root(U64 modulus, std::size_t N, const char* scheme_name)
     for (U64 base = 2; base < modulus; ++base) {
         const U64 candidate = pow_mod(base, (modulus - 1) / order, modulus);
         if (pow_mod(candidate, static_cast<U64>(N), modulus) == modulus - 1) {
-            return candidate;
+            // Match SEAL's batching ABI by selecting the smallest odd power
+            // from this primitive-root conjugacy class.
+            const U64 generator_squared = mul_mod(candidate, candidate, modulus);
+            U64 minimal = candidate;
+            U64 current = candidate;
+            for (std::size_t index = 0; index < N; ++index) {
+                minimal = std::min(minimal, current);
+                current = mul_mod(current, generator_squared, modulus);
+            }
+            return minimal;
         }
     }
     throw std::runtime_error(

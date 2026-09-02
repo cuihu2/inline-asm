@@ -12,6 +12,21 @@ cmake --build build -j --target hpu_delivery
 ctest --test-dir build --output-on-failure
 ```
 
+需要增加独立 SEAL 数学门禁时使用：
+
+```bash
+cmake -S . -B build-seal \
+  -DHPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE=ON \
+  -DHPU_SEAL_SOURCE_DIR=/home/songyexin/fhe/SEAL
+cmake --build build-seal -j --target hpu_delivery_with_seal
+```
+
+该目标先执行完整 `hpu_delivery`，再用同一批 host fixture 对 BFV、BGV、CKKS
+进行差分。普通交付仍不依赖 SEAL；差分报告写入
+`build-seal/seal_oracle/report.csv`，依赖 commit、实验选项和关键源码 SHA-256
+写入同目录 `metadata.txt`。该验证使用 `sec_level_type::none`，只表示功能正确性，
+不构成安全参数认证。
+
 成功后，`outputs/DELIVERY_REPORT.txt` 中应包含：
 
 ```text
@@ -91,6 +106,12 @@ CMake cache 变量 `HPU_TEST_CONFIG` 指向的同一路径，避免指令流与�
 `outputs/*/test_data/params.json` 是 reference 写出的结果清单，不是配置入口。修改
 它不会影响生成逻辑，并会在下一次执行 `hpu_delivery` 时被覆盖。自定义配置可通过
 `cmake -S . -B build -DHPU_TEST_CONFIG=/abs/path/fhe_test.conf` 选择。
+
+`outputs/seal_oracle/parameters.csv` 是同一次 reference 生成的差分接口，冻结 N、
+Q、P0、t、seed、CKKS scale 和各检查点误差上限。SEAL key context 使用
+`Q|P0`，首个密文 context 使用 Q，一次 ModSwitch/Rescale 后使用
+`Q_without_last`。SEAL 只比较方案语义，不比较 HPU twiddle、RNS 中间基、密钥或
+密文的逐字节表示。
 
 ### 2.1 正式交付包
 
@@ -236,6 +257,10 @@ image、NTT image、pre/post factor 和全部 stage twiddle。默认 Q0 的冻�
 | 最终解密 | 上述节点均通过时再检查方案参数和 host 数据解释 |
 
 同一 reference 还会拆分到 `outputs/{ntt,intt,ckks_encode,bgv_encode,bfv_encode,ckks_rescale,ckks_ciphertext_multiply,bgv_ciphertext_multiply,bgv_modswitch,bfv_ciphertext_multiply,bfv_modswitch,mm,bconv,modup,pmult,cmult,moddown,keyswitch,relinearization,auto,ciphertext_multiply}/test_data/`。每个目录均包含独立 `params.json`、数学输入/期望输出、checksum，以及按实际指令需求裁剪的 `hardware/` 镜像、上下文和 line map，可直接交给对应模块负责人跑 UT。NTT、INTT、三种方案 Encode、三种方案 CiphertextMultiply、KeySwitch、Relinearization、Auto 和公共 CiphertextMultiply 包含 twiddle；其余系数或逐点算子不包含。方案 Encode 的 host 数学、RNS-Q/NTT-Q 边界、元数据和 DLOAD/DSTORE 绑定分别冻结在 `host/`、`params.json` 与 `HPU_PROGRAMMING_MANUAL.md` 附录 C 中。
+
+BFV/BGV host batching 使用与 SEAL 一致的最小 primitive `2N` 次单位根和
+generator-3 两行映射。启用差分门禁后，两个整数方案对 N 个编码系数和全部 N 个
+slots 精确比较；CKKS 对全部 `N/2` 个复数 slots 按生成参数中的误差上限比较。
 
 ## 6. RV 接口用例
 
