@@ -540,11 +540,12 @@ void test_ckks_standalone_ntt_kernels_codegen()
 
 void test_ckks_pointwise_codegen()
 {
-	using Generator = std::string (*)(int, bool);
+	using WrapperGenerator = std::string (*)(int, bool);
+	using BodyGenerator = std::string (*)(int, bool, bool);
 	struct PointwiseCase {
 		const char* stem;
-		Generator wrapper;
-		Generator body;
+		WrapperGenerator wrapper;
+		BodyGenerator body;
 	};
 	const PointwiseCase cases[] {
 		{"ckks_add", hpu::scheme::ckks::generate_add_asm,
@@ -565,7 +566,10 @@ void test_ckks_pointwise_codegen()
 		}
 		if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
 			std::ofstream(std::string("output/") + pointwise.stem + ".asm")
-				<< pointwise.body(g_ciphertext_multiply_cfg.num_q, true);
+				<< pointwise.body(
+					g_ciphertext_multiply_cfg.num_q,
+					true,
+					true);
 		}
 	}
 	std::cout << "Saved zero-transform CKKS Add/Sub/Plain kernels\n";
