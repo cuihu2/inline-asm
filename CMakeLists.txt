@@ -14,7 +14,11 @@ add_subdirectory(encode)
 set(HPU_TEST_CONFIG
         "${CMAKE_CURRENT_SOURCE_DIR}/config/fhe_test.conf"
         CACHE FILEPATH
-        "Shared HPU instruction/reference test configuration")
+        "Legacy fixed-profile HPU instruction/reference demo configuration")
+
+option(HPU_ENABLE_LEGACY_FIXED_PROFILE_TESTS
+        "Register original N/Q/P/dnum fixed-profile reference demo tests"
+        OFF)
 
 option(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE
         "Build the optional BFV/BGV/CKKS differential oracle against SEAL"
@@ -341,7 +345,7 @@ endif()
 add_subdirectory(test/encode)
 add_subdirectory(test/reference)
 
-if(BUILD_TESTING)
+if(BUILD_TESTING AND HPU_ENABLE_LEGACY_FIXED_PROFILE_TESTS)
     add_test(
             NAME hpu_reference_rejects_noninvertible_plaintext_modulus
             COMMAND hpu_reference_vectors
@@ -350,7 +354,10 @@ if(BUILD_TESTING)
     )
     set_tests_properties(
             hpu_reference_rejects_noninvertible_plaintext_modulus
-            PROPERTIES WILL_FAIL TRUE TIMEOUT 120)
+            PROPERTIES
+            WILL_FAIL TRUE
+            TIMEOUT 120
+            LABELS "legacy-fixed-profile")
     add_test(
             NAME hpu_reference_rejects_insufficient_bfv_b_range
             COMMAND hpu_reference_vectors
@@ -359,7 +366,10 @@ if(BUILD_TESTING)
     )
     set_tests_properties(
             hpu_reference_rejects_insufficient_bfv_b_range
-            PROPERTIES WILL_FAIL TRUE TIMEOUT 120)
+            PROPERTIES
+            WILL_FAIL TRUE
+            TIMEOUT 120
+            LABELS "legacy-fixed-profile")
 endif()
 
 set(HPU_DELIVERY_TEST_DEPENDENCIES)
@@ -388,7 +398,7 @@ add_custom_target(hpu_delivery
         hpu_reference_vectors
         ${HPU_DELIVERY_TEST_DEPENDENCIES}
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        COMMENT "Generating HPU instruction streams and FHE reference deliverables"
+        COMMENT "Generating legacy fixed-profile HPU/reference demo deliverables"
 )
 
 if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE)
@@ -400,7 +410,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE)
         hpu_delivery
         hpu_seal_differential_test
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        COMMENT "Running HPU delivery checks and the SEAL three-scheme oracle"
+        COMMENT "Running legacy fixture delivery and the SEAL three-scheme oracle"
     )
 
     if(BUILD_TESTING)
@@ -411,7 +421,8 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE)
         set_tests_properties(hpu_seal_oracle_prepare_delivery PROPERTIES
             FIXTURES_SETUP HPU_SEAL_ORACLE_FIXTURE
             RUN_SERIAL TRUE
-            TIMEOUT 300)
+            TIMEOUT 300
+            LABELS "legacy-fixed-profile")
 
         add_test(
             NAME hpu_seal_differential_oracle
@@ -421,7 +432,8 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE)
         set_tests_properties(hpu_seal_differential_oracle PROPERTIES
             FIXTURES_REQUIRED HPU_SEAL_ORACLE_FIXTURE
             RUN_SERIAL TRUE
-            TIMEOUT 300)
+            TIMEOUT 300
+            LABELS "legacy-fixed-profile")
 
         add_test(
             NAME hpu_seal_oracle_rejects_corrupted_fixture
@@ -433,6 +445,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE)
         set_tests_properties(hpu_seal_oracle_rejects_corrupted_fixture PROPERTIES
             FIXTURES_REQUIRED HPU_SEAL_ORACLE_FIXTURE
             RUN_SERIAL TRUE
-            TIMEOUT 300)
+            TIMEOUT 300
+            LABELS "legacy-fixed-profile")
     endif()
 endif()

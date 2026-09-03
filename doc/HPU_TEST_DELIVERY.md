@@ -1,5 +1,11 @@
 # HPU 指令流与验证数据交付说明
 
+> 状态：Legacy fixed-profile demo。本文描述原仓库由
+> `config/fhe_test.conf` 驱动的 N=4096/Q=4/P=3/dnum=2 交付流水线，保留用于
+> 回归旧算子包，不再作为 N=65536 CKKS/SEAL 集成的参数或数学权威。默认 CTest
+> 不注册其中的 reference 测试；使用
+> `-DHPU_ENABLE_LEGACY_FIXED_PROFILE_TESTS=ON` 才会启用。
+
 ## 1. 交付结论
 
 本仓库已形成可复现的软件交付闭环：生成 HPU 算子指令流、编码为 32-bit RV 指令和 26-bit HPU 命令、生成完整密文乘法及重线性化的 RNS golden 数据、执行软件解密校验，并生成 RV 接口冒烟用例。当前数据可交付给 IT 开展确定性功能联调；“数据可交付”不等于“目标硬件 qualification 已通过”。

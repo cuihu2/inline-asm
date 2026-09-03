@@ -36,6 +36,10 @@ using TensorCiphertext = std::array<BasisPoly, 3>;
 using EvaluationKey = std::vector<std::array<BasisPoly, 2>>;
 using BigInt = U128;
 
+// GCC 8 in strict -std=c++17 mode does not reliably specialize
+// std::numeric_limits for the non-standard __int128 extension.
+constexpr U128 kU128Max = static_cast<U128>(-1);
+
 std::size_t g_n = 0;
 std::size_t g_num_q = 0;
 std::size_t g_num_p = 0;
@@ -515,7 +519,7 @@ BigInt big_product(const std::vector<U64>& values)
 {
     BigInt product = 1;
     for (U64 value : values) {
-        if (value != 0 && product > static_cast<BigInt>(-1) / value) {
+        if (value != 0 && product > kU128Max / value) {
             throw std::runtime_error(
                 "reference Q product exceeds the self-contained 128-bit path");
         }
@@ -1408,7 +1412,7 @@ std::vector<I128> exact_rns_to_centered(const BasisPoly& input,
     }
     U128 basis_product = 1;
     for (U64 modulus : moduli) {
-        if (basis_product > std::numeric_limits<U128>::max() / modulus) {
+        if (basis_product > kU128Max / modulus) {
             throw std::runtime_error("centered RNS basis product exceeds uint128");
         }
         basis_product *= modulus;

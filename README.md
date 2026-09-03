@@ -114,6 +114,19 @@ cmake --build build -j --target hpu_delivery
 ctest --test-dir build --output-on-failure
 ```
 
+`hpu_delivery`、`hpu_reference_vectors` 及 `config/fhe_test.conf` 属于原仓库的
+固定参数 legacy demo，不再作为默认测试或 N=65536 CKKS 的参数权威。默认 CTest
+不会注册其三个 reference 测试；若需要回归旧交付包，显式配置：
+
+```bash
+cmake -S . -B build -DHPU_ENABLE_LEGACY_FIXED_PROFILE_TESTS=ON
+ctest --test-dir build -L legacy-fixed-profile --output-on-failure
+```
+
+代码生成 kernel 的单元测试、HPU NTT 数学模型、runtime，以及 SEAL/HPU CKKS
+集成测试仍保持默认启用。测试源码中用于覆盖 shape 的固定数字只是局部测试向量，
+不构成应用 profile。
+
 SEAL 以 `third_party/SEAL` 子模块固定在 `v4.4.4`；首次构建前执行：
 
 ```bash
@@ -131,7 +144,8 @@ ctest --test-dir build-seal -R hpu_seal_ckks_context_test --output-on-failure
 具体边界、硬件 NTT 模型、runtime 语义及完整命令见
 `doc/HPU_SEAL_BOOTSTRAP.md`。
 
-可选 SEAL 三方案差分 oracle 默认关闭，不构成普通 `hpu_delivery` 的依赖。启用后
+可选 SEAL 三方案 fixture oracle 默认关闭；它仍依赖 legacy reference 产物，并不
+代表 HPU 指令执行。启用后
 使用同一批 reference fixture 验证 BFV/BGV/CKKS 的 Encode、乘法、重线形化、
 ModSwitch/Rescale 和旋转：
 
@@ -213,7 +227,7 @@ relocation manifest、line map 与 HPU_MEM 镜像。
 2. `inline_asm_encode_outputs` 从 `test/encode/main.cpp` 进入，归档结果并把可编码 ASM 转成 `.inst32/.cmd26`。
 3. `hpu_reference_vectors` 从 `test/reference/main.cpp` 进入，计算并验证 test data，然后写入 `outputs/<case>/test_data/`。
 
-唯一输入配置为 `config/fhe_test.conf`。`inline_asm_codegen` 和
+legacy 流程的唯一输入配置为 `config/fhe_test.conf`。`inline_asm_codegen` 和
 `hpu_reference_vectors` 都通过共享解析库读取其中的 `N`、`num_q`、`num_p`、
 `bfv_num_b`、`hpu_mem_max_lines`、`dnum`、`auto_index`、`plaintext_modulus` 和
 `seed`；未知、重复、缺失或非法字段
@@ -230,7 +244,7 @@ relocation manifest、line map 与 HPU_MEM 镜像。
 取得活动 Q digit，不再把顶层 `dnum` 固定沿用到低层。
 `num_q + num_p + bfv_num_b + 2 <= 256`，且当前 Auto 仅支持 `auto_index=1`。
 BGV 固定 MOD_ID 顺序为 `Q|P|t`；BFV 固定为 `Q|Pks|B|m_sk|t`。`plaintext_modulus`
-必须是硬件可加载的奇数并满足 `65537 <= t <= 2^32-1`；默认值为
+必须是硬件可加载的奇数并满足 `65537 <= t <= 2^32-1`；legacy demo 默认值为
 `N=4096, Q=4, Pks=3, B=6, dnum=2, t=65537, hpu_mem_max_lines=65536`。
 `hpu_mem_max_lines` 必须适配 33-bit `HPU_MEM_SIZE_LINES` CSR；它是软件验收上限，
 每个包仍按自身真实镜像大小配置 window。BFV reference 还检查
