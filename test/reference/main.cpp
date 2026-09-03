@@ -21,6 +21,7 @@
 #include "scheme/bgv/encode.hpp"
 #include "scheme/bfv/encode.hpp"
 #include "scheme/ckks/encode.hpp"
+#include "util/galois.hpp"
 
 namespace {
 
@@ -40,7 +41,7 @@ std::size_t g_num_q = 0;
 std::size_t g_num_p = 0;
 std::size_t g_bfv_num_b = 0;
 std::size_t g_dnum = 0;
-std::size_t g_auto_index = 0;
+U64 g_auto_galois_element = 0;
 U64 g_plaintext_modulus = 0;
 U64 g_seed = 0;
 U64 g_hpu_mem_max_lines = 0;
@@ -110,6 +111,17 @@ struct TwiddleMapEntry {
     U64 first_value = 0;
     U64 step = 0;
     std::size_t image_index = 0;
+};
+
+struct NttTwiddleProfile {
+    std::string name;
+    std::vector<U64> roots;
+};
+
+struct InttTwiddleProfile {
+    std::string name;
+    std::vector<U64> roots;
+    U64 galois_element = 0;
 };
 
 U64 add_mod(U64 a, U64 b, U64 modulus)
@@ -983,19 +995,18 @@ Poly apply_negacyclic_automorphism(const Poly& input,
                                    U64 galois_element,
                                    U64 modulus)
 {
-    if ((galois_element & 1U) == 0U || input.empty()) {
-        throw std::runtime_error("automorphism requires a non-empty polynomial and odd Galois element");
+    if (input.empty()
+        || !hpu::is_valid_galois_element(input.size(), galois_element)) {
+        throw std::runtime_error(
+            "automorphism requires a non-empty power-of-two polynomial and g in Z_(2N)^*");
     }
-    const U64 two_n = static_cast<U64>(input.size()) * 2U;
     Poly output(input.size(), 0U);
     for (std::size_t coefficient = 0; coefficient < input.size(); ++coefficient) {
-        const U64 exponent =
-            (static_cast<U64>(coefficient) * galois_element) % two_n;
-        const std::size_t target =
-            static_cast<std::size_t>(exponent % input.size());
-        output[target] = exponent < input.size()
-            ? input[coefficient]
-            : (input[coefficient] == 0U ? 0U : modulus - input[coefficient]);
+        const auto target = hpu::map_negacyclic_automorphism_index(
+            input.size(), coefficient, galois_element);
+        output[target.index] = target.negate
+            ? (input[coefficient] == 0U ? 0U : modulus - input[coefficient])
+            : input[coefficient];
     }
     return output;
 }
@@ -1913,22 +1924,28 @@ public:
     void transform(
         const std::vector<std::vector<DmaSpan>>& components,
         const std::vector<int>& contexts,
-        bool inverse)
+        bool inverse,
+        const std::string& forward_profile = "ntt")
     {
-        transform_between(components, components, contexts, inverse);
+        transform_between(
+            components, components, contexts, inverse, forward_profile);
     }
 
     void transform_between(
         const std::vector<std::vector<DmaSpan>>& input_components,
         const std::vector<std::vector<DmaSpan>>& output_components,
         const std::vector<int>& contexts,
-        bool inverse)
+        bool inverse,
+        const std::string& forward_profile = "ntt")
     {
         if (input_components.empty()) {
             return;
         }
         if (input_components.size() != output_components.size()) {
             throw std::runtime_error("invalid planned transform component count");
+        }
+        if (forward_profile.empty() || forward_profile == "intt") {
+            throw std::runtime_error("invalid planned forward NTT profile");
         }
         load_mod_context();
         const std::size_t stages = u64_bit_length(g_n) - 1;
@@ -1943,17 +1960,61 @@ public:
             for (std::size_t basis = 0; basis < contexts.size(); ++basis) {
                 load(0, input[basis]);
                 if (!inverse) {
-                    load(3, twiddle("ntt", contexts[basis], "pre_twist", -1));
+                    load(3, twiddle(
+                        forward_profile, contexts[basis], "pre_twist", -1));
                 }
                 for (std::size_t stage = 0; stage < stages; ++stage) {
                     load(3, twiddle(
-                        inverse ? "intt" : "ntt", contexts[basis],
+                        inverse ? "intt" : forward_profile, contexts[basis],
                         "stage", static_cast<int>(stage)));
                 }
                 if (inverse) {
                     load(3, twiddle(
                         "intt", contexts[basis], "post_untwist_scale", -1));
                 }
+                store(0, output[basis]);
+            }
+        }
+    }
+
+    void fused_automorphism_transform(
+        const std::vector<std::vector<DmaSpan>>& input_components,
+        const std::vector<std::vector<DmaSpan>>& output_components,
+        const std::vector<int>& contexts,
+        const std::string& inverse_profile)
+    {
+        if (input_components.empty()
+            || input_components.size() != output_components.size()
+            || inverse_profile.empty() || inverse_profile == "ntt"
+            || inverse_profile == "intt") {
+            throw std::runtime_error("invalid planned fused automorphism transform");
+        }
+        load_mod_context();
+        const std::size_t stages = u64_bit_length(g_n) - 1;
+        for (std::size_t component = 0;
+             component < input_components.size(); ++component) {
+            const auto& input = input_components[component];
+            const auto& output = output_components[component];
+            if (input.size() != contexts.size() || output.size() != contexts.size()) {
+                throw std::runtime_error(
+                    "invalid fused automorphism component dimensions");
+            }
+            for (std::size_t basis = 0; basis < contexts.size(); ++basis) {
+                load(0, input[basis]);
+                load(3, twiddle("ntt", contexts[basis], "pre_twist", -1));
+                for (std::size_t stage = 0; stage < stages; ++stage) {
+                    load(3, twiddle(
+                        "ntt", contexts[basis], "stage",
+                        static_cast<int>(stage)));
+                }
+                for (std::size_t stage = 0; stage < stages; ++stage) {
+                    load(3, twiddle(
+                        inverse_profile, contexts[basis], "stage",
+                        static_cast<int>(stage)));
+                }
+                load(3, twiddle(
+                    inverse_profile, contexts[basis],
+                    "post_untwist_scale", -1));
                 store(0, output[basis]);
             }
         }
@@ -2292,6 +2353,85 @@ void add_artifact(std::vector<Artifact>& artifacts,
         0};
     artifact.checksum = fnv1a_words(artifact.words);
     artifacts.push_back(std::move(artifact));
+}
+
+void add_hybrid_keyswitch_support_artifacts(
+    std::vector<Artifact>& artifacts,
+    const std::vector<U64>& q_moduli,
+    const std::vector<U64>& p_moduli,
+    std::size_t dnum)
+{
+    if (dnum == 0 || q_moduli.size() % dnum != 0) {
+        throw std::runtime_error("invalid hybrid KeySwitch decomposition");
+    }
+    const std::size_t digit_size = q_moduli.size() / dnum;
+    std::vector<U64> all_moduli = q_moduli;
+    all_moduli.insert(all_moduli.end(), p_moduli.begin(), p_moduli.end());
+    std::vector<BasisPoly> modup_source_inverse;
+    std::vector<std::vector<BasisPoly>> modup_target_hat;
+    for (std::size_t digit = 0; digit < dnum; ++digit) {
+        const auto first = q_moduli.begin()
+            + static_cast<std::ptrdiff_t>(digit * digit_size);
+        const std::vector<U64> digit_moduli(
+            first, first + static_cast<std::ptrdiff_t>(digit_size));
+        const FastBconvConstants constants = make_fast_bconv_constants(
+            digit_moduli, all_moduli);
+        modup_source_inverse.push_back(constants.source_hat_inverse);
+        modup_target_hat.push_back(constants.source_hat_mod_target);
+    }
+
+    std::vector<U64> words;
+    for (const BasisPoly& digit : modup_source_inverse) {
+        append_words(words, digit);
+    }
+    add_artifact(
+        artifacts, "constants/modup_digit_qhat_inv.bin",
+        "per-digit ModUp source-hat inverses",
+        {dnum, digit_size, g_n}, std::move(words),
+        {"digit", "source_basis_q", "coefficient"});
+    words.clear();
+    for (const auto& digit : modup_target_hat) {
+        for (const BasisPoly& target : digit) {
+            append_words(words, target);
+        }
+    }
+    add_artifact(
+        artifacts, "constants/modup_digit_qhat_mod_qp.bin",
+        "per-digit ModUp source hats in every QP target",
+        {dnum, all_moduli.size(), digit_size, g_n}, std::move(words),
+        {"digit", "target_basis_qp", "source_basis_q", "coefficient"});
+
+    const FastBconvConstants p_to_q = make_fast_bconv_constants(
+        p_moduli, q_moduli);
+    words.clear();
+    append_words(words, p_to_q.source_hat_inverse);
+    add_artifact(
+        artifacts, "constants/moddown_p_qhat_inv.bin",
+        "ModDown P source-hat inverses",
+        {p_moduli.size(), g_n}, std::move(words),
+        {"source_basis_p", "coefficient"});
+    words.clear();
+    for (const BasisPoly& target : p_to_q.source_hat_mod_target) {
+        append_words(words, target);
+    }
+    add_artifact(
+        artifacts, "constants/moddown_p_qhat_mod_q.bin",
+        "ModDown P source hats reduced in Q",
+        {q_moduli.size(), p_moduli.size(), g_n}, std::move(words),
+        {"target_basis_q", "source_basis_p", "coefficient"});
+
+    BasisPoly p_inverse_q;
+    for (U64 modulus : q_moduli) {
+        p_inverse_q.push_back(Poly(
+            g_n, inverse_mod(product_mod(p_moduli, modulus), modulus)));
+    }
+    words.clear();
+    append_words(words, p_inverse_q);
+    add_artifact(
+        artifacts, "constants/p_inverse_mod_q.bin",
+        "P inverse in every Q context for ModDown",
+        {q_moduli.size(), g_n}, std::move(words),
+        {"basis_q", "coefficient"});
 }
 
 void add_scheme_multiply_artifacts(
@@ -2733,10 +2873,66 @@ void validate_hardware_ntt_model(U64 omega,
     }
 }
 
+void validate_hardware_automorphism_model(
+    U64 standard_psi,
+    U64 auto_inverse_psi,
+    U64 modulus,
+    U64 galois_element)
+{
+    if (!hpu::is_valid_galois_element(g_n, galois_element)
+        || pow_mod(auto_inverse_psi, galois_element, modulus)
+            != standard_psi) {
+        throw std::runtime_error(
+            "Auto INTT root does not satisfy psi_auto^g = psi");
+    }
+    Poly input(g_n);
+    Poly pre_twisted(g_n);
+    for (std::size_t coefficient = 0; coefficient < g_n; ++coefficient) {
+        input[coefficient] = static_cast<U64>(
+            (31 * coefficient + 7) % modulus);
+        pre_twisted[coefficient] = mul_mod(
+            input[coefficient],
+            pow_mod(standard_psi, static_cast<U64>(coefficient), modulus),
+            modulus);
+    }
+    const auto forward_tables = hardware_ntt_twiddle_tables(
+        mul_mod(standard_psi, standard_psi, modulus), modulus);
+    const auto auto_inverse_tables = hardware_intt_twiddle_tables(
+        mul_mod(auto_inverse_psi, auto_inverse_psi, modulus), modulus);
+    const Poly ntt_physical = hardware_forward_cyclic(
+        pre_twisted, forward_tables, modulus);
+    Poly output_physical = hardware_inverse_cyclic(
+        ntt_physical, auto_inverse_tables, modulus);
+    const U64 n_inverse = inverse_mod(static_cast<U64>(g_n), modulus);
+    const U64 psi_inverse = inverse_mod(auto_inverse_psi, modulus);
+    for (std::size_t position = 0; position < g_n; ++position) {
+        const U64 logical_index = static_cast<U64>(
+            bit_reverse_index(position, g_n));
+        output_physical[position] = mul_mod(
+            output_physical[position],
+            mul_mod(
+                n_inverse,
+                pow_mod(psi_inverse, logical_index, modulus),
+                modulus),
+            modulus);
+    }
+    const Poly expected = apply_negacyclic_automorphism(
+        input, galois_element, modulus);
+    for (std::size_t position = 0; position < g_n; ++position) {
+        if (output_physical[position]
+            != expected[bit_reverse_index(position, g_n)]) {
+            throw std::runtime_error(
+                "hardware standard-NTT/Auto-INTT path violates X->X^g");
+        }
+    }
+}
+
 void write_hardware_package(const std::filesystem::path& test_data_root,
                             const std::vector<Artifact>& artifacts,
                             const std::vector<U64>& moduli,
-                            const std::vector<U64>& roots)
+                            const std::vector<U64>& roots,
+                            const std::vector<NttTwiddleProfile>& additional_ntt_profiles = {},
+                            const std::vector<InttTwiddleProfile>& additional_intt_profiles = {})
 {
     if (moduli.empty() || moduli.size() != roots.size()) {
         throw std::runtime_error(
@@ -2745,8 +2941,10 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
     if (moduli.size() > kMaxModContexts) {
         throw std::runtime_error("mod contexts exceed the 8-bit MOD_ID address space");
     }
-    const bool includes_twiddles = std::any_of(
-        roots.begin(), roots.end(), [](U64 root) { return root != 0; });
+    const bool includes_twiddles = !additional_ntt_profiles.empty()
+        || !additional_intt_profiles.empty()
+        || std::any_of(
+            roots.begin(), roots.end(), [](U64 root) { return root != 0; });
     if (g_n < 128 || (g_n & (g_n - 1)) != 0) {
         throw std::runtime_error(
             "hardware stage twiddles require power-of-two N >= 128");
@@ -2790,54 +2988,79 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
         std::move(mod_context_words));
 
     std::vector<TwiddleMapEntry> twiddle_entries;
+    const auto add_forward_twiddle_profile = [&images, &twiddle_entries](
+        const std::string& profile,
+        std::size_t basis,
+        U64 modulus,
+        U64 psi) {
+        if (profile.empty() || profile.find('/') != std::string::npos
+            || profile.find("..") != std::string::npos) {
+            throw std::runtime_error("invalid forward NTT twiddle profile name");
+        }
+        if (pow_mod(psi, static_cast<U64>(g_n), modulus) != modulus - 1) {
+            throw std::runtime_error(
+                profile + " root is not a primitive 2N-th root");
+        }
+        const std::string basis_dir = "basis_"
+            + (basis < 10 ? std::string("0") : std::string())
+            + std::to_string(basis);
+        std::vector<U32> pre_twist(g_n);
+        for (std::size_t position = 0; position < g_n; ++position) {
+            pre_twist[position] = checked_u32(
+                pow_mod(
+                    psi,
+                    static_cast<U64>(bit_reverse_index(position, g_n)),
+                    modulus),
+                "physical pre-twist");
+        }
+        std::size_t image_index = add_hardware_image(
+            images,
+            "constants/twiddle/" + profile + "/" + basis_dir
+                + "/pre_twist.u32.bin",
+            profile + " negacyclic pre-twist in bit-reversed coefficient order",
+            {g_n},
+            std::move(pre_twist));
+        twiddle_entries.push_back({profile, basis, modulus, "pre_twist", -1,
+                                    g_n, 1, g_n, 1, psi, image_index});
+
+        const U64 omega = mul_mod(psi, psi, modulus);
+        const auto ntt_tables = hardware_ntt_twiddle_tables(omega, modulus);
+        for (std::size_t stage = 0; stage < ntt_tables.size(); ++stage) {
+            const std::string stage_name = "stage_"
+                + (stage < 10 ? std::string("0") : std::string())
+                + std::to_string(stage);
+            image_index = add_hardware_image(
+                images,
+                "constants/twiddle/" + profile + "/" + basis_dir + "/"
+                    + stage_name + ".u32.bin",
+                profile + " DIT stage twiddles in hardware batch/lane order",
+                {g_n / 2},
+                ntt_tables[stage]);
+            twiddle_entries.push_back(
+                {profile, basis, modulus, "butterfly", static_cast<int>(stage),
+                 g_n / 2, g_n / 128, 64,
+                 ntt_tables[stage].front(), 0, image_index});
+        }
+        return ntt_tables;
+    };
     for (std::size_t basis = 0; basis < moduli.size(); ++basis) {
         const U64 modulus = moduli[basis];
         const U64 psi = roots[basis];
         if (psi == 0) {
             continue;
         }
-        if (pow_mod(psi, static_cast<U64>(g_n), modulus) != modulus - 1) {
-            throw std::runtime_error("root is not a primitive 2N-th root for hardware twiddles");
-        }
         const std::string basis_dir = "basis_" +
             (basis < 10 ? std::string("0") : std::string()) + std::to_string(basis);
 
-        std::vector<U32> pre_twist(g_n);
-        for (std::size_t position = 0; position < g_n; ++position) {
-            pre_twist[position] = checked_u32(
-                pow_mod(psi, static_cast<U64>(bit_reverse_index(position, g_n)), modulus),
-                "physical pre-twist");
-        }
-        std::size_t image_index = add_hardware_image(
-            images,
-            "constants/twiddle/ntt/" + basis_dir + "/pre_twist.u32.bin",
-            "forward negacyclic pre-twist in bit-reversed coefficient order",
-            {g_n},
-            std::move(pre_twist));
-        twiddle_entries.push_back({"ntt", basis, modulus, "pre_twist", -1,
-                                    g_n, 1, g_n, 1, psi, image_index});
-
         const U64 omega = mul_mod(psi, psi, modulus);
-        const auto ntt_tables = hardware_ntt_twiddle_tables(omega, modulus);
-        std::size_t stage = 0;
-        for (; stage < ntt_tables.size(); ++stage) {
-            const std::string stage_name = "stage_" +
-                (stage < 10 ? std::string("0") : std::string()) + std::to_string(stage);
-            image_index = add_hardware_image(
-                images,
-                "constants/twiddle/ntt/" + basis_dir + "/" + stage_name + ".u32.bin",
-                "forward DIT stage twiddles in hardware batch/lane consumption order",
-                {g_n / 2},
-                ntt_tables[stage]);
-            twiddle_entries.push_back({"ntt", basis, modulus, "butterfly", static_cast<int>(stage),
-                                        g_n / 2, g_n / 128, 64,
-                                        ntt_tables[stage].front(), 0, image_index});
-        }
+        const auto ntt_tables = add_forward_twiddle_profile(
+            "ntt", basis, modulus, psi);
 
         const auto intt_tables = hardware_intt_twiddle_tables(omega, modulus);
         validate_hardware_ntt_model(
             omega, modulus, ntt_tables, intt_tables);
-        stage = 0;
+        std::size_t image_index = 0;
+        std::size_t stage = 0;
         for (; stage < intt_tables.size(); ++stage) {
             const std::string stage_name = "stage_" +
                 (stage < 10 ? std::string("0") : std::string()) + std::to_string(stage);
@@ -2869,6 +3092,102 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
             std::move(post_untwist));
         twiddle_entries.push_back({"intt", basis, modulus, "post_untwist_scale", -1,
                                     g_n, 1, g_n, n_inverse, psi_inverse, image_index});
+    }
+
+    for (const NttTwiddleProfile& profile : additional_ntt_profiles) {
+        if (profile.name == "ntt" || profile.name == "intt"
+            || profile.roots.size() != moduli.size()) {
+            throw std::runtime_error("invalid additional forward NTT profile");
+        }
+        for (std::size_t basis = 0; basis < moduli.size(); ++basis) {
+            const U64 psi = profile.roots[basis];
+            if (psi == 0) {
+                throw std::runtime_error(
+                    "additional forward NTT profile cannot contain a zero root");
+            }
+            const U64 omega = mul_mod(psi, psi, moduli[basis]);
+            const auto ntt_tables = add_forward_twiddle_profile(
+                profile.name, basis, moduli[basis], psi);
+            const auto validation_intt = hardware_intt_twiddle_tables(
+                omega, moduli[basis]);
+            validate_hardware_ntt_model(
+                omega, moduli[basis], ntt_tables, validation_intt);
+        }
+    }
+
+    for (const InttTwiddleProfile& profile : additional_intt_profiles) {
+        if (profile.name.empty() || profile.name == "ntt"
+            || profile.name == "intt" || profile.name.find('/') != std::string::npos
+            || profile.name.find("..") != std::string::npos
+            || profile.roots.size() != moduli.size()
+            || !hpu::is_valid_galois_element(g_n, profile.galois_element)) {
+            throw std::runtime_error("invalid additional inverse NTT profile");
+        }
+        for (std::size_t basis = 0; basis < moduli.size(); ++basis) {
+            const U64 modulus = moduli[basis];
+            const U64 psi = profile.roots[basis];
+            if (psi == 0
+                || pow_mod(psi, static_cast<U64>(g_n), modulus) != modulus - 1) {
+                throw std::runtime_error(
+                    profile.name + " root is not a primitive 2N-th root");
+            }
+            const std::string basis_dir = "basis_"
+                + (basis < 10 ? std::string("0") : std::string())
+                + std::to_string(basis);
+            const U64 omega = mul_mod(psi, psi, modulus);
+            const auto intt_tables = hardware_intt_twiddle_tables(
+                omega, modulus);
+            const auto validation_ntt = hardware_ntt_twiddle_tables(
+                omega, modulus);
+            validate_hardware_ntt_model(
+                omega, modulus, validation_ntt, intt_tables);
+            if (roots[basis] == 0) {
+                throw std::runtime_error(
+                    "Auto INTT profile requires the standard forward NTT profile");
+            }
+            validate_hardware_automorphism_model(
+                roots[basis], psi, modulus, profile.galois_element);
+            for (std::size_t stage = 0; stage < intt_tables.size(); ++stage) {
+                const std::string stage_name = "stage_"
+                    + (stage < 10 ? std::string("0") : std::string())
+                    + std::to_string(stage);
+                const std::size_t image_index = add_hardware_image(
+                    images,
+                    "constants/twiddle/" + profile.name + "/" + basis_dir
+                        + "/" + stage_name + ".u32.bin",
+                    profile.name
+                        + " inverse DIF stage twiddles in hardware batch/lane order",
+                    {g_n / 2}, intt_tables[stage]);
+                twiddle_entries.push_back(
+                    {profile.name, basis, modulus, "butterfly",
+                     static_cast<int>(stage), g_n / 2, g_n / 128, 64,
+                     intt_tables[stage].front(), 0, image_index});
+            }
+            const U64 n_inverse = inverse_mod(
+                static_cast<U64>(g_n), modulus);
+            const U64 psi_inverse = inverse_mod(psi, modulus);
+            std::vector<U32> post_untwist(g_n);
+            for (std::size_t position = 0; position < g_n; ++position) {
+                const U64 logical_index = static_cast<U64>(
+                    bit_reverse_index(position, g_n));
+                post_untwist[position] = checked_u32(
+                    mul_mod(
+                        n_inverse,
+                        pow_mod(psi_inverse, logical_index, modulus),
+                        modulus),
+                    "physical custom inverse post-untwist");
+            }
+            const std::size_t image_index = add_hardware_image(
+                images,
+                "constants/twiddle/" + profile.name + "/" + basis_dir
+                    + "/post_untwist_scale.u32.bin",
+                profile.name
+                    + " inverse post-factor in bit-reversed coefficient order",
+                {g_n}, std::move(post_untwist));
+            twiddle_entries.push_back(
+                {profile.name, basis, modulus, "post_untwist_scale", -1,
+                 g_n, 1, g_n, n_inverse, psi_inverse, image_index});
+        }
     }
 
     U64 next_line = 0;
@@ -3122,7 +3441,9 @@ void write_case_package(const std::filesystem::path& suite_root,
                         std::vector<Artifact> artifacts,
                         const std::vector<U64>& moduli,
                         const std::vector<U64>& roots,
-                        TwiddleRequirement twiddle_requirement)
+                        TwiddleRequirement twiddle_requirement,
+                        const std::vector<NttTwiddleProfile>& additional_ntt_profiles = {},
+                        const std::vector<InttTwiddleProfile>& additional_intt_profiles = {})
 {
     const std::filesystem::path root = suite_root / case_name / "test_data";
     // Case packages are generated artifacts. Recreate the directory so renamed
@@ -3150,7 +3471,9 @@ void write_case_package(const std::filesystem::path& suite_root,
     if (twiddle_requirement == TwiddleRequirement::kNone) {
         std::fill(hardware_roots.begin(), hardware_roots.end(), 0);
     }
-    write_hardware_package(root, artifacts, moduli, hardware_roots);
+    write_hardware_package(
+        root, artifacts, moduli, hardware_roots,
+        additional_ntt_profiles, additional_intt_profiles);
     std::ostringstream readme;
     readme << "This UT package is generated from the same deterministic N=" << g_n
            << " FHE reference used by ciphertext_multiply. Binary values are little-endian "
@@ -3356,17 +3679,42 @@ void generate(const std::filesystem::path& output_root,
         }
     }
 
-    // AUTO index 1 is frozen to the standard odd Galois element 3.  The CPU
-    // applies x -> x^3 in the negacyclic coefficient layout; the HPU then
-    // performs a normal key switch from sigma_3(s) back to s.
-    constexpr U64 kAutoGaloisElement = 3;
+    // A standard forward NTT followed by an inverse NTT rooted at
+    // psi^(g^-1 mod 2N) fuses sigma_g into the transform. The coefficient
+    // automorphism must precede FastBConv because that conversion is not an
+    // exact CRT homomorphism for canonical representatives.
+    const U64 auto_galois_element = g_auto_galois_element;
+    const U64 auto_inverse_element = inverse_mod(
+        auto_galois_element, static_cast<U64>(2 * g_n));
+    std::vector<U64> auto_inverse_roots(all_moduli.size());
+    for (std::size_t basis = 0; basis < all_moduli.size(); ++basis) {
+        auto_inverse_roots[basis] = pow_mod(
+            all_roots[basis], auto_inverse_element, all_moduli[basis]);
+    }
+    const std::vector<U64> auto_inverse_q_roots(
+        auto_inverse_roots.begin(),
+        auto_inverse_roots.begin() + static_cast<std::ptrdiff_t>(g_num_q));
     Ciphertext auto_rotated;
     for (std::size_t component = 0; component < 2; ++component) {
         auto_rotated[component] = apply_negacyclic_automorphism(
-            ct_a[component], kAutoGaloisElement, q_moduli);
+            ct_a[component], auto_galois_element, q_moduli);
     }
+    const BasisPoly auto_c0_ntt = transform_basis(
+        ct_a[0], q_moduli, q_roots, false);
+    const BasisPoly auto_c0_coeff = transform_basis(
+        auto_c0_ntt, q_moduli, auto_inverse_q_roots, true);
+    verify_equal(
+        auto_rotated[0], auto_c0_coeff,
+        "standard NTT plus fused Auto INTT for c0");
+    const BasisPoly auto_c1_ntt = transform_basis(
+        ct_a[1], q_moduli, q_roots, false);
+    const BasisPoly auto_c1_coeff = transform_basis(
+        auto_c1_ntt, q_moduli, auto_inverse_q_roots, true);
+    verify_equal(
+        auto_rotated[1], auto_c1_coeff,
+        "standard NTT plus fused Auto INTT for c1");
     const BasisPoly auto_secret_qp = apply_negacyclic_automorphism(
-        secret_qp, kAutoGaloisElement, all_moduli);
+        secret_qp, auto_galois_element, all_moduli);
     std::vector<std::array<BasisPoly, 2>> galois_key(g_dnum);
     std::vector<std::array<BasisPoly, 2>> galois_key_ntt(g_dnum);
     for (std::size_t digit = 0; digit < g_dnum; ++digit) {
@@ -3433,34 +3781,37 @@ void generate(const std::filesystem::path& output_root,
     for (BasisPoly& component : auto_keyswitch_ntt) {
         component.assign(all_moduli.size(), Poly(g_n, 0));
     }
+    std::vector<BasisPoly> auto_modup_coeff(g_dnum);
+    std::vector<BasisPoly> auto_modup_ntt(g_dnum);
     for (std::size_t digit = 0; digit < g_dnum; ++digit) {
-        const BasisPoly raised = modup(
-            auto_rotated[1], q_moduli, all_moduli,
+        auto_modup_coeff[digit] = modup(
+            auto_c1_coeff, q_moduli, all_moduli,
             digit * digit_size, digit_size);
-        const BasisPoly raised_ntt = transform_basis(
-            raised, all_moduli, all_roots, false);
+        auto_modup_ntt[digit] = transform_basis(
+            auto_modup_coeff[digit], all_moduli, all_roots, false);
         for (std::size_t component = 0; component < 2; ++component) {
             for (std::size_t basis = 0; basis < all_moduli.size(); ++basis) {
                 auto_keyswitch_ntt[component][basis] = add_poly(
                     auto_keyswitch_ntt[component][basis],
-                    pointwise_mul(raised_ntt[basis],
+                    pointwise_mul(auto_modup_ntt[digit][basis],
                                   galois_key_ntt[digit][component][basis],
                                   all_moduli[basis]),
                     all_moduli[basis]);
             }
         }
     }
+    std::array<BasisPoly, 2> auto_keyswitch_qp;
     std::array<BasisPoly, 2> auto_keyswitch_q;
     for (std::size_t component = 0; component < 2; ++component) {
-        const BasisPoly coeff_qp = transform_basis(
+        auto_keyswitch_qp[component] = transform_basis(
             auto_keyswitch_ntt[component], all_moduli, all_roots, true);
         auto_keyswitch_q[component] = moddown(
-            coeff_qp, q_moduli, p_moduli);
+            auto_keyswitch_qp[component], q_moduli, p_moduli);
     }
     Ciphertext auto_output;
     for (std::size_t basis = 0; basis < g_num_q; ++basis) {
         auto_output[0].push_back(add_poly(
-            auto_rotated[0][basis], auto_keyswitch_q[0][basis],
+            auto_c0_coeff[basis], auto_keyswitch_q[0][basis],
             q_moduli[basis]));
         auto_output[1].push_back(auto_keyswitch_q[1][basis]);
     }
@@ -3468,7 +3819,7 @@ void generate(const std::filesystem::path& output_root,
         auto_output, secret_q, q_moduli, q_roots);
     const BasisPoly auto_expected = apply_negacyclic_automorphism(
         decrypt_ciphertext(ct_a, secret_q, q_moduli, q_roots),
-        kAutoGaloisElement, q_moduli);
+        auto_galois_element, q_moduli);
     verify_equal(auto_expected, auto_decrypted,
                  "automorphism plus Galois key switch decryption");
 
@@ -3649,19 +4000,27 @@ void generate(const std::filesystem::path& output_root,
     const Poly bgv_expected_coeff_t = hpu::scheme::bgv::encode_slots(
         bgv_expected_slots, g_n, g_plaintext_modulus);
 
-    const Poly bgv_auto_coeff_t = apply_negacyclic_automorphism(
-        bgv_plain_a, 3, g_plaintext_modulus);
-    const auto bgv_expected_auto_slots = hpu::scheme::bgv::decode_slots(
-        bgv_auto_coeff_t, g_plaintext_modulus);
+    const U64 generator3_element = hpu::galois_element_from_rotation_step(
+        g_n, 1);
+    const Poly bgv_left_one_coeff_t = apply_negacyclic_automorphism(
+        bgv_plain_a, generator3_element, g_plaintext_modulus);
+    const auto bgv_left_one_slots = hpu::scheme::bgv::decode_slots(
+        bgv_left_one_coeff_t, g_plaintext_modulus);
     for (std::size_t row = 0; row < 2; ++row) {
         for (std::size_t column = 0; column < g_n / 2; ++column) {
             const auto expected = bgv_slots_a[
                 row * (g_n / 2) + (column + 1) % (g_n / 2)];
-            if (bgv_expected_auto_slots[row * (g_n / 2) + column] != expected) {
-                throw std::runtime_error("BGV X->X^3 slot rotation check failed");
+            if (bgv_left_one_slots[row * (g_n / 2) + column] != expected) {
+                throw std::runtime_error(
+                    "BGV generator-3 slot rotation check failed");
             }
         }
     }
+
+    const Poly bgv_auto_coeff_t = apply_negacyclic_automorphism(
+        bgv_plain_a, auto_galois_element, g_plaintext_modulus);
+    const auto bgv_expected_auto_slots = hpu::scheme::bgv::decode_slots(
+        bgv_auto_coeff_t, g_plaintext_modulus);
 
     constexpr U64 kBgvFactorA = 3;
     constexpr U64 kBgvFactorB = 5;
@@ -3674,7 +4033,7 @@ void generate(const std::filesystem::path& output_root,
         bgv_plain_b, kBgvFactorB, g_plaintext_modulus,
         secret_q, q_moduli, q_roots, rng);
     const Ciphertext bgv_auto_ct = automorphism_and_keyswitch(
-        bgv_ct_a, 3, secret_q, galois_key_ntt,
+        bgv_ct_a, auto_galois_element, secret_q, galois_key_ntt,
         q_moduli, p_moduli, all_moduli, q_roots, all_roots);
     const Poly bgv_auto_phase_t = centered_rns_to_modulus(
         decrypt_ciphertext(bgv_auto_ct, secret_q, q_moduli, q_roots),
@@ -3945,6 +4304,7 @@ void generate(const std::filesystem::path& output_root,
            << "  \"bfv_num_b\": " << g_bfv_num_b << ",\n"
            << "  \"hpu_mem_max_lines\": " << g_hpu_mem_max_lines << ",\n"
            << "  \"dnum\": " << g_dnum << ",\n"
+           << "  \"auto_galois_element\": " << g_auto_galois_element << ",\n"
            << "  \"plaintext_modulus\": " << g_plaintext_modulus << ",\n"
            << "  \"seed\": \"" << hex64(g_seed) << "\",\n"
            << "  \"basis_order\": \"Q[0.." << (g_num_q - 1)
@@ -4189,13 +4549,19 @@ void generate(const std::filesystem::path& output_root,
                      hpu::scheme::bgv::decode_slots(
                          bgv_plain_a, g_plaintext_modulus),
                      "decoded")},
-                {"auto_x3_expected_slots.csv", "expected X->X^3 row rotations",
+                {"rotate_left_1_expected_slots.csv",
+                 "expected generator-3 two-row rotation left by one slot",
+                 signed_values_csv(bgv_left_one_slots, "expected")},
+                {"auto_expected_slots.csv",
+                 "expected slots for the configured Galois element",
                  signed_values_csv(bgv_expected_auto_slots, "expected")},
-                {"auto_x3_decoded_slots.csv", "ciphertext Auto decoded row rotations",
+                {"auto_decoded_slots.csv",
+                 "ciphertext Auto decoded slots for the configured Galois element",
                  signed_values_csv(bgv_auto_decoded_slots, "rotated")},
                 {"validation.txt", "host Encode/Decode and Auto status",
                  "PASS\ncoefficient_roundtrip=PASS\nbatch_roundtrip=PASS\n"
-                 "auto_x_to_x3_ciphertext_keyswitch_two_rows_left_rotate=PASS\n"},
+                 "generator3_two_rows_left_rotate=PASS\n"
+                 "configured_auto_ciphertext_keyswitch=PASS\n"},
             });
 
         case_artifacts.clear();
@@ -4597,7 +4963,7 @@ void generate(const std::filesystem::path& output_root,
                      "decoded")},
                 {"rotate_left_1_expected_slots.csv",
                  "expected BFV two-row rotation left by one slot",
-                 signed_values_csv(bgv_expected_auto_slots, "expected")},
+                 signed_values_csv(bgv_left_one_slots, "expected")},
                 {"validation.txt", "BFV host Encode/Decode status",
                  "PASS\ncoefficient_roundtrip=PASS\nbatch_roundtrip=PASS\n"},
             });
@@ -5721,12 +6087,13 @@ void generate(const std::filesystem::path& output_root,
                            all_moduli, all_roots,
                            TwiddleRequirement::kRequired);
 
+        {
         case_artifacts.clear();
         words.clear();
-        append_words(words, auto_rotated[0]);
-        append_words(words, auto_rotated[1]);
-        add_artifact(case_artifacts, "input_rotated_q.bin",
-                     "CPU-applied negacyclic x->x^3 ciphertext",
+        append_words(words, ct_a[0]);
+        append_words(words, ct_a[1]);
+        add_artifact(case_artifacts, "input/ciphertext_q.bin",
+                     "original ciphertext before the HPU automorphism",
                      {2, g_num_q, g_n}, std::move(words),
                      {"component[c0,c1]", "basis_q", "coefficient"});
         words.clear();
@@ -5734,37 +6101,325 @@ void generate(const std::filesystem::path& output_root,
             append_words(words, digit[0]);
             append_words(words, digit[1]);
         }
-        add_artifact(case_artifacts, "galois_key_ntt_qp.bin",
-                     "Galois key switching sigma_3(s) back to s",
+        add_artifact(case_artifacts, "constants/galois_key_ntt_qp.bin",
+                     "Galois key switching sigma_g(s) back to s",
                      {g_dnum, 2, g_num_q + g_num_p, g_n}, std::move(words),
                      {"digit", "component[ks0,ks1]", "basis_q_then_p",
                       "coefficient"}, HardwareDomain::kNtt);
+        add_hybrid_keyswitch_support_artifacts(
+            case_artifacts, q_moduli, p_moduli, g_dnum);
+
+        const std::size_t auto_workspace_polynomials =
+            3 * all_moduli.size()
+            + std::max(digit_size, p_moduli.size())
+            + 5 * q_moduli.size();
+        add_artifact(
+            case_artifacts, "runtime/auto_workspace.bin",
+            "Auto transform, KeySwitch, ModDown, and output workspace",
+            {auto_workspace_polynomials, g_n},
+            Poly(auto_workspace_polynomials * g_n, 0),
+            {"workspace_polynomial", "coefficient"});
+
+        words.clear();
+        append_words(words, auto_c0_ntt);
+        add_artifact(
+            case_artifacts, "expected/c0_fused_ntt_q.bin",
+            "c0 after standard forward NTT",
+            {g_num_q, g_n}, std::move(words),
+            {"basis_q", "coefficient"}, HardwareDomain::kNtt, false);
+        words.clear();
+        append_words(words, auto_c0_coeff);
+        add_artifact(
+            case_artifacts, "expected/c0_automorphed_q.bin",
+            "c0 after standard NTT and fused Auto INTT",
+            {g_num_q, g_n}, std::move(words),
+            {"basis_q", "coefficient"}, HardwareDomain::kCoefficient, false);
+        words.clear();
+        append_words(words, auto_c1_ntt);
+        add_artifact(
+            case_artifacts, "expected/c1_standard_ntt_q.bin",
+            "c1 after standard forward NTT",
+            {g_num_q, g_n}, std::move(words),
+            {"basis_q", "coefficient"}, HardwareDomain::kNtt, false);
+        words.clear();
+        append_words(words, auto_c1_coeff);
+        add_artifact(
+            case_artifacts, "expected/c1_automorphed_q.bin",
+            "c1 after standard NTT and fused Auto INTT",
+            {g_num_q, g_n}, std::move(words),
+            {"basis_q", "coefficient"}, HardwareDomain::kCoefficient, false);
+        words.clear();
+        for (const BasisPoly& digit : auto_modup_coeff) {
+            append_words(words, digit);
+        }
+        add_artifact(
+            case_artifacts, "expected/c1_modup_coeff_qp.bin",
+            "original c1 digits after ModUp",
+            {g_dnum, all_moduli.size(), g_n}, std::move(words),
+            {"digit", "basis_qp", "coefficient"},
+            HardwareDomain::kCoefficient, false);
+        words.clear();
+        for (const BasisPoly& digit : auto_modup_ntt) {
+            append_words(words, digit);
+        }
+        add_artifact(
+            case_artifacts, "expected/c1_modup_standard_ntt_qp.bin",
+            "automorphed c1 digits after ModUp and standard NTT",
+            {g_dnum, all_moduli.size(), g_n}, std::move(words),
+            {"digit", "basis_qp", "coefficient"}, HardwareDomain::kNtt, false);
+        words.clear();
+        append_words(words, auto_keyswitch_ntt[0]);
+        append_words(words, auto_keyswitch_ntt[1]);
+        add_artifact(
+            case_artifacts, "expected/keyswitch_accum_ntt_qp.bin",
+            "Galois KeySwitch accumulators in standard NTT domain",
+            {2, all_moduli.size(), g_n}, std::move(words),
+            {"component[ks0,ks1]", "basis_qp", "coefficient"},
+            HardwareDomain::kNtt, false);
+        words.clear();
+        append_words(words, auto_keyswitch_qp[0]);
+        append_words(words, auto_keyswitch_qp[1]);
+        add_artifact(
+            case_artifacts, "expected/keyswitch_coeff_qp.bin",
+            "Galois KeySwitch accumulators after standard INTT",
+            {2, all_moduli.size(), g_n}, std::move(words),
+            {"component[ks0,ks1]", "basis_qp", "coefficient"},
+            HardwareDomain::kCoefficient, false);
+        words.clear();
+        append_words(words, auto_keyswitch_q[0]);
+        append_words(words, auto_keyswitch_q[1]);
+        add_artifact(
+            case_artifacts, "expected/keyswitch_moddown_q.bin",
+            "Galois KeySwitch result after ModDown",
+            {2, g_num_q, g_n}, std::move(words),
+            {"component[ks0,ks1]", "basis_q", "coefficient"},
+            HardwareDomain::kCoefficient, false);
         words.clear();
         append_words(words, auto_output[0]);
         append_words(words, auto_output[1]);
-        add_artifact(case_artifacts, "expected_q.bin",
+        add_artifact(case_artifacts, "expected/ciphertext_q.bin",
                      "automorphed and Galois-key-switched ciphertext",
                      {2, g_num_q, g_n}, std::move(words),
-                     {"component[c0,c1]", "basis_q", "coefficient"});
+                     {"component[c0,c1]", "basis_q", "coefficient"},
+                     HardwareDomain::kCoefficient, false);
+        const std::string auto_profile =
+            "auto_intt_g" + std::to_string(auto_galois_element);
         write_case_package(*suite_root, "auto",
                            common_params("auto",
-                                         "CPU coefficient automorphism/Q + Galois key/NTT/QP",
+                                         "original ciphertext/Q + Galois key/NTT/QP",
                                          "ciphertext/coefficient/Q", all_moduli),
                            std::move(case_artifacts), all_moduli, all_roots,
-                           TwiddleRequirement::kRequired);
+                           TwiddleRequirement::kRequired,
+                           {},
+                           {{auto_profile, auto_inverse_roots,
+                             auto_galois_element}});
+
+        const auto auto_catalog = read_line_catalog(
+            *suite_root / "auto" / "test_data" / "hardware" / "line_map.csv");
+        DmaPlanBuilder auto_dma(auto_catalog);
+        const auto auto_polys = [&auto_dma](
+            const std::string& artifact,
+            std::size_t first,
+            std::size_t count,
+            const std::string& label) {
+            std::vector<DmaSpan> spans;
+            for (std::size_t index = 0; index < count; ++index) {
+                spans.push_back(auto_dma.poly(
+                    artifact, first + index,
+                    label + "[" + std::to_string(index) + "]"));
+            }
+            return spans;
+        };
+        const std::string auto_input = "images/input/ciphertext_q.u32.bin";
+        const std::string auto_workspace =
+            "images/runtime/auto_workspace.u32.bin";
+        const std::size_t total_qp = all_moduli.size();
+        const std::size_t normalized_count =
+            std::max(digit_size, p_moduli.size());
+        const auto input_c0 = auto_polys(
+            auto_input, 0, q_moduli.size(), "input.c0.q");
+        const auto input_c1 = auto_polys(
+            auto_input, q_moduli.size(), q_moduli.size(), "input.c1.q");
+        const auto modup_workspace = auto_polys(
+            auto_workspace, 0, total_qp, "modup.current_qp");
+        std::array<std::vector<DmaSpan>, 2> auto_accumulator{
+            auto_polys(
+                auto_workspace, total_qp, total_qp,
+                "keyswitch.accum0.qp"),
+            auto_polys(
+                auto_workspace, 2 * total_qp, total_qp,
+                "keyswitch.accum1.qp")};
+        const auto normalized_scratch = auto_polys(
+            auto_workspace, 3 * total_qp, normalized_count,
+            "keyswitch.bconv_normalized");
+        const auto moddown_correction = auto_polys(
+            auto_workspace, 3 * total_qp + normalized_count,
+            q_moduli.size(), "keyswitch.moddown_correction_q");
+        const auto transformed_c0 = auto_polys(
+            auto_workspace,
+            3 * total_qp + normalized_count + q_moduli.size(),
+            q_moduli.size(), "auto.transformed_c0.q");
+        const auto transformed_c1 = auto_polys(
+            auto_workspace,
+            3 * total_qp + normalized_count + 2 * q_moduli.size(),
+            q_moduli.size(), "auto.transformed_c1.q");
+        const auto output_q = auto_polys(
+            auto_workspace,
+            3 * total_qp + normalized_count + 3 * q_moduli.size(),
+            2 * q_moduli.size(), "output.ciphertext_q");
+        std::vector<int> q_contexts;
+        std::vector<int> qp_contexts;
+        for (std::size_t basis = 0; basis < q_moduli.size(); ++basis) {
+            q_contexts.push_back(static_cast<int>(basis));
+        }
+        for (std::size_t basis = 0; basis < total_qp; ++basis) {
+            qp_contexts.push_back(static_cast<int>(basis));
+        }
+
+        auto_dma.fused_automorphism_transform(
+            {input_c0, input_c1}, {transformed_c0, transformed_c1},
+            q_contexts, auto_profile);
+        for (std::size_t digit = 0; digit < g_dnum; ++digit) {
+            const std::size_t q_offset = digit * digit_size;
+            std::vector<DmaSpan> digit_source;
+            std::vector<DmaSpan> digit_inverse;
+            std::vector<DmaSpan> digit_normalized;
+            for (std::size_t source = 0; source < digit_size; ++source) {
+                digit_source.push_back(transformed_c1[q_offset + source]);
+                digit_inverse.push_back(auto_dma.poly(
+                    "images/constants/modup_digit_qhat_inv.u32.bin",
+                    digit * digit_size + source,
+                    "modup.d" + std::to_string(digit)
+                        + ".qhat_inv" + std::to_string(source)));
+                digit_normalized.push_back(normalized_scratch[source]);
+                auto_dma.load(0, digit_source.back());
+                auto_dma.store(0, modup_workspace[q_offset + source]);
+            }
+            std::vector<std::vector<DmaSpan>> digit_target_constants;
+            std::vector<DmaSpan> digit_targets;
+            for (std::size_t target = 0; target < total_qp; ++target) {
+                if (target >= q_offset && target < q_offset + digit_size) {
+                    continue;
+                }
+                std::vector<DmaSpan> target_row;
+                for (std::size_t source = 0; source < digit_size; ++source) {
+                    target_row.push_back(auto_dma.poly(
+                        "images/constants/modup_digit_qhat_mod_qp.u32.bin",
+                        (digit * total_qp + target) * digit_size + source,
+                        "modup.d" + std::to_string(digit)
+                            + ".target" + std::to_string(target)
+                            + ".source" + std::to_string(source)));
+                }
+                digit_target_constants.push_back(std::move(target_row));
+                digit_targets.push_back(modup_workspace[target]);
+            }
+            auto_dma.bconv(
+                digit_source, digit_inverse, digit_target_constants,
+                digit_normalized, digit_targets);
+            auto_dma.transform(
+                {modup_workspace}, qp_contexts, false);
+
+            for (std::size_t component = 0; component < 2; ++component) {
+                for (std::size_t basis = 0; basis < total_qp; ++basis) {
+                    const std::size_t key_index =
+                        (digit * 2 + component) * total_qp + basis;
+                    const DmaSpan key = auto_dma.poly(
+                        "images/constants/galois_key_ntt_qp.u32.bin",
+                        key_index,
+                        "galois_key.d" + std::to_string(digit)
+                            + ".c" + std::to_string(component)
+                            + ".basis" + std::to_string(basis));
+                    auto_dma.load(0, modup_workspace[basis]);
+                    auto_dma.load(1, key);
+                    if (digit != 0) {
+                        auto_dma.load(2, auto_accumulator[component][basis]);
+                    }
+                    auto_dma.store(2, auto_accumulator[component][basis]);
+                }
+            }
+        }
+        auto_dma.transform(
+            {auto_accumulator[0], auto_accumulator[1]},
+            qp_contexts, true);
+
+        const auto p_source_inverse = auto_polys(
+            "images/constants/moddown_p_qhat_inv.u32.bin",
+            0, p_moduli.size(), "moddown.p_qhat_inverse");
+        std::vector<std::vector<DmaSpan>> p_target_q;
+        for (std::size_t target = 0; target < q_moduli.size(); ++target) {
+            p_target_q.push_back(auto_polys(
+                "images/constants/moddown_p_qhat_mod_q.u32.bin",
+                target * p_moduli.size(), p_moduli.size(),
+                "moddown.p_qhat_mod_q.target" + std::to_string(target)));
+        }
+        const auto p_inverse_q = auto_polys(
+            "images/constants/p_inverse_mod_q.u32.bin",
+            0, q_moduli.size(), "moddown.p_inverse_mod_q");
+        for (std::size_t component = 0; component < 2; ++component) {
+            const std::vector<DmaSpan> source_p(
+                auto_accumulator[component].begin()
+                    + static_cast<std::ptrdiff_t>(g_num_q),
+                auto_accumulator[component].end());
+            const std::vector<DmaSpan> normalized_p(
+                normalized_scratch.begin(),
+                normalized_scratch.begin()
+                    + static_cast<std::ptrdiff_t>(p_moduli.size()));
+            auto_dma.bconv(
+                source_p, p_source_inverse, p_target_q,
+                normalized_p, moddown_correction);
+            auto_dma.load_mod_context();
+            for (std::size_t basis = 0; basis < q_moduli.size(); ++basis) {
+                auto_dma.load(0, auto_accumulator[component][basis]);
+                auto_dma.load(1, moddown_correction[basis]);
+                auto_dma.load(2, p_inverse_q[basis]);
+                if (component == 0) {
+                    auto_dma.store(0, auto_accumulator[component][basis]);
+                } else {
+                    auto_dma.store(0, output_q[q_moduli.size() + basis]);
+                }
+            }
+        }
+        auto_dma.load_mod_context();
+        for (std::size_t basis = 0; basis < q_moduli.size(); ++basis) {
+            auto_dma.load(0, auto_accumulator[0][basis]);
+            auto_dma.load(1, transformed_c0[basis]);
+            auto_dma.store(2, output_q[basis]);
+        }
+        write_resolved_dma_plan(*suite_root, "auto", auto_dma.records());
+
+        const auto rotation_step = hpu::rotation_step_from_galois_element(
+            g_n, auto_galois_element);
+        std::ostringstream auto_layout;
+        auto_layout
+            << "{\n"
+            << "  \"galois_element\": " << auto_galois_element << ",\n"
+            << "  \"generator3_rotation_step\": ";
+        if (rotation_step.has_value()) {
+            auto_layout << *rotation_step;
+        } else {
+            auto_layout << "null";
+        }
+        auto_layout
+            << ",\n"
+            << "  \"coefficient_map\": \"dst=(src*galois_element) mod 2N; negate when dst>=N\",\n"
+            << "  \"host_preprocess\": false,\n"
+            << "  \"inverse_galois_element_mod_2N\": " << auto_inverse_element << ",\n"
+            << "  \"inverse_twiddle_profile\": \"" << auto_profile << "\",\n"
+            << "  \"inverse_root_rule\": \"psi_auto=psi^(galois_element^-1 mod 2N) mod q_i\",\n"
+            << "  \"hpu_stage\": \"standard NTT plus fused automorphism INTT, then Galois KeySwitch\"\n"
+            << "}\n";
         write_text(*suite_root / "auto" / "test_data" / "AUTO_LAYOUT.json",
-                   "{\n"
-                   "  \"auto_index\": " + std::to_string(g_auto_index) + ",\n"
-                   "  \"galois_element\": " + std::to_string(kAutoGaloisElement) + ",\n"
-                   "  \"coefficient_map\": \"dst=(src*galois_element) mod 2N; negate when dst>=N\",\n"
-                   "  \"cpu_preprocess\": true,\n"
-                   "  \"hpu_stage\": \"Galois KeySwitch only\"\n"
-                   "}\n");
+                   auto_layout.str());
+
+        std::ostringstream auto_status;
+        auto_status
+            << "PASS: configured Galois element g=" << auto_galois_element
+            << " is applied on HPU by standard NTT followed by the psi^(g^-1) inverse "
+            << "profile. The original ciphertext is loaded without host permutation; "
+            << "hybrid Galois KeySwitch then returns a ciphertext under the original secret.\n";
         write_text(*suite_root / "auto" / "test_data" / "STATUS.md",
-                   "PASS: auto index 1 is frozen to negacyclic x->x^3. The CPU performs the "
-                   "coefficient permutation because the frozen 11-instruction HPU ISA has no "
-                   "shuffle opcode; the generated HPU program performs the complete Galois "
-                   "KeySwitch with bit-exact input/key/output artifacts.\n");
+                   auto_status.str());
+        }
     }
 
     std::cout << "Generated " << artifacts.size() << " binary artifacts in " << output_root << '\n';
@@ -5803,7 +6458,7 @@ int main(int argc, char* argv[])
         g_num_p = config.num_p;
         g_bfv_num_b = config.bfv_num_b;
         g_dnum = config.dnum;
-        g_auto_index = config.auto_index;
+        g_auto_galois_element = config.auto_galois_element;
         g_plaintext_modulus = config.plaintext_modulus;
         g_seed = config.seed;
         g_hpu_mem_max_lines = config.hpu_mem_max_lines;
@@ -5818,6 +6473,7 @@ int main(int argc, char* argv[])
                   << " (N=" << g_n << ", Q=" << g_num_q
                   << ", P=" << g_num_p << ", B=" << g_bfv_num_b
                   << ", dnum=" << g_dnum
+                  << ", auto_g=" << g_auto_galois_element
                   << ", HPU_MEM_MAX=" << g_hpu_mem_max_lines << ")\n";
         generate(output, positional.size() > 1 ? &suite : nullptr);
         return 0;

@@ -99,7 +99,7 @@ struct AutoConfig {
 	int num_q;
 	int num_p;
 	int dnum;
-	int auto_idx;
+	std::uint64_t galois_element;
 };
 
 struct CiphertextMultiplyConfig {
@@ -147,7 +147,6 @@ void configure_generators(const hpu::test::FheTestConfig& config)
 	const int num_q = static_cast<int>(config.num_q);
 	const int num_p = static_cast<int>(config.num_p);
 	const int dnum = static_cast<int>(config.dnum);
-	const int auto_index = static_cast<int>(config.auto_index);
 
 	g_ntt_cfg = {N, 0, 1, 2};
 	g_bconv_cfg = {
@@ -156,7 +155,7 @@ void configure_generators(const hpu::test::FheTestConfig& config)
 	g_pmult_cfg = {num_q, 0, 1, 2, 3, 4, 5};
 	g_cmult_cfg = {num_q, 0, 1, 2, 3, 4, 5, 6, 7};
 	g_moddown_cfg = {num_q, num_p, 0, 1, 2, 3, 4, 5, 6, 7};
-	g_auto_cfg = {N, num_q, num_p, dnum, auto_index};
+	g_auto_cfg = {N, num_q, num_p, dnum, config.auto_galois_element};
 	g_ciphertext_multiply_cfg = {N, num_q, num_p, dnum};
 	g_rescale_cfg = {num_q, 2};
 	g_bgv_modswitch_cfg = {num_q, num_p, 2};
@@ -455,7 +454,7 @@ void test_auto_codegen()
 		g_auto_cfg.num_q,
 		g_auto_cfg.num_p,
 		g_auto_cfg.dnum,
-		g_auto_cfg.auto_idx,
+		g_auto_cfg.galois_element,
 		true);
 	std::ofstream("output/auto.cpp") << auto_code;
 	std::cout << "Saved auto ASM to output/auto.cpp\n";
@@ -467,7 +466,7 @@ void test_auto_codegen()
 		g_auto_cfg.num_q,
 		g_auto_cfg.num_p,
 		g_auto_cfg.dnum,
-		g_auto_cfg.auto_idx,
+		g_auto_cfg.galois_element,
 		true);
 	std::ofstream("output/auto.asm") << auto_body;
 	std::cout << "Saved auto body ASM to output/auto.asm\n";

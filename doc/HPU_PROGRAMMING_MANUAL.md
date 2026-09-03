@@ -1126,9 +1126,28 @@ merge t1+ks1
 dstore ciphertext_out_q[0], ciphertext_out_q[1]
 ```
 
-Auto 的 HPU 侧绑定与 KeySwitch 相同；差异是 host 先对两个输入分量执行负循环
-`X->X^3`，随后以旋转后的 `c0` 为 base、旋转后的 `c1` 为 switching component，
-EVK 使用 Galois key。
+Auto 直接接收未置换的系数域密文。HPU 对 `c0`、`c1` 分别执行标准
+`NTT_psi`，随后执行根为 `psi^(g^-1 mod 2N)` 的专用 `INTT`。该组合严格等于
+负循环自同构 `X->X^g`。变换后的 `c0` 作为 base，变换后的 `c1` 作为 switching
+component，再执行普通 ModUp、标准 NTT、Galois-key 乘累加、标准 INTT 和 ModDown。
+自同构必须位于 ModUp 之前；当前 FastBConv 使用 canonical residue 的快速近似转换，
+不能把带负号折返的自同构任意移动到 ModUp 之后。
+
+`pntt/pintt` 指令本身不编码 `g`。runtime 必须按 `dma_plan.csv` 让 Auto 前置阶段的
+`pintt` twiddle load 指向 `constants/twiddle/auto_intt_g<g>/`，其中每个模上下文使用
+`psi_auto=psi^(g^-1 mod 2N) mod q_i`；其余 KeySwitch 变换仍使用标准 `ntt/intt`
+profile。EVK 必须是同一个 `g` 对应的 Galois key。
+对源系数 `a_i X^i`，目标指数为 `e=(i*g) mod 2N`：`e<N` 时写入 `a_i X^e`，
+否则写入 `-a_i X^(e-N)`。合法值满足 `1<=g<2N` 且 `gcd(g,2N)=1`。
+
+generator-3 槽位布局中，行旋转 `step` 对应 `g=3^step mod 2N`；负 `step` 表示
+反向旋转，`g=2N-1` 表示 CKKS 共轭或 BGV/BFV 两行交换。软件可使用
+`hpu::galois_element_from_rotation_step` 和 `hpu::conjugation_galois_element` 计算这些
+元素。正确性由 Auto INTT profile、Galois key、resolved DMA plan 和
+`AUTO_LAYOUT.json` 使用相同的 `g` 来保证；host 只生成输入与 golden，不执行待测置换。
+一个 Auto 调用只对应一个 `g`。向量规约等流程应为所需步长分别生成 Auto 调用，
+例如左旋 `1,2,4,...` 分别使用 `3^1,3^2,3^4,... mod 2N`，runtime 必须随调用选择
+同一 `g` 的 Galois key，不能复用其他旋转步长的 key。
 
 ### C.6 CKKS 方案算子
 

@@ -95,7 +95,8 @@ if(BUILD_TESTING)
             invalid_plaintext_modulus
             invalid_bgv_batching_modulus
             invalid_composite_plaintext_modulus
-            invalid_bfv_num_b)
+            invalid_bfv_num_b
+            invalid_auto_galois_element)
         add_test(
                 NAME hpu_config_rejects_${INVALID_CONFIG}
                 COMMAND inline_asm_codegen
@@ -106,6 +107,21 @@ if(BUILD_TESTING)
                 hpu_config_rejects_${INVALID_CONFIG}
                 PROPERTIES WILL_FAIL TRUE)
     endforeach()
+
+    set(HPU_AUTO_GENERAL_CODEGEN_DIR
+        "${CMAKE_CURRENT_BINARY_DIR}/auto_galois_9_codegen")
+    file(MAKE_DIRECTORY "${HPU_AUTO_GENERAL_CODEGEN_DIR}/output")
+    add_test(
+            NAME hpu_auto_accepts_general_galois_element
+            COMMAND inline_asm_codegen
+                    asm
+                    --config ${CMAKE_CURRENT_SOURCE_DIR}/test/config/valid_auto_galois_9.conf
+    )
+    set_tests_properties(
+            hpu_auto_accepts_general_galois_element
+            PROPERTIES
+            WORKING_DIRECTORY "${HPU_AUTO_GENERAL_CODEGEN_DIR}"
+            PASS_REGULAR_EXPRESSION "Saved auto body ASM")
 
     add_executable(hpu_scheme_encode_self_test
             test/scheme_encode_self_test.cpp

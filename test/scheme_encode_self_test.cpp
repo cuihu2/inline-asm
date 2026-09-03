@@ -1,6 +1,7 @@
 #include "scheme/bgv/encode.hpp"
 #include "scheme/ckks/encode.hpp"
 #include "scheme/bfv/encode.hpp"
+#include "util/galois.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -32,22 +33,53 @@ void expect_failure(const std::function<void()>& action, const std::string& name
     throw std::runtime_error("expected failure: " + name);
 }
 
-std::vector<std::uint64_t> apply_galois_3(
+std::vector<std::uint64_t> apply_galois(
     const std::vector<std::uint64_t>& coefficients,
+    std::uint64_t galois_element,
     std::uint64_t modulus)
 {
     const std::size_t N = coefficients.size();
+    require(hpu::is_valid_galois_element(N, galois_element),
+            "test Galois element");
     std::vector<std::uint64_t> result(N, 0);
     for (std::size_t source = 0; source < N; ++source) {
-        const std::size_t exponent = (3 * source) % (2 * N);
-        if (exponent < N) {
-            result[exponent] = coefficients[source] % modulus;
+        const auto target = hpu::map_negacyclic_automorphism_index(
+            N, source, galois_element);
+        if (!target.negate) {
+            result[target.index] = coefficients[source] % modulus;
         } else {
             const auto value = coefficients[source] % modulus;
-            result[exponent - N] = value == 0 ? 0 : modulus - value;
+            result[target.index] = value == 0 ? 0 : modulus - value;
         }
     }
     return result;
+}
+
+void test_galois_elements()
+{
+    constexpr std::size_t N = 16;
+    require(hpu::galois_element_from_rotation_step(N, 0) == 1,
+            "identity Galois element");
+    require(hpu::galois_element_from_rotation_step(N, 1) == 3,
+            "one-step Galois element");
+    require(hpu::galois_element_from_rotation_step(N, 2) == 9,
+            "two-step Galois element");
+    require(hpu::galois_element_from_rotation_step(N, -1) == 11,
+            "negative-step Galois element");
+    require(hpu::rotation_step_from_galois_element(N, 9).value() == 2,
+            "recover generator-3 rotation step");
+    require(hpu::conjugation_galois_element(N) == 31,
+            "conjugation Galois element");
+    require(!hpu::rotation_step_from_galois_element(N, 31).has_value(),
+            "conjugation is outside the generator-3 rotation subgroup");
+    require(!hpu::is_valid_galois_element(N, 2),
+            "even Galois element rejected");
+    require(!hpu::is_valid_galois_element(N, 33),
+            "out-of-range Galois element rejected");
+    const auto negated_target = hpu::map_negacyclic_automorphism_index(
+        N, 10, 3);
+    require(negated_target.index == 14 && negated_target.negate,
+            "negacyclic Galois coefficient map");
 }
 
 void test_ckks()
@@ -127,7 +159,8 @@ void test_bgv()
     const auto decoded = hpu::scheme::bgv::decode_slots(batched, t);
     require(decoded == slots, "BGV batch round-trip");
 
-    const auto rotated_coefficients = apply_galois_3(batched, t);
+    const auto rotated_coefficients = apply_galois(
+        batched, hpu::galois_element_from_rotation_step(N, 1), t);
     const auto rotated_slots = hpu::scheme::bgv::decode_slots(
         rotated_coefficients, t);
     const std::size_t row_size = N / 2;
@@ -136,6 +169,19 @@ void test_bgv()
             const auto expected = slots[row * row_size + (column + 1) % row_size];
             require(rotated_slots[row * row_size + column] == expected,
                     "BGV generator-3 row rotation");
+        }
+    }
+
+    const auto rotated_twice_coefficients = apply_galois(
+        batched, hpu::galois_element_from_rotation_step(N, 2), t);
+    const auto rotated_twice_slots = hpu::scheme::bgv::decode_slots(
+        rotated_twice_coefficients, t);
+    for (std::size_t row = 0; row < 2; ++row) {
+        for (std::size_t column = 0; column < row_size; ++column) {
+            const auto expected = slots[
+                row * row_size + (column + 2) % row_size];
+            require(rotated_twice_slots[row * row_size + column] == expected,
+                    "BGV general generator-3 row rotation");
         }
     }
 
@@ -175,7 +221,8 @@ void test_bfv()
     require(hpu::scheme::bfv::decode_slots(encoded_slots, t) == slots,
             "BFV batch round-trip");
 
-    const auto rotated_coefficients = apply_galois_3(encoded_slots, t);
+    const auto rotated_coefficients = apply_galois(
+        encoded_slots, hpu::galois_element_from_rotation_step(N, 1), t);
     const auto rotated_slots = hpu::scheme::bfv::decode_slots(
         rotated_coefficients, t);
     const std::size_t row_size = N / 2;
@@ -208,6 +255,7 @@ void test_bfv()
 int main()
 {
     try {
+        test_galois_elements();
         test_ckks();
         test_bgv();
         test_bfv();

@@ -25,6 +25,7 @@ read_json_integer("${FHE_PARAMS}" "num_p" FHE_NUM_P)
 read_json_integer("${FHE_PARAMS}" "bfv_num_b" FHE_BFV_NUM_B)
 read_json_integer("${FHE_PARAMS}" "hpu_mem_max_lines" FHE_HPU_MEM_MAX_LINES)
 read_json_integer("${FHE_PARAMS}" "dnum" FHE_DNUM)
+read_json_integer("${FHE_PARAMS}" "auto_galois_element" FHE_AUTO_GALOIS_ELEMENT)
 read_json_integer("${FHE_PARAMS}" "plaintext_modulus" FHE_PLAINTEXT_MODULUS)
 if(NOT FHE_PLAINTEXT_MODULUS EQUAL 65537)
     message(FATAL_ERROR
@@ -126,7 +127,9 @@ set(REQUIRED_FILES
     "outputs/bgv_encode/test_data/host/batch_slots.csv"
     "outputs/bgv_encode/test_data/host/batch_coefficients_mod_t.csv"
     "outputs/bgv_encode/test_data/host/batch_decoded_slots.csv"
-    "outputs/bgv_encode/test_data/host/auto_x3_decoded_slots.csv"
+    "outputs/bgv_encode/test_data/host/rotate_left_1_expected_slots.csv"
+    "outputs/bgv_encode/test_data/host/auto_expected_slots.csv"
+    "outputs/bgv_encode/test_data/host/auto_decoded_slots.csv"
     "outputs/bgv_encode/test_data/host/host_manifest.csv"
     "outputs/bgv_encode/test_data/host/validation.txt"
     "outputs/ckks_rescale/test_data/input_q.bin"
@@ -224,7 +227,7 @@ function(CHECK_RESOLVED_DMA_PLAN CASE_NAME)
     endforeach()
 endfunction()
 
-foreach(RESOLVED_DMA_CASE bfv_ciphertext_multiply bfv_modswitch bconv)
+foreach(RESOLVED_DMA_CASE bfv_ciphertext_multiply bfv_modswitch bconv auto)
     CHECK_RESOLVED_DMA_PLAN(${RESOLVED_DMA_CASE})
 endforeach()
 
@@ -247,6 +250,7 @@ foreach(CASE_NAME IN LISTS TWIDDLE_CASES)
         "outputs/${CASE_NAME}/test_data/hardware/twiddle_map.csv")
 endforeach()
 list(APPEND REQUIRED_FILES "outputs/auto/test_data/STATUS.md")
+list(APPEND REQUIRED_FILES "outputs/auto/test_data/AUTO_LAYOUT.json")
 
 if(EXISTS "${ROOT}/output/rescale.asm"
         OR EXISTS "${ROOT}/output/rescale.cpp"
@@ -570,6 +574,30 @@ string(FIND "${AUTO_SOURCE}"
     "generate_hpu_keyswitch_body_asm" AUTO_KEYSWITCH_POSITION)
 if(AUTO_KEYSWITCH_POSITION EQUAL -1)
     message(FATAL_ERROR "AUTO does not reuse the complete Galois KeySwitch stream")
+endif()
+if(AUTO_SOURCE MATCHES "auto_idx|only index 1|Galois element 3 is frozen")
+    message(FATAL_ERROR "AUTO source still contains the fixed index-1 implementation")
+endif()
+file(READ "${ROOT}/outputs/auto/test_data/AUTO_LAYOUT.json" AUTO_LAYOUT)
+if(NOT AUTO_LAYOUT MATCHES
+        "\"galois_element\"[ \t\r\n]*:[ \t\r\n]*${FHE_AUTO_GALOIS_ELEMENT}")
+    message(FATAL_ERROR
+        "AUTO layout Galois element does not match the shared configuration")
+endif()
+if(NOT AUTO_LAYOUT MATCHES "\"host_preprocess\"[ \t\r\n]*:[ \t\r\n]*false")
+    message(FATAL_ERROR "AUTO package still requires a host coefficient permutation")
+endif()
+if(NOT AUTO_LAYOUT MATCHES
+        "\"inverse_twiddle_profile\"[ \t\r\n]*:[ \t\r\n]*\"auto_intt_g${FHE_AUTO_GALOIS_ELEMENT}\"")
+    message(FATAL_ERROR "AUTO layout does not bind the configured inverse twiddle profile")
+endif()
+if(EXISTS "${ROOT}/outputs/auto/test_data/input_rotated_q.bin"
+        OR EXISTS "${ROOT}/outputs/auto/test_data/hardware/images/input_rotated_q.u32.bin")
+    message(FATAL_ERROR "AUTO package still contains the removed host-rotated input")
+endif()
+file(READ "${ROOT}/outputs/auto/test_data/hardware/twiddle_map.csv" AUTO_TWIDDLE_MAP)
+if(NOT AUTO_TWIDDLE_MAP MATCHES "auto_intt_g${FHE_AUTO_GALOIS_ELEMENT}")
+    message(FATAL_ERROR "AUTO twiddle map lacks the configured fused INTT profile")
 endif()
 
 file(READ "${ROOT}/output/modup.asm" MODUP_ASM)
@@ -1044,6 +1072,7 @@ file(WRITE "${ROOT}/outputs/DELIVERY_REPORT.txt"
     "FHE_BFV_NUM_B=${FHE_BFV_NUM_B}\n"
     "FHE_HPU_MEM_MAX_LINES=${FHE_HPU_MEM_MAX_LINES}\n"
     "FHE_DNUM=${FHE_DNUM}\n"
+    "FHE_AUTO_GALOIS_ELEMENT=${FHE_AUTO_GALOIS_ELEMENT}\n"
     "FHE_REFERENCE=PASS\n"
     "ASM_ENCODING=PASS\n"
     "PRECODE_CMD26=PASS\n"
@@ -1068,7 +1097,8 @@ file(WRITE "${ROOT}/outputs/DELIVERY_REPORT.txt"
     "SCHEME_ENCODE_HOST_BOUNDARY=PASS\n"
     "CKKS_GENERATOR3_CANONICAL_EMBEDDING=PASS\n"
     "BGV_GENERATOR3_BATCHING=PASS\n"
-    "BGV_AUTO_X3_ROW_ROTATION=PASS\n"
+    "BGV_GENERATOR3_ROW_ROTATION=PASS\n"
+    "GENERAL_GALOIS_AUTO=PASS\n"
     "CKKS_RESCALE_ROUNDED_DROP_LAST=PASS\n"
     "CKKS_MULTIPLY_RELINEARIZE_RESCALE=PASS\n"
     "BGV_MULTIPLY_CORRECTION_FACTOR=PASS\n"

@@ -1,4 +1,5 @@
 #include "config/fhe_test_config.hpp"
+#include "util/galois.hpp"
 #include "util/validation.hpp"
 
 #include <algorithm>
@@ -111,8 +112,9 @@ void validate(const FheTestConfig& config)
         throw std::runtime_error(
             "Q, Pks, BFV B, m_sk, and plaintext contexts exceed the 8-bit MOD_ID space");
     }
-    if (config.auto_index != 1) {
-        throw std::runtime_error("auto_index must be 1; only Galois element 3 is frozen");
+    if (!hpu::is_valid_galois_element(config.N, config.auto_galois_element)) {
+        throw std::runtime_error(
+            "auto_galois_element must satisfy 1 <= g < 2N and gcd(g, 2N) = 1");
     }
     if (config.plaintext_modulus < kMinPeModulus
         || config.plaintext_modulus > std::numeric_limits<std::uint32_t>::max()) {
@@ -153,7 +155,7 @@ FheTestConfig load_fhe_test_config(const std::filesystem::path& path)
         "bfv_num_b",
         "hpu_mem_max_lines",
         "dnum",
-        "auto_index",
+        "auto_galois_element",
         "plaintext_modulus",
         "seed",
     };
@@ -208,7 +210,7 @@ FheTestConfig load_fhe_test_config(const std::filesystem::path& path)
         checked_size(values, "bfv_num_b"),
         values.at("hpu_mem_max_lines"),
         checked_size(values, "dnum"),
-        checked_size(values, "auto_index"),
+        values.at("auto_galois_element"),
         values.at("plaintext_modulus"),
         values.at("seed"),
     };

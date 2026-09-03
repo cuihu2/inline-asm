@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 std::string generate_hpu_auto_body_asm(
@@ -7,7 +8,7 @@ std::string generate_hpu_auto_body_asm(
 	int num_q,
 	int num_p,
 	int dnum,
-	int auto_idx,
+	std::uint64_t galois_element,
 	bool append_psync = false);
 
 std::string generate_hpu_auto_asm(
@@ -15,5 +16,5 @@ std::string generate_hpu_auto_asm(
 	int num_q,
 	int num_p,
 	int dnum,
-	int auto_idx,
+	std::uint64_t galois_element,
 	bool append_psync = true);

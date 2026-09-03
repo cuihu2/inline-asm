@@ -718,9 +718,8 @@ void run_integer_scheme(
     reporter.exact(
         scheme, "fixture_reference_product", expected_product, fixture_actual);
 
-    const std::filesystem::path rotation_path = scheme == "BFV"
-        ? encode_host / "rotate_left_1_expected_slots.csv"
-        : encode_host / "auto_x3_expected_slots.csv";
+    const std::filesystem::path rotation_path =
+        encode_host / "rotate_left_1_expected_slots.csv";
     const auto rotation_signed = read_i64_column(
         rotation_path, "index", "expected", parameters.n);
     const auto expected_rotation = canonicalize(

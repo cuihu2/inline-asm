@@ -98,7 +98,7 @@ generated-operator relocation manifest；这不影响其独立数据包交付，
 
 `config/fhe_test.conf` 是唯一的参数输入。HPU 指令生成器和软件 reference 通过
 `hpu_test_config` 共享解析库读取同一份
-`N/num_q/num_p/bfv_num_b/hpu_mem_max_lines/dnum/auto_index/plaintext_modulus/seed`。默认
+`N/num_q/num_p/bfv_num_b/hpu_mem_max_lines/dnum/auto_galois_element/plaintext_modulus/seed`。默认
 `plaintext_modulus=65537`；BGV 以 `Q|P|t` 排列上下文，BFV 以
 `Q|Pks|B|m_sk|t` 排列。顶层 `hpu_delivery` 显式向两个程序传递
 CMake cache 变量 `HPU_TEST_CONFIG` 指向的同一路径，避免指令流与数据来自不同参数。
@@ -155,8 +155,10 @@ embedding，BGV/BFV 对 `N` 个槽位执行 generator-3 两行 batching；Decode
 执行。三者不再生成 HPU Encode 指令、RNS-Q NTT 镜像或 DMA。公共乘法之后，CKKS 执行 rounded Rescale 并验证
 `scale_out=scale_a*scale_b/q_last` 与近似误差；BGV 使用 correction factor `3`、`5`
 执行乘法，再按 `u=-c_last*q_last^-1 mod t` 降层并验证
-`cf_out=cf_in*q_last^-1 mod t`；`X->X^3` 还经过功能密文 Auto、Galois KeySwitch、
-解密和 BatchDecode，验证两行分别左旋一格。BFV 使用 no-SMRQ FastBConv、
+`cf_out=cf_in*q_last^-1 mod t`。Auto 直接加载原始密文，在 HPU 上以标准 NTT 加
+`psi^(g^-1 mod 2N)` 专用 INTT 对两个分量执行 `X->X^g`，再使用对应 Galois key
+做 KeySwitch、解密和 BatchDecode；默认 `g=3`
+时额外验证 generator-3 两行分别左旋一格。BFV 使用 no-SMRQ FastBConv、
 Q/Bsk tensor product、FastFloor 和 branchless-SK 生成三分量 Q 密文；同一指令流
 随即从相同 HPU_MEM span 执行 Q/Pks Relinearization，只有最终一个 `psync`，没有
 host copy 或第二次 window commit。随后可独立执行 rounded ModSwitch。完整边界见
@@ -230,7 +232,9 @@ twiddle。最终显式执行物理顺序的 `PMUL (N^-1 * psi^-i)`，不依赖 P
 卷积；自然顺序输入曾出现 round-trip 通过而卷积失败。当前 reference 因此额外检查
 `PNTT(a) * PNTT(b) -> PINTT` 的 negacyclic convolution，并逐项对照 coefficient
 image、NTT image、pre/post factor 和全部 stage twiddle。默认 Q0 的冻结结果为
-`AUTOTEST_ORACLE=PASS q=50061313 N=4096 ntt_stages=12 intt_stages=12`。
+`AUTOTEST_ORACLE=PASS q=50061313 N=4096 ntt_stages=12 intt_stages=12`。Auto 包还包含
+`auto_intt_g<g>` profile；`dma_plan.csv` 将前置融合阶段绑定到该 profile，并将后续
+KeySwitch 绑定回标准 profile。`input/ciphertext_q.bin` 未经过 host 自同构。
 
 ## 5. 失败定位
 

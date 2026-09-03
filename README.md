@@ -194,7 +194,7 @@ relocation manifest、line map 与 HPU_MEM 镜像。
 
 唯一输入配置为 `config/fhe_test.conf`。`inline_asm_codegen` 和
 `hpu_reference_vectors` 都通过共享解析库读取其中的 `N`、`num_q`、`num_p`、
-`bfv_num_b`、`hpu_mem_max_lines`、`dnum`、`auto_index`、`plaintext_modulus` 和
+`bfv_num_b`、`hpu_mem_max_lines`、`dnum`、`auto_galois_element`、`plaintext_modulus` 和
 `seed`；未知、重复、缺失或非法字段
 会使生成立即失败。`outputs/*/test_data/params.json` 仍是生成结果，不能作为配置
 入口，直接修改后会在下一次生成时被覆盖。
@@ -205,7 +205,15 @@ relocation manifest、line map 与 HPU_MEM 镜像。
 
 配置必须满足 `N` 为不小于 128 的 2 次幂、`ceil(N/64) <= 1024`（即
 `128 <= N <= 65536`）、`num_q >= 2`、`num_q % dnum == 0`、
-`num_q + num_p + bfv_num_b + 2 <= 256`，且当前 Auto 仅支持 `auto_index=1`。
+`num_q + num_p + bfv_num_b + 2 <= 256`。Auto 的 `auto_galois_element` 必须属于
+`Z_(2N)^*`，即 `1 <= g < 2N` 且 `gcd(g,2N)=1`；默认 `g=3` 表示 generator-3
+槽位布局下每行左旋一格。`hpu::galois_element_from_rotation_step(N,step)` 可把正负
+旋转步数转换为 `g=3^step mod 2N`，`hpu::conjugation_galois_element(N)` 返回共轭元素
+`2N-1`。Auto 不要求 runtime 预先置换系数：HPU 通过标准 NTT 和根为
+`psi^(g^-1 mod 2N)` 的专用 INTT profile 完成 `X->X^g`，随后执行 Galois KeySwitch。
+`hpu::map_negacyclic_automorphism_index` 用于 host golden 和编译器验证。独立测试包一次
+冻结一个 `g`；编译器需要多种旋转时可多次调用通用 Auto API，并为每个实际使用的
+`g` 同时绑定对应的 Auto twiddle profile 和 Galois key。
 BGV 固定 MOD_ID 顺序为 `Q|P|t`；BFV 固定为 `Q|Pks|B|m_sk|t`。`plaintext_modulus`
 必须是硬件可加载的奇数并满足 `65537 <= t <= 2^32-1`；默认值为
 `N=4096, Q=4, Pks=3, B=6, dnum=2, t=65537, hpu_mem_max_lines=65536`。
