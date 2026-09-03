@@ -95,6 +95,28 @@ The codegen regression test counts every PNTT/PINTT stage, so reintroducing the
 four input transforms is a test failure. Standalone operator demos keep their
 existing table-management behavior through default arguments.
 
+The first additional kernel is CKKS Rotate. For odd Galois element `k`, the
+SEAL adapter precomputes hardware INTT tables with `psi' = psi^(1/k) mod q` for
+every active q. The generated stream applies that modified-root INTT to `c0`
+and `c1`, which directly produces `sigma_k(c0),sigma_k(c1)` in coefficient
+order. It then performs Galois KeySwitch and transforms the two outputs back to
+canonical HPU NTT order. There is no CPU coefficient permutation and no
+intermediate modified-root NTT representation.
+
+If Rotate is split across kernel boundaries, the only extra persistent metadata
+is `{domain=coefficient,key_domain=k}` for the two resident polynomials. The
+runtime test freezes this contract. `galois_key_to_hpu` derives digit/Q/P shape
+from `SEALContext` and the selected `GaloisKeys` entry, and never accepts secret
+key material.
+
+Standalone `ckks_relinearize_ntt` and `ckks_rescale_ntt` streams expose the two
+remaining evaluator boundaries in SEAL's native NTT form. They keep the tested
+coefficient-domain bodies as internal cores, wrap only the required boundary
+transforms, load the small-bank modulus table once, dstore both final components
+and terminate with one psync. This leaves Rescale independently schedulable even
+though the combined multiply application can keep coefficient intermediates and
+avoid a needless NTT/INTT round trip.
+
 ## Runtime boundary
 
 `hpu::runtime::Application` is platform-independent. It records the invariants
@@ -142,9 +164,11 @@ cmake --build build-seal -j --target \
   hpu_hardware_ntt_model_test \
   hpu_runtime_application_test \
   hpu_ckks_application_codegen_test \
+  hpu_ckks_rotate_codegen_test \
+  hpu_ckks_standalone_kernels_codegen_test \
   hpu_seal_ckks_context_test
 ctest --test-dir build-seal \
-  -R 'hpu_(hardware_ntt_model|runtime_application|ckks_application_codegen|seal_ckks_context)_test' \
+  -R 'hpu_(hardware_ntt_model|runtime_application|ckks_application_codegen|ckks_rotate_codegen|ckks_standalone_kernels_codegen|seal_ckks_context)_test' \
   --output-on-failure
 ```
 

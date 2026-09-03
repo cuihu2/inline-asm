@@ -1,7 +1,12 @@
+#include "hpu/model/hardware_ntt.hpp"
+#include "hpu/seal/automorphism.hpp"
 #include "hpu/seal/ckks_context.hpp"
 #include "hpu/seal/evaluation_key.hpp"
 #include "hpu/seal/ntt_bridge.hpp"
 #include "scheme/ckks/ciphertext_multiply.hpp"
+#include "scheme/ckks/relinearize.hpp"
+#include "scheme/ckks/rescale.hpp"
+#include "scheme/ckks/rotate.hpp"
 
 #include <seal/seal.h>
 
@@ -37,8 +42,11 @@ int main()
 
         ::seal::KeyGenerator key_generator(*bundle.context);
         ::seal::PublicKey public_key;
+        ::seal::GaloisKeys galois_keys;
         ::seal::RelinKeys relinearization_keys;
         key_generator.create_public_key(public_key);
+        key_generator.create_galois_keys(
+            std::vector<std::uint32_t>{3}, galois_keys);
         key_generator.create_relin_keys(relinearization_keys);
 
         ::seal::CKKSEncoder encoder(*bundle.context);
@@ -77,6 +85,54 @@ int main()
                 "SEAL-derived CKKS application shape was not accepted");
         }
 
+        const auto hpu_galois_key = hpu::seal_adapter::galois_key_to_hpu(
+            galois_keys, 3, *bundle.context);
+        const auto fused_tables =
+            hpu::seal_adapter::create_fused_inverse_automorphism_tables(
+                ciphertext.parms_id(), 3, *bundle.context);
+        if (hpu_galois_key.size() != hpu_relinearization_key.size()
+            || fused_tables.size() != bundle.data_moduli.size()) {
+            throw std::runtime_error("SEAL Galois key/twiddle conversion shape mismatch");
+        }
+        for (const auto& tables : fused_tables) {
+            if (tables.stages.size() != 16
+                || tables.post_untwist_scale.size() != spec.poly_modulus_degree
+                || hpu::model::pow_mod(
+                    tables.modified_psi, 3, tables.modulus)
+                    != tables.canonical_psi) {
+                throw std::runtime_error("modified-root INTT table invariant failed");
+            }
+        }
+        const std::string rotate_application =
+            hpu::scheme::ckks::generate_rotate_body_asm(
+                static_cast<int>(spec.poly_modulus_degree),
+                static_cast<int>(bundle.data_moduli.size()),
+                static_cast<int>(bundle.special_moduli.size()),
+                static_cast<int>(hpu_galois_key.size()),
+                3,
+                true);
+        if (rotate_application.find("Invalid CKKS") != std::string::npos
+            || rotate_application.find("INTT_psi^(1/k)") == std::string::npos) {
+            throw std::runtime_error("SEAL-derived CKKS Rotate shape was not accepted");
+        }
+        const std::string standalone_relinearize =
+            hpu::scheme::ckks::generate_relinearize_ntt_body_asm(
+                static_cast<int>(spec.poly_modulus_degree),
+                static_cast<int>(bundle.data_moduli.size()),
+                static_cast<int>(bundle.special_moduli.size()),
+                static_cast<int>(hpu_relinearization_key.size()),
+                true);
+        const std::string standalone_rescale =
+            hpu::scheme::ckks::generate_rescale_ntt_body_asm(
+                static_cast<int>(spec.poly_modulus_degree),
+                static_cast<int>(bundle.data_moduli.size()),
+                true);
+        if (standalone_relinearize.find("Invalid SEAL-facing") != std::string::npos
+            || standalone_rescale.find("Invalid SEAL-facing") != std::string::npos) {
+            throw std::runtime_error(
+                "SEAL-derived standalone CKKS kernel shape was not accepted");
+        }
+
         for (std::size_t component = 0; component < ciphertext.size(); ++component) {
             const auto hpu_polynomial = hpu::seal_adapter::ciphertext_component_to_hpu(
                 ciphertext, component, *bundle.context);
@@ -101,7 +157,7 @@ int main()
         }
 
         std::cout
-            << "SEAL CKKS N=65536 host path and exact HPU NTT bridge passed\n";
+            << "SEAL CKKS N=65536 bridge, keys, and fused Rotate tables passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "SEAL CKKS context test failed: " << error.what() << '\n';

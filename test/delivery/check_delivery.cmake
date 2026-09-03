@@ -700,6 +700,27 @@ foreach(MARKER
         message(FATAL_ERROR "CKKS multiply stream is missing marker: ${MARKER}")
     endif()
 endforeach()
+file(READ "${ROOT}/output/ckks_rotate.asm" CKKS_ROTATE_ASM)
+foreach(MARKER
+        "CKKS ROTATE: fused automorphism + Galois KeySwitch"
+        "INTT_psi^(1/k)"
+        "no coefficient permutation"
+        "Canonical output NTT after Galois KeySwitch")
+    string(FIND "${CKKS_ROTATE_ASM}" "${MARKER}" POSITION)
+    if(POSITION EQUAL -1)
+        message(FATAL_ERROR "CKKS Rotate stream is missing marker: ${MARKER}")
+    endif()
+endforeach()
+file(READ "${ROOT}/output/ckks_relinearize_ntt.asm" CKKS_RELINEARIZE_NTT_ASM)
+if(NOT CKKS_RELINEARIZE_NTT_ASM MATCHES
+        "CKKS RELINEARIZE NTT: tensor NTT/Q -> ciphertext NTT/Q")
+    message(FATAL_ERROR "Standalone SEAL-facing Relinearize stream is missing")
+endif()
+file(READ "${ROOT}/output/ckks_rescale_ntt.asm" CKKS_RESCALE_NTT_ASM)
+if(NOT CKKS_RESCALE_NTT_ASM MATCHES
+        "CKKS RESCALE NTT: canonical input -> rounded drop-last -> canonical output")
+    message(FATAL_ERROR "Standalone SEAL-facing Rescale stream is missing")
+endif()
 file(READ "${ROOT}/outputs/ckks_ciphertext_multiply/test_data/params.json" CKKS_MULTIPLY_PARAMS)
 if(NOT CKKS_MULTIPLY_PARAMS MATCHES "\"scheme\": \"CKKS\""
         OR NOT CKKS_MULTIPLY_PARAMS MATCHES "\"level_delta\": -1"

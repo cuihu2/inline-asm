@@ -152,6 +152,11 @@ KeySwitch/Rescale 完成后，仅将两个 `Q_without_last` 输出转回 canonic
 `hpu_ckks_application_codegen_test` 对这些变换的 stage 数和单次 small-bank 模表生命
 周期做独立门禁。
 
+新增 `ckks_rotate` 指令流使用 `psi^(1/k)` 的 modified-root PINTT 直接得到
+`sigma_k(c0),sigma_k(c1)` 系数，随后执行 Galois KeySwitch 和 canonical output NTT。
+它不再使用旧 `auto` fixture 的 CPU coefficient permutation；旧 fixture 暂时保留为
+公共 demo 回归基线。
+
 默认配置为 `N=4096`、`num_q=4`、`num_p=3`、`bfv_num_b=6`、`dnum=2`、
 `t=65537`、`hpu_mem_max_lines=65536`。主硬件数据使用确定性零噪声、Pks 可整除的功能测试评估密钥，以获得
 逐位可比结果；BFV 另生成非零误差 host smoke。两者用于 UT/IT 定位，不代表生产密钥安全性。

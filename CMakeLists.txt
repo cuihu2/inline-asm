@@ -91,6 +91,8 @@ add_library(hpu_fhe_codegen STATIC
         src/operator/rounded_drop_last.cpp
         src/scheme/ckks/rescale.cpp
         src/scheme/ckks/ciphertext_multiply.cpp
+        src/scheme/ckks/relinearize.cpp
+        src/scheme/ckks/rotate.cpp
         src/scheme/bgv/ciphertext_multiply.cpp
         src/scheme/bgv/modswitch.cpp
         src/scheme/bfv/ciphertext_multiply.cpp
@@ -140,6 +142,28 @@ if(BUILD_TESTING)
     add_test(
             NAME hpu_ckks_application_codegen_test
             COMMAND hpu_ckks_application_codegen_test)
+
+    add_executable(hpu_ckks_rotate_codegen_test
+            test/ckks_rotate_codegen_test.cpp
+    )
+    target_link_libraries(hpu_ckks_rotate_codegen_test
+            PRIVATE
+            hpu_fhe_codegen
+    )
+    add_test(
+            NAME hpu_ckks_rotate_codegen_test
+            COMMAND hpu_ckks_rotate_codegen_test)
+
+    add_executable(hpu_ckks_standalone_kernels_codegen_test
+            test/ckks_standalone_kernels_codegen_test.cpp
+    )
+    target_link_libraries(hpu_ckks_standalone_kernels_codegen_test
+            PRIVATE
+            hpu_fhe_codegen
+    )
+    add_test(
+            NAME hpu_ckks_standalone_kernels_codegen_test
+            COMMAND hpu_ckks_standalone_kernels_codegen_test)
 
     foreach(INVALID_CONFIG
             invalid_context_overflow
@@ -205,6 +229,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
 
     add_library(hpu_seal_ckks STATIC
             src/hpu/seal/ckks_context.cpp
+            src/hpu/seal/automorphism.cpp
             src/hpu/seal/evaluation_key.cpp
             src/hpu/seal/ntt_bridge.cpp
     )

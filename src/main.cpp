@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -21,7 +22,9 @@
 #include "scheme/bfv/ciphertext_multiply.hpp"
 #include "scheme/bfv/modswitch.hpp"
 #include "scheme/ckks/ciphertext_multiply.hpp"
+#include "scheme/ckks/relinearize.hpp"
 #include "scheme/ckks/rescale.hpp"
+#include "scheme/ckks/rotate.hpp"
 
 namespace {
 
@@ -474,6 +477,66 @@ void test_auto_codegen()
 	}
 }
 
+void test_ckks_rotate_codegen()
+{
+	constexpr std::uint32_t galois_element = 3;
+	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
+		std::ofstream("output/ckks_rotate.cpp")
+			<< hpu::scheme::ckks::generate_rotate_asm(
+				g_auto_cfg.N,
+				g_auto_cfg.num_q,
+				g_auto_cfg.num_p,
+				g_auto_cfg.dnum,
+				galois_element,
+				true);
+		std::cout << "Saved CKKS fused Rotate ASM to output/ckks_rotate.cpp\n";
+	}
+	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
+		std::ofstream("output/ckks_rotate.asm")
+			<< hpu::scheme::ckks::generate_rotate_body_asm(
+				g_auto_cfg.N,
+				g_auto_cfg.num_q,
+				g_auto_cfg.num_p,
+				g_auto_cfg.dnum,
+				galois_element,
+				true);
+		std::cout << "Saved CKKS fused Rotate body to output/ckks_rotate.asm\n";
+	}
+}
+
+void test_ckks_standalone_ntt_kernels_codegen()
+{
+	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
+		std::ofstream("output/ckks_relinearize_ntt.cpp")
+			<< hpu::scheme::ckks::generate_relinearize_ntt_asm(
+				g_ciphertext_multiply_cfg.N,
+				g_ciphertext_multiply_cfg.num_q,
+				g_ciphertext_multiply_cfg.num_p,
+				g_ciphertext_multiply_cfg.dnum,
+				true);
+		std::ofstream("output/ckks_rescale_ntt.cpp")
+			<< hpu::scheme::ckks::generate_rescale_ntt_asm(
+				g_ciphertext_multiply_cfg.N,
+				g_ciphertext_multiply_cfg.num_q,
+				true);
+	}
+	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
+		std::ofstream("output/ckks_relinearize_ntt.asm")
+			<< hpu::scheme::ckks::generate_relinearize_ntt_body_asm(
+				g_ciphertext_multiply_cfg.N,
+				g_ciphertext_multiply_cfg.num_q,
+				g_ciphertext_multiply_cfg.num_p,
+				g_ciphertext_multiply_cfg.dnum,
+				true);
+		std::ofstream("output/ckks_rescale_ntt.asm")
+			<< hpu::scheme::ckks::generate_rescale_ntt_body_asm(
+				g_ciphertext_multiply_cfg.N,
+				g_ciphertext_multiply_cfg.num_q,
+				true);
+	}
+	std::cout << "Saved standalone SEAL-facing CKKS Relinearize/Rescale kernels\n";
+}
+
 void test_moddown_codegen()
 {
 	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
@@ -636,6 +699,8 @@ int main(int argc, char* argv[])
 		test_modup_codegen();
 		test_moddown_codegen();
 		test_auto_codegen();
+		test_ckks_rotate_codegen();
+		test_ckks_standalone_ntt_kernels_codegen();
 		test_keyswitch_codegen();
 		test_relinearization_codegen();
 		test_ciphertext_multiply_codegen();

@@ -1156,6 +1156,13 @@ CMULT，删除原来的四组输入 NTT；随后三个 tensor 分量只做一次
 DMA 进入 HPU，由软件更新为 `scale_out=scale_a*scale_b/q_last`、
 `level_out=level_in-1`。
 
+CKKS Rotate 对每个活动 `q_i` 预计算 `psi'=psi^(1/k)` 的 HPU PINTT stage 与
+post-untwist 表。两个 canonical HPU NTT 输入分别执行一次 modified-root INTT 后，
+直接得到 `sigma_k(c0),sigma_k(c1)` 的系数域表示，不需要 CPU 系数置换；随后以
+SEAL Galois key 执行 KeySwitch，并将两个 Q 输出恢复为 canonical HPU NTT。若调度
+器把 fused INTT 与 KeySwitch 拆成两个 kernel，边界只需保留
+`domain=coefficient,key_domain=k`，不需要保存 modified-root NTT 状态。
+
 ### C.7 BGV 方案算子
 
 BGV Multiply 的 DMA 次序与公共 CiphertextMultiply 相同，但模表镜像顺序固定为
