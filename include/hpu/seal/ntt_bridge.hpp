@@ -11,6 +11,7 @@ namespace hpu::seal_adapter {
 struct HpuRnsPolynomial {
     std::size_t degree = 0;
     std::vector<std::uint32_t> moduli;
+    std::vector<std::uint8_t> modulus_ids;
 
     // Logical shape [modulus][coefficient], with each coefficient axis stored
     // in the HPU P-network physical NTT order.
@@ -24,6 +25,14 @@ HpuRnsPolynomial ciphertext_component_to_hpu(
     const ::seal::Ciphertext& ciphertext,
     std::size_t component,
     const ::seal::SEALContext& context);
+
+// Evaluation-key form: extracts selected key-context modulus limbs while
+// preserving their application-global MOD_IDs in the returned polynomial.
+HpuRnsPolynomial ciphertext_component_to_hpu(
+    const ::seal::Ciphertext& ciphertext,
+    std::size_t component,
+    const ::seal::SEALContext& context,
+    const std::vector<std::size_t>& modulus_indices);
 
 // Converts an encoded CKKS plaintext at its current parms_id. CKKS plaintexts
 // are already in SEAL NTT form; conversion still goes through coefficients so

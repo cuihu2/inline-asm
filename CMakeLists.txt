@@ -177,6 +177,17 @@ if(BUILD_TESTING)
             NAME hpu_ckks_pointwise_codegen_test
             COMMAND hpu_ckks_pointwise_codegen_test)
 
+    add_executable(hpu_ckks_multilevel_codegen_test
+            test/ckks_multilevel_codegen_test.cpp
+    )
+    target_link_libraries(hpu_ckks_multilevel_codegen_test
+            PRIVATE
+            hpu_fhe_codegen
+    )
+    add_test(
+            NAME hpu_ckks_multilevel_codegen_test
+            COMMAND hpu_ckks_multilevel_codegen_test)
+
     foreach(INVALID_CONFIG
             invalid_context_overflow
             invalid_num_q
@@ -241,6 +252,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
 
     add_library(hpu_seal_ckks STATIC
             src/hpu/seal/ckks_context.cpp
+            src/hpu/seal/ckks_level.cpp
             src/hpu/seal/automorphism.cpp
             src/hpu/seal/evaluation_key.cpp
             src/hpu/seal/ntt_bridge.cpp

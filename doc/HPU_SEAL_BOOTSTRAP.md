@@ -80,6 +80,25 @@ old demo values `P=3` and `dnum=2` are not embedded in this bridge. The API neve
 accepts a `SecretKey`, so secret material cannot accidentally enter HPU_MEM
 through this preprocessing path.
 
+## Modulus-chain level descriptors
+
+`create_ckks_level_descriptors` walks every SEAL data-context node. It freezes
+one application-global modulus table in key-context order: initial Q occupies
+`[0,Qmax)` and special P occupies `[Qmax,Qmax+P)`. Dropping the last Q never
+renumbers P. With `Qmax=4,P=1`, the first three key-switch bases are therefore
+`{0,1,2,3,4}`, `{0,1,2,4}`, and `{0,1,4}`.
+
+Every remaining SEAL 4.4 data modulus selects its corresponding evaluation-key
+digit. Level-aware key conversion exports only those active digits and only the
+active Q plus fixed-P limbs from each key-context ciphertext. Explicit-layout
+KeySwitch, ModUp, ModDown, Relinearize, Rotate, and fused Multiply accept these
+non-contiguous MOD_IDs. Legacy demo entry points retain their equal-width,
+contiguous-digit contract.
+
+The multilevel regression freezes a two-depth codegen sequence: Q4 Multiply
+drops to Q3; Q3 Rotate/Relinearize and another Q3 Multiply use P at MOD_ID 4;
+the resulting Q2 Rotate still uses MOD_ID 4 and never touches dropped Q limbs.
+
 ## First CKKS application stream
 
 `hpu::scheme::ckks::generate_ciphertext_multiply_body_asm` is now the formal
@@ -183,9 +202,10 @@ cmake --build build-seal -j --target \
   hpu_ckks_rotate_codegen_test \
   hpu_ckks_standalone_kernels_codegen_test \
   hpu_ckks_pointwise_codegen_test \
+  hpu_ckks_multilevel_codegen_test \
   hpu_seal_ckks_context_test
 ctest --test-dir build-seal \
-  -R 'hpu_(hardware_ntt_model|runtime_application|ckks_application_codegen|ckks_rotate_codegen|ckks_standalone_kernels_codegen|ckks_pointwise_codegen|seal_ckks_context)_test' \
+  -R 'hpu_(hardware_ntt_model|runtime_application|ckks_application_codegen|ckks_rotate_codegen|ckks_standalone_kernels_codegen|ckks_pointwise_codegen|ckks_multilevel_codegen|seal_ckks_context)_test' \
   --output-on-failure
 ```
 

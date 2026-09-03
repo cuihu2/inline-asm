@@ -225,7 +225,9 @@ relocation manifest、line map 与 HPU_MEM 镜像。
 另一份配置时可执行 `cmake -S . -B build -DHPU_TEST_CONFIG=/abs/path/fhe_test.conf`。
 
 配置必须满足 `N` 为不小于 128 的 2 次幂、`ceil(N/64) <= 1024`（即
-`128 <= N <= 65536`）、`num_q >= 2`、`num_q % dnum == 0`、
+`128 <= N <= 65536`）、`num_q >= 2`；旧式连续等宽 digit 配置还要求
+`num_q % dnum == 0`，SEAL-facing CKKS 则从每个 `parms_id` 的 level descriptor
+取得活动 Q digit，不再把顶层 `dnum` 固定沿用到低层。
 `num_q + num_p + bfv_num_b + 2 <= 256`，且当前 Auto 仅支持 `auto_index=1`。
 BGV 固定 MOD_ID 顺序为 `Q|P|t`；BFV 固定为 `Q|Pks|B|m_sk|t`。`plaintext_modulus`
 必须是硬件可加载的奇数并满足 `65537 <= t <= 2^32-1`；默认值为
@@ -254,6 +256,9 @@ MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、KeySwitch 和 Relinearizat
   
 - **切片感知的模提升运算：**
   为了支持分解字（Digit Decomposition），`modup` 接口显式接收完整 `num_q`、处理宽度 `num_q_digit` 和 `q_offset`。它保留当前 digit，并对 `Q\digit ∪ P` 执行 BConv，从而为后续 KeySwitch 产生完整 $Q \cup P$ 表示。单纯 Q→P 的基转换仍由独立 `bconv` 原语提供。
+
+- **SEAL CKKS 多 level MOD_ID：**
+  `CkksLevelDescriptor` 从 `SEALContext` 的整个 data chain 建立活动 Q、固定 P 和 evaluation-key digit 映射。完整应用模表保持 `Qmax|P`：例如顶层为 `Q0,Q1,Q2,Q3,P0` 时，Q3 level 使用 `{0,1,2,4}`，不会把已丢弃的 `mod_id=3` 误当作 P。KeySwitch/ModUp/ModDown 的显式 layout API 支持不连续的全局 MOD_ID；旧 demo API 继续生成连续等宽 digit。
   
 - **流水线的统一复用：**
   复杂的算子不需要从头生成具体的 `hpu::pmul` 等语句。`relinearization` 复用完整 `keyswitch`，`ciphertext_multiply` 再复用 `relinearization`；全部由 `generate_hpu_*_body_asm` 函数段拼接。Body Generator 的 `append_psync` 默认关闭，只有形成独立完整程序时才开启；完整 `generate_hpu_*_asm` 接口默认在末尾追加通知。

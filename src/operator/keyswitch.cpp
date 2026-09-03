@@ -12,39 +12,40 @@
 
 std::string generate_hpu_keyswitch_body_asm(
     int N,
-    int num_q,
-    int num_p,
-    int dnum,
+    const hpu::RnsDecompositionLayout& layout,
     bool append_psync,
     bool manage_modulus_table)
 {
     std::ostringstream asm_code;
 
-    if (!hpu::is_valid_rns_decomposition_config(N, num_q, num_p, dnum)) {
-        asm_code << "        // Invalid config: require power-of-two N fitting 1024 lines, divisible digits, and at most 256 mod contexts\n";
+    if (!hpu::is_valid_rns_decomposition_layout(N, layout)) {
+        asm_code << "        // Invalid explicit KeySwitch RNS layout\n";
         return asm_code.str();
     }
 
-    int total_bases = num_q + num_p;
-    int digit_size = num_q / dnum;
+    const auto& q_contexts = layout.q_mod_ids;
+    const auto& p_contexts = layout.p_mod_ids;
+    std::vector<int> full_contexts = q_contexts;
+    full_contexts.insert(
+        full_contexts.end(), p_contexts.begin(), p_contexts.end());
+    const int dnum = static_cast<int>(layout.key_digits.size());
 
     const int POBJ_MOD_CTX = 4;
     const int TWIDDLE = 3;
     const int POBJ_TMP_A = 0;
 
     asm_code << "        /* KEYSWITCH BODY: (base, switching_component) -> (base + ks0, ks1) */\n";
-    asm_code << "        /* --- Decomposed digits loop (dnum = " << dnum << ") --- */\n";
+    asm_code << "        /* Application-global MOD_IDs; fixed P survives Q level drops. */\n";
+    asm_code << "        /* --- Active SEAL key digits loop (dnum = " << dnum << ") --- */\n";
     for (int d = 0; d < dnum; ++d) {
-        int q_offset = d * digit_size;
         asm_code << "        /* --- Digit " << d << " --- */\n";
 
         // 1. ModUp (Q digit -> full Q union P)
         asm_code << "        /* --- Step 1: ModUp --- */\n";
-        asm_code << generate_hpu_modup_body_asm(
-            num_q,
-            num_p,
-            digit_size,
-            q_offset,
+        asm_code << generate_hpu_modup_contexts_body_asm(
+            q_contexts,
+            p_contexts,
+            layout.key_digits[static_cast<std::size_t>(d)],
             false,
             manage_modulus_table);
 
@@ -55,9 +56,9 @@ std::string generate_hpu_keyswitch_body_asm(
                                    hpu::DloadFlag::small_bank);
         }
 
-        for (int i = 0; i < total_bases; ++i) {
-            asm_code << "        /* NTT ctx_" << i << " */\n";
-            asm_code << hpu::pmodld(i);
+        for (int context : full_contexts) {
+            asm_code << "        /* NTT MOD_ID " << context << " */\n";
+            asm_code << hpu::pmodld(context);
             asm_code << hpu::dload(POBJ_TMP_A, hpu::DataType::poly);
             asm_code << generate_hpu_ntt_body_asm(N, POBJ_TMP_A, TWIDDLE, false);
             asm_code << hpu::dstore(POBJ_TMP_A, 1);
@@ -71,9 +72,9 @@ std::string generate_hpu_keyswitch_body_asm(
 
         for (int v = 0; v < 2; ++v) {
             asm_code << "        /* evk" << v << " mult for all bases */\n";
-            for (int i = 0; i < total_bases; ++i) {
-                asm_code << "        /* base_" << i << " */\n";
-                asm_code << hpu::pmodld(i);
+            for (int context : full_contexts) {
+                asm_code << "        /* base MOD_ID " << context << " */\n";
+                asm_code << hpu::pmodld(context);
                 // IF first digit, just mul. If subsequent digits, multiply and accumulate (pmac)
                 asm_code << hpu::dload(POBJ_CT, hpu::DataType::poly);
                 asm_code << hpu::dload(POBJ_EVK, hpu::DataType::poly);
@@ -104,9 +105,9 @@ std::string generate_hpu_keyswitch_body_asm(
     }
     for (int v = 0; v < 2; ++v) {
         asm_code << "        /* INTT for out" << v << " */\n";
-        for (int i = 0; i < total_bases; ++i) {
-            asm_code << "        /* INTT ctx_" << i << " */\n";
-            asm_code << hpu::pmodld(i);
+        for (int context : full_contexts) {
+            asm_code << "        /* INTT MOD_ID " << context << " */\n";
+            asm_code << hpu::pmodld(context);
             asm_code << hpu::dload(POBJ_TMP_A2, hpu::DataType::poly);
             asm_code << generate_hpu_intt_body_asm(N, POBJ_TMP_A2, TWIDDLE2, false);
             asm_code << hpu::dstore(POBJ_TMP_A2, 1);
@@ -120,8 +121,8 @@ std::string generate_hpu_keyswitch_body_asm(
     asm_code << "        /* --- Step 5: ModDown for both parts --- */\n";
     for (int v = 0; v < 2; ++v) {
         asm_code << "        /* ModDown for out" << v << " */\n";
-        asm_code << generate_hpu_moddown_body_asm(
-            num_q, num_p, false, manage_modulus_table);
+        asm_code << generate_hpu_moddown_contexts_body_asm(
+            q_contexts, p_contexts, false, manage_modulus_table);
     }
     asm_code << "        /* --- Step 6: Add base component to out0 --- */\n";
     const int POBJ_MOD_CTX_S6 = 4;
@@ -134,8 +135,8 @@ std::string generate_hpu_keyswitch_body_asm(
                                hpu::DloadFlag::small_bank);
     }
     
-    for (int i = 0; i < num_q; ++i) { // 降模后只有 num_q 个基了
-        asm_code << hpu::pmodld(i); // 切换固定模表中的 MOD_ID
+    for (int context : q_contexts) {
+        asm_code << hpu::pmodld(context);
         // 1. 加载刚才 ModDown 生成的 out0
         asm_code << hpu::dload(POBJ_OUT0, hpu::DataType::poly);
         // 2. 加载不参与分解、需要并入第一输出分量的 base（普通 KeySwitch 为 c0）
@@ -156,6 +157,24 @@ std::string generate_hpu_keyswitch_body_asm(
     }
 
     return asm_code.str();
+}
+
+std::string generate_hpu_keyswitch_body_asm(
+    int N,
+    int num_q,
+    int num_p,
+    int dnum,
+    bool append_psync,
+    bool manage_modulus_table)
+{
+    if (!hpu::is_valid_rns_decomposition_config(N, num_q, num_p, dnum)) {
+        return "        // Invalid config: require power-of-two N fitting 1024 lines, divisible digits, and at most 256 mod contexts\n";
+    }
+    return generate_hpu_keyswitch_body_asm(
+        N,
+        hpu::make_contiguous_rns_decomposition_layout(num_q, num_p, dnum),
+        append_psync,
+        manage_modulus_table);
 }
 
 std::string generate_hpu_keyswitch_asm(

@@ -22,7 +22,7 @@ bool valid_config(int N, int num_q, int num_p, int dnum)
 
 std::string generate_basis_transform_body_asm(
     int N,
-    int basis_count,
+    const std::vector<int>& contexts,
     int component_count,
     bool inverse,
     const char* label)
@@ -33,10 +33,10 @@ std::string generate_basis_transform_body_asm(
     std::ostringstream asm_code;
     asm_code << "        /* --- " << label << " --- */\n";
     for (int component = 0; component < component_count; ++component) {
-        for (int basis = 0; basis < basis_count; ++basis) {
+        for (int context : contexts) {
             asm_code << "        /* component_" << component
-                     << ", modulus_" << basis << " */\n";
-            asm_code << hpu::pmodld(basis);
+                     << ", MOD_ID " << context << " */\n";
+            asm_code << hpu::pmodld(context);
             asm_code << hpu::dload(poly_object, hpu::DataType::poly);
             asm_code << (inverse
                 ? generate_hpu_intt_body_asm(
@@ -53,18 +53,23 @@ std::string generate_basis_transform_body_asm(
 
 std::string generate_ciphertext_multiply_body_asm(
     int N,
-    int num_q,
-    int num_p,
-    int dnum,
+    const hpu::RnsDecompositionLayout& layout,
     bool append_psync)
 {
     std::ostringstream asm_code;
-    if (!valid_config(N, num_q, num_p, dnum)) {
+    bool prefix_q = true;
+    for (std::size_t index = 0; index < layout.q_mod_ids.size(); ++index) {
+        prefix_q = prefix_q
+            && layout.q_mod_ids[index] == static_cast<int>(index);
+    }
+    if (!hpu::is_valid_rns_decomposition_layout(N, layout)
+        || layout.q_mod_ids.size() < 2 || !prefix_q) {
         asm_code << "        // Invalid CKKS multiply config: require N fitting one bank, num_q >= 2, divisible digits, and <= 256 contexts\n";
         return asm_code.str();
     }
 
     constexpr int modulus_table_object = 4;
+    const int num_q = static_cast<int>(layout.q_mod_ids.size());
 
     asm_code
         << "        /* CKKS MULTIPLY: canonical HPU NTT inputs -> multiply, relinearize, rescale */\n"
@@ -85,10 +90,10 @@ std::string generate_ciphertext_multiply_body_asm(
     // coefficient-domain KeySwitch/ModDown and Rescale bodies. Therefore the
     // three tensor components cross the domain boundary exactly once here.
     asm_code << generate_basis_transform_body_asm(
-        N, num_q, 3, true,
+        N, layout.q_mod_ids, 3, true,
         "Tensor t0/t1/t2: canonical HPU NTT -> coefficient domain");
     asm_code << ::generate_hpu_relinearization_body_asm(
-        N, num_q, num_p, dnum, false, false);
+        N, layout, false, false);
 
     // Keep Rescale independent in the generated stream. It consumes the two
     // coefficient-domain relinearization results and drops q_last.
@@ -97,8 +102,10 @@ std::string generate_ciphertext_multiply_body_asm(
 
     // SEAL CKKS ciphertexts are NTT-form objects. Only the final two outputs
     // need a forward transform, now over Q without the dropped modulus.
+    std::vector<int> retained_q(
+        layout.q_mod_ids.begin(), layout.q_mod_ids.end() - 1);
     asm_code << generate_basis_transform_body_asm(
-        N, num_q - 1, 2, false,
+        N, retained_q, 2, false,
         "Rescaled c0/c1: coefficient domain -> canonical HPU NTT");
 
     asm_code << hpu::pfree(modulus_table_object);
@@ -106,6 +113,22 @@ std::string generate_ciphertext_multiply_body_asm(
         asm_code << hpu::psync();
     }
     return asm_code.str();
+}
+
+std::string generate_ciphertext_multiply_body_asm(
+    int N,
+    int num_q,
+    int num_p,
+    int dnum,
+    bool append_psync)
+{
+    if (!valid_config(N, num_q, num_p, dnum)) {
+        return "        // Invalid CKKS multiply config: require N fitting one bank, num_q >= 2, divisible digits, and <= 256 contexts\n";
+    }
+    return generate_ciphertext_multiply_body_asm(
+        N,
+        hpu::make_contiguous_rns_decomposition_layout(num_q, num_p, dnum),
+        append_psync);
 }
 
 std::string generate_ciphertext_multiply_asm(

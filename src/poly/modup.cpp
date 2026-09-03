@@ -1,9 +1,11 @@
 #include "poly/modup.hpp"
 
+#include "operator/rns_layout.hpp"
 #include "util/bconv.hpp"
 #include "util/hpu_asm.hpp"
 #include "util/validation.hpp"
 
+#include <algorithm>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -22,7 +24,71 @@ bool valid_modup_config(
         && hpu::has_mod_context_capacity(num_q, num_p);
 }
 
+bool valid_contexts(
+    const std::vector<int>& q_contexts,
+    const std::vector<int>& p_contexts,
+    const std::vector<int>& source_contexts)
+{
+    if (!hpu::valid_mod_id_list(q_contexts)
+        || !hpu::valid_mod_id_list(p_contexts)
+        || !hpu::valid_mod_id_list(source_contexts)) {
+        return false;
+    }
+    for (int source : source_contexts) {
+        if (std::find(q_contexts.begin(), q_contexts.end(), source)
+            == q_contexts.end()) {
+            return false;
+        }
+    }
+    for (int p : p_contexts) {
+        if (std::find(q_contexts.begin(), q_contexts.end(), p)
+            != q_contexts.end()) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
+
+std::string generate_hpu_modup_contexts_body_asm(
+    const std::vector<int>& q_contexts,
+    const std::vector<int>& p_contexts,
+    const std::vector<int>& source_contexts,
+    bool append_psync,
+    bool manage_modulus_table)
+{
+    std::ostringstream asm_code;
+    if (!valid_contexts(q_contexts, p_contexts, source_contexts)) {
+        asm_code << "        // Invalid explicit ModUp context layout\n";
+        return asm_code.str();
+    }
+
+    std::vector<int> target_contexts;
+    for (int q : q_contexts) {
+        if (std::find(source_contexts.begin(), source_contexts.end(), q)
+            == source_contexts.end()) {
+            target_contexts.push_back(q);
+        }
+    }
+    target_contexts.insert(
+        target_contexts.end(), p_contexts.begin(), p_contexts.end());
+
+    asm_code << "        /* MODUP: Q_digit -> full Q union P (explicit global MOD_ID layout) */\n";
+    asm_code << "        /* Retain source digit limbs in full-basis workspace */\n";
+    for (int context : source_contexts) {
+        asm_code << "        /* Copy Q context " << context
+                 << " (global MOD_ID " << context << ") */\n";
+        asm_code << hpu::dload(0, hpu::DataType::poly);
+        asm_code << hpu::dstore(0, 1);
+    }
+    asm_code << generate_hpu_bconv_contexts_body_asm(
+        source_contexts, target_contexts, false, manage_modulus_table);
+    if (append_psync) {
+        asm_code << hpu::psync();
+    }
+    return asm_code.str();
+}
 
 std::string generate_hpu_modup_body_asm(
     int num_q,
@@ -38,37 +104,21 @@ std::string generate_hpu_modup_body_asm(
         return asm_code.str();
     }
 
+    std::vector<int> q_contexts;
+    std::vector<int> p_contexts;
     std::vector<int> source_contexts;
-    std::vector<int> target_contexts;
+    for (int i = 0; i < num_q; ++i) {
+        q_contexts.push_back(i);
+    }
+    for (int i = 0; i < num_p; ++i) {
+        p_contexts.push_back(num_q + i);
+    }
     for (int i = 0; i < num_q_digit; ++i) {
         source_contexts.push_back(q_offset + i);
     }
-    for (int i = 0; i < num_q; ++i) {
-        if (i < q_offset || i >= q_offset + num_q_digit) {
-            target_contexts.push_back(i);
-        }
-    }
-    for (int i = 0; i < num_p; ++i) {
-        target_contexts.push_back(num_q + i);
-    }
-
-    asm_code << "        /* MODUP: Q_digit -> full Q union P */\n";
-    asm_code << "        /* Retain source digit limbs in full-basis workspace */\n";
-    for (int i = 0; i < num_q_digit; ++i) {
-        asm_code << "        /* Copy Q context " << (q_offset + i) << " */\n";
-        asm_code << hpu::dload(0, hpu::DataType::poly);
-        asm_code << hpu::dstore(0, 1);
-    }
-    asm_code << generate_hpu_bconv_contexts_body_asm(
-        source_contexts,
-        target_contexts,
-        false,
-        manage_modulus_table);
-
-    if (append_psync) {
-        asm_code << hpu::psync();
-    }
-    return asm_code.str();
+    return generate_hpu_modup_contexts_body_asm(
+        q_contexts, p_contexts, source_contexts,
+        append_psync, manage_modulus_table);
 }
 
 std::string generate_hpu_modup_asm(

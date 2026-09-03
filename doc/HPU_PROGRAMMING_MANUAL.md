@@ -1176,6 +1176,14 @@ relocation 绑定相应 span。密文 Add/Sub 对两个 component 各执行一�
 `c0*pt`、`c1*pt`；AddPlain/SubPlain 只修改 `c0`，standalone 流将原 `c1`
 复制到输出。整个应用只装载一次 `p4` 模表，两个输出都在 terminal `psync` 前写回。
 
+CKKS 模数链在整个应用中使用稳定 MOD_ID。若初始 key context 为
+`Q0|Q1|Q2|Q3|P0`，则 Rescale 后的 Q3 KeySwitch 使用
+`q_mod_ids={0,1,2}`、`p_mod_ids={4}`、三个 singleton key digit；下一层使用
+`q_mod_ids={0,1}`、`p_mod_ids={4}`。P 不随活动 Q 数量重新编号。显式 layout
+版本的 ModUp/ModDown/BConv 按这些 ID 选择 small-bank 表项，同时 HPU_MEM 中的
+evaluation-key limb 仍按逻辑 `[active Q][P]` 排列，由 DMA relocation 连接逻辑
+limb 与全局 MOD_ID。
+
 ### C.7 BGV 方案算子
 
 BGV Multiply 的 DMA 次序与公共 CiphertextMultiply 相同，但模表镜像顺序固定为

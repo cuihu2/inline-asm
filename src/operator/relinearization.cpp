@@ -10,7 +10,7 @@
 namespace {
 
 std::string generate_add_second_component_body_asm(
-    int num_q,
+    const std::vector<int>& q_contexts,
     bool manage_modulus_table)
 {
     std::ostringstream asm_code;
@@ -25,9 +25,9 @@ std::string generate_add_second_component_body_asm(
         asm_code << hpu::dload(POBJ_MOD_CTX, hpu::DataType::mod_ctx,
                                hpu::DloadFlag::small_bank);
     }
-    for (int i = 0; i < num_q; ++i) {
-        asm_code << "        /* q_" << i << " */\n";
-        asm_code << hpu::pmodld(i);
+    for (int context : q_contexts) {
+        asm_code << "        /* q MOD_ID " << context << " */\n";
+        asm_code << hpu::pmodld(context);
         asm_code << hpu::dload(POBJ_T1, hpu::DataType::poly);
         asm_code << hpu::dload(POBJ_KS1, hpu::DataType::poly);
         asm_code << hpu::padd(POBJ_OUT1, POBJ_T1, POBJ_KS1);
@@ -46,32 +46,48 @@ std::string generate_add_second_component_body_asm(
 
 std::string generate_hpu_relinearization_body_asm(
     int N,
-    int num_q,
-    int num_p,
-    int dnum,
+    const hpu::RnsDecompositionLayout& layout,
     bool append_psync,
     bool manage_modulus_table)
 {
     std::ostringstream asm_code;
 
-    if (!hpu::is_valid_rns_decomposition_config(N, num_q, num_p, dnum)) {
-        asm_code << "        // Invalid config: require power-of-two N fitting 1024 lines, divisible digits, and at most 256 mod contexts\n";
+    if (!hpu::is_valid_rns_decomposition_layout(N, layout)) {
+        asm_code << "        // Invalid explicit Relinearization RNS layout\n";
         return asm_code.str();
     }
 
     asm_code << "        /* --- Relinearization: KeySwitch(t2, rlk) with base=t0 --- */\n";
     asm_code << "        /* KeySwitch(base=t0, switching_component=t2) -> (t0 + ks0, ks1) */\n";
     asm_code << generate_hpu_keyswitch_body_asm(
-        N, num_q, num_p, dnum, false, manage_modulus_table);
+        N, layout, false, manage_modulus_table);
     asm_code << "        /* --- Compose final ciphertext: out0=t0+ks0, out1=t1+ks1 --- */\n";
     asm_code << generate_add_second_component_body_asm(
-        num_q, manage_modulus_table);
+        layout.q_mod_ids, manage_modulus_table);
 
     if (append_psync) {
         asm_code << hpu::psync();
     }
 
     return asm_code.str();
+}
+
+std::string generate_hpu_relinearization_body_asm(
+    int N,
+    int num_q,
+    int num_p,
+    int dnum,
+    bool append_psync,
+    bool manage_modulus_table)
+{
+    if (!hpu::is_valid_rns_decomposition_config(N, num_q, num_p, dnum)) {
+        return "        // Invalid config: require power-of-two N fitting 1024 lines, divisible digits, and at most 256 mod contexts\n";
+    }
+    return generate_hpu_relinearization_body_asm(
+        N,
+        hpu::make_contiguous_rns_decomposition_layout(num_q, num_p, dnum),
+        append_psync,
+        manage_modulus_table);
 }
 
 std::string generate_hpu_relinearization_asm(

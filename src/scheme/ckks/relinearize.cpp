@@ -16,7 +16,7 @@ constexpr int kModulusTableObject = 4;
 
 std::string transform(
     int N,
-    int num_q,
+    const std::vector<int>& q_contexts,
     int components,
     bool inverse,
     const char* label)
@@ -24,8 +24,8 @@ std::string transform(
     std::ostringstream asm_code;
     asm_code << "        /* --- " << label << " --- */\n";
     for (int component = 0; component < components; ++component) {
-        for (int basis = 0; basis < num_q; ++basis) {
-            asm_code << hpu::pmodld(basis);
+        for (int context : q_contexts) {
+            asm_code << hpu::pmodld(context);
             asm_code << hpu::dload(kPolynomialObject, hpu::DataType::poly);
             asm_code << (inverse
                 ? generate_hpu_intt_body_asm(
@@ -47,13 +47,11 @@ bool valid_config(int N, int num_q, int num_p, int dnum)
 
 std::string generate_relinearize_ntt_body_asm(
     int N,
-    int num_q,
-    int num_p,
-    int dnum,
+    const hpu::RnsDecompositionLayout& layout,
     bool append_psync)
 {
     std::ostringstream asm_code;
-    if (!valid_config(N, num_q, num_p, dnum)) {
+    if (!hpu::is_valid_rns_decomposition_layout(N, layout)) {
         asm_code << "        /* Invalid SEAL-facing CKKS Relinearize config */\n";
         return asm_code.str();
     }
@@ -65,18 +63,34 @@ std::string generate_relinearize_ntt_body_asm(
         hpu::DataType::mod_ctx,
         hpu::DloadFlag::small_bank);
     asm_code << transform(
-        N, num_q, 3, true,
+        N, layout.q_mod_ids, 3, true,
         "Tensor t0/t1/t2: canonical HPU NTT -> coefficient domain");
     asm_code << ::generate_hpu_relinearization_body_asm(
-        N, num_q, num_p, dnum, false, false);
+        N, layout, false, false);
     asm_code << transform(
-        N, num_q, 2, false,
+        N, layout.q_mod_ids, 2, false,
         "Relinearized c0/c1: coefficient domain -> canonical HPU NTT");
     asm_code << hpu::pfree(kModulusTableObject);
     if (append_psync) {
         asm_code << hpu::psync();
     }
     return asm_code.str();
+}
+
+std::string generate_relinearize_ntt_body_asm(
+    int N,
+    int num_q,
+    int num_p,
+    int dnum,
+    bool append_psync)
+{
+    if (!valid_config(N, num_q, num_p, dnum)) {
+        return "        /* Invalid SEAL-facing CKKS Relinearize config */\n";
+    }
+    return generate_relinearize_ntt_body_asm(
+        N,
+        hpu::make_contiguous_rns_decomposition_layout(num_q, num_p, dnum),
+        append_psync);
 }
 
 std::string generate_relinearize_ntt_asm(

@@ -1,6 +1,7 @@
 #include "hpu/model/hardware_ntt.hpp"
 #include "hpu/seal/automorphism.hpp"
 #include "hpu/seal/ckks_context.hpp"
+#include "hpu/seal/ckks_level.hpp"
 #include "hpu/seal/evaluation_key.hpp"
 #include "hpu/seal/ntt_bridge.hpp"
 #include "scheme/ckks/basic_arithmetic.hpp"
@@ -26,10 +27,24 @@ int main()
         spec.poly_modulus_degree = 65536;
         spec.coeff_modulus_bits = {32, 32, 32, 32, 32};
         const auto bundle = hpu::seal_adapter::create_ckks_context(spec);
+        const auto levels = hpu::seal_adapter::create_ckks_level_descriptors(
+            *bundle.context);
 
         if (!bundle.context || bundle.data_moduli.size() != 4
-            || bundle.special_moduli.size() != 1) {
+            || bundle.special_moduli.size() != 1 || levels.size() < 3) {
             throw std::runtime_error("unexpected SEALContext Q/P split");
+        }
+        for (std::size_t level_index = 0; level_index < 3; ++level_index) {
+            const auto& level = levels[level_index];
+            const std::size_t expected_q = 4 - level_index;
+            if (level.q_moduli.size() != expected_q
+                || level.rns_layout.q_mod_ids.size() != expected_q
+                || level.rns_layout.key_digits.size() != expected_q
+                || level.rns_layout.p_mod_ids != std::vector<int>{4}
+                || level.evaluation_key_digit_indices.size() != expected_q) {
+                throw std::runtime_error(
+                    "SEAL level did not preserve the application-global P MOD_ID");
+            }
         }
         std::vector<std::uint32_t> all_moduli = bundle.data_moduli;
         all_moduli.insert(
@@ -75,7 +90,7 @@ int main()
 
         const auto hpu_relinearization_key =
             hpu::seal_adapter::relinearization_key_to_hpu(
-                relinearization_keys, *bundle.context);
+                relinearization_keys, *bundle.context, levels.front());
         if (hpu_relinearization_key.empty()
             || hpu_relinearization_key.front().key_component_0.moduli.size()
                 != bundle.data_moduli.size() + bundle.special_moduli.size()) {
@@ -98,13 +113,26 @@ int main()
         }
 
         const auto hpu_galois_key = hpu::seal_adapter::galois_key_to_hpu(
-            galois_keys, 3, *bundle.context);
+            galois_keys, 3, *bundle.context, levels.front());
         const auto fused_tables =
             hpu::seal_adapter::create_fused_inverse_automorphism_tables(
                 ciphertext.parms_id(), 3, *bundle.context);
+        const auto lower_fused_tables =
+            hpu::seal_adapter::create_fused_inverse_automorphism_tables(
+                levels[1].parms_id, 3, *bundle.context);
         if (hpu_galois_key.size() != hpu_relinearization_key.size()
-            || fused_tables.size() != bundle.data_moduli.size()) {
+            || fused_tables.size() != bundle.data_moduli.size()
+            || lower_fused_tables.size() != levels[1].q_moduli.size()) {
             throw std::runtime_error("SEAL Galois key/twiddle conversion shape mismatch");
+        }
+        const auto lower_relinearization_key =
+            hpu::seal_adapter::relinearization_key_to_hpu(
+                relinearization_keys, *bundle.context, levels[1]);
+        if (lower_relinearization_key.size() != 3
+            || lower_relinearization_key.front().key_component_0.modulus_ids
+                != std::vector<std::uint8_t>({0, 1, 2, 4})) {
+            throw std::runtime_error(
+                "Q3 relinearization key did not select Q0,Q1,Q2,P0");
         }
         for (const auto& tables : fused_tables) {
             if (tables.stages.size() != 16
@@ -126,6 +154,24 @@ int main()
         if (rotate_application.find("Invalid CKKS") != std::string::npos
             || rotate_application.find("INTT_psi^(1/k)") == std::string::npos) {
             throw std::runtime_error("SEAL-derived CKKS Rotate shape was not accepted");
+        }
+        const std::string lower_rotate =
+            hpu::scheme::ckks::generate_rotate_body_asm(
+                static_cast<int>(spec.poly_modulus_degree),
+                levels[1].rns_layout,
+                3,
+                true);
+        const std::string lower_relinearize =
+            hpu::scheme::ckks::generate_relinearize_ntt_body_asm(
+                static_cast<int>(spec.poly_modulus_degree),
+                levels[1].rns_layout,
+                true);
+        if (lower_rotate.find("Invalid CKKS") != std::string::npos
+            || lower_relinearize.find("Invalid SEAL-facing") != std::string::npos
+            || lower_rotate.find(hpu::pmodld(4)) == std::string::npos
+            || lower_rotate.find(hpu::pmodld(3)) != std::string::npos) {
+            throw std::runtime_error(
+                "Q3 CKKS codegen did not keep the fixed special-prime MOD_ID");
         }
         const std::string standalone_relinearize =
             hpu::scheme::ckks::generate_relinearize_ntt_body_asm(
@@ -174,6 +220,28 @@ int main()
             }
         }
 
+        ::seal::Evaluator evaluator(*bundle.context);
+        ::seal::Ciphertext lower_ciphertext;
+        evaluator.multiply(ciphertext, ciphertext, lower_ciphertext);
+        evaluator.relinearize_inplace(lower_ciphertext, relinearization_keys);
+        evaluator.rescale_to_next_inplace(lower_ciphertext);
+        if (lower_ciphertext.parms_id() != levels[1].parms_id) {
+            throw std::runtime_error("SEAL rescale did not reach the Q3 descriptor");
+        }
+        for (std::size_t component = 0;
+             component < lower_ciphertext.size(); ++component) {
+            const auto hpu_polynomial =
+                hpu::seal_adapter::ciphertext_component_to_hpu(
+                    lower_ciphertext, component, *bundle.context);
+            const auto seal_round_trip = hpu::seal_adapter::hpu_to_seal_ntt(
+                hpu_polynomial, lower_ciphertext.parms_id(), *bundle.context);
+            if (!std::equal(
+                    seal_round_trip.begin(), seal_round_trip.end(),
+                    lower_ciphertext.data(component))) {
+                throw std::runtime_error("Q3 ciphertext NTT bridge round-trip failed");
+            }
+        }
+
         ::seal::Decryptor decryptor(*bundle.context, key_generator.secret_key());
         ::seal::Plaintext decrypted;
         decryptor.decrypt(ciphertext, decrypted);
@@ -186,7 +254,7 @@ int main()
         }
 
         std::cout
-            << "SEAL CKKS N=65536 ciphertext/plaintext bridge, keys, Rotate, and pointwise kernels passed\n";
+            << "SEAL CKKS N=65536 multilevel descriptors, bridges, keys, Rotate, and pointwise kernels passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "SEAL CKKS context test failed: " << error.what() << '\n';
