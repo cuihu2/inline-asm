@@ -1,4 +1,5 @@
 #include "hpu/runtime/application.hpp"
+#include "hpu/runtime/memory_image.hpp"
 
 #include <iostream>
 #include <stdexcept>
@@ -28,6 +29,25 @@ void require_throws(Function function, const char* message)
 int main()
 {
     try {
+        hpu::runtime::HpuMemImage memory(8);
+        const auto constants = memory.add(
+            "constants", {1, 2, 3},
+            hpu::runtime::AllocationKind::twiddle, true);
+        const auto output = memory.reserve(
+            "result", 65, hpu::runtime::AllocationKind::output);
+        require(constants.span.line_offset == 0
+                    && constants.span.line_count == 1
+                    && output.span.line_offset == 1
+                    && output.span.line_count == 2
+                    && memory.used_lines() == 3
+                    && memory.words().size() == 3 * hpu::runtime::kHpuMemLineWords,
+                "HPU_MEM image did not line-align payloads");
+        require_throws(
+            [&] { memory.reserve(
+                "overflow", 6 * hpu::runtime::kHpuMemLineWords,
+                hpu::runtime::AllocationKind::workspace); },
+            "HPU_MEM image accepted an overflowing allocation");
+
         hpu::runtime::Application application;
         hpu::runtime::ObjectState state;
         state.backing = {32, 1024};
