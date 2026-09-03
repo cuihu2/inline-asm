@@ -71,9 +71,13 @@ int main()
                 "Rotate emitted a redundant or missing inverse NTT");
 
         const std::size_t fused = program.find("FUSED AUTO");
-        const std::size_t key_switch = program.find("Galois KeySwitch");
+        const std::size_t key_switch = program.find("--- Galois KeySwitch:");
         const std::size_t output_ntt = program.find("Canonical output NTT");
-        require(fused < key_switch && key_switch < output_ntt,
+        require(fused != std::string::npos
+                    && key_switch != std::string::npos
+                    && output_ntt != std::string::npos
+                    && fused < key_switch
+                    && key_switch < output_ntt,
                 "Rotate phase order is not fused INTT -> KeySwitch -> output NTT");
 
         std::cout << "CKKS fused Rotate codegen tests passed\n";
