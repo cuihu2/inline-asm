@@ -76,8 +76,7 @@ target_include_directories(hpu_scheme_encoding
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-add_executable(inline_asm_codegen
-        src/main.cpp
+add_library(hpu_fhe_codegen STATIC
         src/util/ntt.cpp
         src/util/mm.cpp
         src/util/bconv.cpp
@@ -98,12 +97,17 @@ add_executable(inline_asm_codegen
         src/scheme/bfv/modswitch.cpp
 )
 
-target_include_directories(inline_asm_codegen
-        PRIVATE
+target_include_directories(hpu_fhe_codegen
+        PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+add_executable(inline_asm_codegen
+        src/main.cpp
 )
 target_link_libraries(inline_asm_codegen
         PRIVATE
+        hpu_fhe_codegen
         hpu_test_config
 )
 
@@ -125,6 +129,17 @@ if(BUILD_TESTING)
             hpu_runtime_core
     )
     add_test(NAME hpu_runtime_application_test COMMAND hpu_runtime_application_test)
+
+    add_executable(hpu_ckks_application_codegen_test
+            test/ckks_application_codegen_test.cpp
+    )
+    target_link_libraries(hpu_ckks_application_codegen_test
+            PRIVATE
+            hpu_fhe_codegen
+    )
+    add_test(
+            NAME hpu_ckks_application_codegen_test
+            COMMAND hpu_ckks_application_codegen_test)
 
     foreach(INVALID_CONFIG
             invalid_context_overflow
@@ -210,6 +225,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
         target_link_libraries(hpu_seal_ckks_context_test
                 PRIVATE
                 hpu_seal_ckks
+                hpu_fhe_codegen
         )
         add_test(NAME hpu_seal_ckks_context_test COMMAND hpu_seal_ckks_context_test)
     endif()

@@ -9,7 +9,9 @@
 
 namespace {
 
-std::string generate_add_second_component_body_asm(int num_q)
+std::string generate_add_second_component_body_asm(
+    int num_q,
+    bool manage_modulus_table)
 {
     std::ostringstream asm_code;
 
@@ -19,8 +21,10 @@ std::string generate_add_second_component_body_asm(int num_q)
     const int POBJ_MOD_CTX = 4;
 
     asm_code << "        /* --- Relinearization final merge: out1 = t1 + ks1 --- */\n";
-    asm_code << hpu::dload(POBJ_MOD_CTX, hpu::DataType::mod_ctx,
-                           hpu::DloadFlag::small_bank);
+    if (manage_modulus_table) {
+        asm_code << hpu::dload(POBJ_MOD_CTX, hpu::DataType::mod_ctx,
+                               hpu::DloadFlag::small_bank);
+    }
     for (int i = 0; i < num_q; ++i) {
         asm_code << "        /* q_" << i << " */\n";
         asm_code << hpu::pmodld(i);
@@ -31,7 +35,9 @@ std::string generate_add_second_component_body_asm(int num_q)
         asm_code << hpu::pfree(POBJ_KS1);
         asm_code << hpu::dstore(POBJ_OUT1, 1);
     }
-    asm_code << hpu::pfree(POBJ_MOD_CTX);
+    if (manage_modulus_table) {
+        asm_code << hpu::pfree(POBJ_MOD_CTX);
+    }
 
     return asm_code.str();
 }
@@ -43,7 +49,8 @@ std::string generate_hpu_relinearization_body_asm(
     int num_q,
     int num_p,
     int dnum,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     std::ostringstream asm_code;
 
@@ -54,9 +61,11 @@ std::string generate_hpu_relinearization_body_asm(
 
     asm_code << "        /* --- Relinearization: KeySwitch(t2, rlk) with base=t0 --- */\n";
     asm_code << "        /* KeySwitch(base=t0, switching_component=t2) -> (t0 + ks0, ks1) */\n";
-    asm_code << generate_hpu_keyswitch_body_asm(N, num_q, num_p, dnum, false);
+    asm_code << generate_hpu_keyswitch_body_asm(
+        N, num_q, num_p, dnum, false, manage_modulus_table);
     asm_code << "        /* --- Compose final ciphertext: out0=t0+ks0, out1=t1+ks1 --- */\n";
-    asm_code << generate_add_second_component_body_asm(num_q);
+    asm_code << generate_add_second_component_body_asm(
+        num_q, manage_modulus_table);
 
     if (append_psync) {
         asm_code << hpu::psync();

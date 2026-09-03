@@ -9,7 +9,8 @@ std::string generate_hpu_relinearization_body_asm(
     int num_q,
     int num_p,
     int dnum,
-    bool append_psync = false);
+    bool append_psync = false,
+    bool manage_modulus_table = true);
 
 std::string generate_hpu_relinearization_asm(
     int N,

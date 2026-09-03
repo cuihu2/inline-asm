@@ -20,7 +20,8 @@ bool valid_moddown_config(int num_q, int num_p)
 std::string generate_hpu_moddown_body_asm(
     int num_q,
     int num_p,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     std::ostringstream asm_code;
 
@@ -48,11 +49,14 @@ std::string generate_hpu_moddown_body_asm(
     asm_code << generate_hpu_bconv_contexts_body_asm(
         source_contexts,
         target_contexts,
-        false);
+        false,
+        manage_modulus_table);
 
-    asm_code << "        // dload the runtime-relocated complete modulus table\n";
-    asm_code << hpu::dload(POBJ_MOD_CTX, hpu::DataType::mod_ctx,
-                           hpu::DloadFlag::small_bank);
+    if (manage_modulus_table) {
+        asm_code << "        // dload the runtime-relocated complete modulus table\n";
+        asm_code << hpu::dload(POBJ_MOD_CTX, hpu::DataType::mod_ctx,
+                               hpu::DloadFlag::small_bank);
+    }
 
     asm_code << "        /* MODDOWN stage-2: q <- q - correction (mod q_i) */\n";
     for (int i = 0; i < num_q; ++i) {
@@ -70,7 +74,9 @@ std::string generate_hpu_moddown_body_asm(
         asm_code << hpu::dstore(POBJ_Q, 1);
     }
 
-    asm_code << hpu::pfree(POBJ_MOD_CTX);
+    if (manage_modulus_table) {
+        asm_code << hpu::pfree(POBJ_MOD_CTX);
+    }
 
     if (append_psync) {
         asm_code << hpu::psync();

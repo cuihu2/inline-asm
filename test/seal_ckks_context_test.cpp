@@ -1,6 +1,7 @@
 #include "hpu/seal/ckks_context.hpp"
 #include "hpu/seal/evaluation_key.hpp"
 #include "hpu/seal/ntt_bridge.hpp"
+#include "scheme/ckks/ciphertext_multiply.hpp"
 
 #include <seal/seal.h>
 
@@ -9,6 +10,7 @@
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 int main()
@@ -58,6 +60,21 @@ int main()
             || hpu_relinearization_key.front().key_component_0.moduli.size()
                 != bundle.data_moduli.size() + bundle.special_moduli.size()) {
             throw std::runtime_error("SEAL RelinKeys did not convert from the key context");
+        }
+
+        // The first HPU application shape comes from SEALContext/RelinKeys,
+        // never from the old P=3,dnum=2 demo profile.
+        const std::string application =
+            hpu::scheme::ckks::generate_ciphertext_multiply_body_asm(
+                static_cast<int>(spec.poly_modulus_degree),
+                static_cast<int>(bundle.data_moduli.size()),
+                static_cast<int>(bundle.special_moduli.size()),
+                static_cast<int>(hpu_relinearization_key.size()),
+                true);
+        if (application.find("Invalid CKKS") != std::string::npos
+            || application.find("no input NTT is emitted") == std::string::npos) {
+            throw std::runtime_error(
+                "SEAL-derived CKKS application shape was not accepted");
         }
 
         for (std::size_t component = 0; component < ciphertext.size(); ++component) {

@@ -10,7 +10,8 @@ std::string generate_hpu_modup_body_asm(
     int num_p,
     int num_q_digit,
     int q_offset,
-    bool append_psync = false);
+    bool append_psync = false,
+    bool manage_modulus_table = true);
 
 std::string generate_hpu_modup_asm(
     int num_q,

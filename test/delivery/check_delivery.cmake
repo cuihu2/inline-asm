@@ -691,8 +691,9 @@ endif()
 
 file(READ "${ROOT}/output/ckks_ciphertext_multiply.asm" CKKS_MULTIPLY_ASM)
 foreach(MARKER
-        "CKKS MULTIPLY: common tensor/relinearization followed by rounded Rescale"
-        "CIPHERTEXT MULTIPLY"
+        "CKKS MULTIPLY: canonical HPU NTT inputs -> multiply, relinearize, rescale"
+        "Inputs are already canonical HPU NTT; no input NTT is emitted."
+        "Tensor product stays in the input NTT domain"
         "CKKS RESCALE")
     string(FIND "${CKKS_MULTIPLY_ASM}" "${MARKER}" POSITION)
     if(POSITION EQUAL -1)

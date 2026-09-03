@@ -7,7 +7,8 @@
 // eval domain
 std::string generate_hpu_cmult_body_asm(
     int num_q,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     std::ostringstream asm_code;
 
@@ -23,8 +24,10 @@ std::string generate_hpu_cmult_body_asm(
     const int POBJ_B = 1;
     const int POBJ_OUT = 2;
 
-    asm_code << hpu::dload(POBJ_MOD_CTX, hpu::DataType::mod_ctx,
-                           hpu::DloadFlag::small_bank);
+    if (manage_modulus_table) {
+        asm_code << hpu::dload(POBJ_MOD_CTX, hpu::DataType::mod_ctx,
+                               hpu::DloadFlag::small_bank);
+    }
     for (int i = 0; i < num_q; ++i) {
         asm_code << "        /* q_" << i << " */\n";
 
@@ -62,7 +65,9 @@ std::string generate_hpu_cmult_body_asm(
         asm_code << hpu::dstore(POBJ_OUT, 1); // store out2
     }
 
-    asm_code << hpu::pfree(POBJ_MOD_CTX);
+    if (manage_modulus_table) {
+        asm_code << hpu::pfree(POBJ_MOD_CTX);
+    }
 
     if (append_psync) {
         asm_code << hpu::psync();

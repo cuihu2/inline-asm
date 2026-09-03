@@ -9,7 +9,8 @@
 std::string generate_hpu_rounded_drop_last_body_asm(
     int num_q,
     int num_components,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     std::ostringstream asm_code;
     if (num_q < 2 || num_components <= 0
@@ -30,8 +31,10 @@ std::string generate_hpu_rounded_drop_last_body_asm(
     for (int component = 0; component < num_components; ++component) {
         asm_code << "        /* component " << component
                  << " stage-1: add floor(q_last/2) in every Q context */\n";
-        asm_code << hpu::dload(
-            POBJ_MOD_CTX, hpu::DataType::mod_ctx, hpu::DloadFlag::small_bank);
+        if (manage_modulus_table) {
+            asm_code << hpu::dload(
+                POBJ_MOD_CTX, hpu::DataType::mod_ctx, hpu::DloadFlag::small_bank);
+        }
         for (int i = 0; i < num_q; ++i) {
             asm_code << "        /* component " << component << ", q_" << i << " */\n";
             asm_code << hpu::pmodld(i);
@@ -41,9 +44,11 @@ std::string generate_hpu_rounded_drop_last_body_asm(
             asm_code << hpu::pfree(POBJ_HALF);
             asm_code << hpu::dstore(POBJ_VALUE, 1);
         }
-        asm_code << hpu::pfree(POBJ_MOD_CTX);
+        if (manage_modulus_table) {
+            asm_code << hpu::pfree(POBJ_MOD_CTX);
+        }
         asm_code << ::generate_hpu_moddown_body_asm(
-            dropped_context, 1, false);
+            dropped_context, 1, false, manage_modulus_table);
     }
 
     if (append_psync) {

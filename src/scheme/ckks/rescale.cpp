@@ -22,7 +22,8 @@ bool valid_rescale_config(int num_q, int num_components)
 std::string generate_rescale_body_asm(
     int num_q,
     int num_components,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     std::ostringstream asm_code;
     if (!valid_rescale_config(num_q, num_components)) {
@@ -33,7 +34,7 @@ std::string generate_rescale_body_asm(
     asm_code << "        /* CKKS RESCALE: rounded drop-last q_" << (num_q - 1)
              << " for " << num_components << " component(s) */\n";
     asm_code << ::generate_hpu_rounded_drop_last_body_asm(
-        num_q, num_components, append_psync);
+        num_q, num_components, append_psync, manage_modulus_table);
     return asm_code.str();
 }
 

@@ -15,7 +15,8 @@ std::string generate_hpu_keyswitch_body_asm(
     int num_q,
     int num_p,
     int dnum,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     std::ostringstream asm_code;
 
@@ -44,12 +45,15 @@ std::string generate_hpu_keyswitch_body_asm(
             num_p,
             digit_size,
             q_offset,
-            false);
+            false,
+            manage_modulus_table);
 
         // 2. NTT
         asm_code << "        /* --- Step 2: NTT on Q and P bases --- */\n";
-        asm_code << hpu::dload(POBJ_MOD_CTX, hpu::DataType::mod_ctx,
-                               hpu::DloadFlag::small_bank);
+        if (manage_modulus_table) {
+            asm_code << hpu::dload(POBJ_MOD_CTX, hpu::DataType::mod_ctx,
+                                   hpu::DloadFlag::small_bank);
+        }
 
         for (int i = 0; i < total_bases; ++i) {
             asm_code << "        /* NTT ctx_" << i << " */\n";
@@ -84,7 +88,9 @@ std::string generate_hpu_keyswitch_body_asm(
                 asm_code << hpu::dstore(POBJ_OUT, 1);
             }
         }
-        asm_code << hpu::pfree(POBJ_MOD_CTX);
+        if (manage_modulus_table) {
+            asm_code << hpu::pfree(POBJ_MOD_CTX);
+        }
     }
 
     // 4. INTT
@@ -92,8 +98,10 @@ std::string generate_hpu_keyswitch_body_asm(
     const int POBJ_MOD_CTX2 = 4;
     const int TWIDDLE2 = 3;
     const int POBJ_TMP_A2 = 0;
-    asm_code << hpu::dload(POBJ_MOD_CTX2, hpu::DataType::mod_ctx,
-                           hpu::DloadFlag::small_bank);
+    if (manage_modulus_table) {
+        asm_code << hpu::dload(POBJ_MOD_CTX2, hpu::DataType::mod_ctx,
+                               hpu::DloadFlag::small_bank);
+    }
     for (int v = 0; v < 2; ++v) {
         asm_code << "        /* INTT for out" << v << " */\n";
         for (int i = 0; i < total_bases; ++i) {
@@ -104,13 +112,16 @@ std::string generate_hpu_keyswitch_body_asm(
             asm_code << hpu::dstore(POBJ_TMP_A2, 1);
         }
     }
-    asm_code << hpu::pfree(POBJ_MOD_CTX2);
+    if (manage_modulus_table) {
+        asm_code << hpu::pfree(POBJ_MOD_CTX2);
+    }
 
     // 5. ModDown
     asm_code << "        /* --- Step 5: ModDown for both parts --- */\n";
     for (int v = 0; v < 2; ++v) {
         asm_code << "        /* ModDown for out" << v << " */\n";
-        asm_code << generate_hpu_moddown_body_asm(num_q, num_p, false);
+        asm_code << generate_hpu_moddown_body_asm(
+            num_q, num_p, false, manage_modulus_table);
     }
     asm_code << "        /* --- Step 6: Add base component to out0 --- */\n";
     const int POBJ_MOD_CTX_S6 = 4;
@@ -118,8 +129,10 @@ std::string generate_hpu_keyswitch_body_asm(
     const int POBJ_BASE = 1;
     const int POBJ_FINAL_OUT0 = 2;
 
-    asm_code << hpu::dload(POBJ_MOD_CTX_S6, hpu::DataType::mod_ctx,
-                           hpu::DloadFlag::small_bank);
+    if (manage_modulus_table) {
+        asm_code << hpu::dload(POBJ_MOD_CTX_S6, hpu::DataType::mod_ctx,
+                               hpu::DloadFlag::small_bank);
+    }
     
     for (int i = 0; i < num_q; ++i) { // 降模后只有 num_q 个基了
         asm_code << hpu::pmodld(i); // 切换固定模表中的 MOD_ID
@@ -134,7 +147,9 @@ std::string generate_hpu_keyswitch_body_asm(
         // 4. 写回主存
         asm_code << hpu::dstore(POBJ_FINAL_OUT0, 1);
     }
-    asm_code << hpu::pfree(POBJ_MOD_CTX_S6);
+    if (manage_modulus_table) {
+        asm_code << hpu::pfree(POBJ_MOD_CTX_S6);
+    }
 
     if (append_psync) {
         asm_code << hpu::psync();

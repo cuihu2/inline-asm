@@ -29,7 +29,8 @@ std::string generate_hpu_modup_body_asm(
     int num_p,
     int num_q_digit,
     int q_offset,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     std::ostringstream asm_code;
     if (!valid_modup_config(num_q, num_p, num_q_digit, q_offset)) {
@@ -61,7 +62,8 @@ std::string generate_hpu_modup_body_asm(
     asm_code << generate_hpu_bconv_contexts_body_asm(
         source_contexts,
         target_contexts,
-        false);
+        false,
+        manage_modulus_table);
 
     if (append_psync) {
         asm_code << hpu::psync();

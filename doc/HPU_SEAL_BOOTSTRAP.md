@@ -74,6 +74,27 @@ old demo values `P=3` and `dnum=2` are not embedded in this bridge. The API neve
 accepts a `SecretKey`, so secret material cannot accidentally enter HPU_MEM
 through this preprocessing path.
 
+## First CKKS application stream
+
+`hpu::scheme::ckks::generate_ciphertext_multiply_body_asm` is now the formal
+SEAL-facing stream rather than a wrapper around the coefficient-input demo. Its
+contract is:
+
+1. both two-component inputs already use canonical HPU NTT physical order;
+2. tensor multiplication remains in that domain, so the old four input NTTs
+   are not emitted;
+3. the three tensor components cross to coefficients once because the first
+   functional KeySwitch/ModDown and Rescale path is coefficient-domain;
+4. independent Rescale drops `q_last`, after which only the two final limbs over
+   `Q_without_last` are transformed back to canonical HPU NTT order;
+5. the complete q/mu table is loaded to the small bank once, nested operators
+   reuse it, required results are dstore'd, and one terminal `psync` completes
+   the application.
+
+The codegen regression test counts every PNTT/PINTT stage, so reintroducing the
+four input transforms is a test failure. Standalone operator demos keep their
+existing table-management behavior through default arguments.
+
 ## Runtime boundary
 
 `hpu::runtime::Application` is platform-independent. It records the invariants
@@ -120,9 +141,10 @@ cmake -S . -B build-seal \
 cmake --build build-seal -j --target \
   hpu_hardware_ntt_model_test \
   hpu_runtime_application_test \
+  hpu_ckks_application_codegen_test \
   hpu_seal_ckks_context_test
 ctest --test-dir build-seal \
-  -R 'hpu_(hardware_ntt_model|runtime_application|seal_ckks_context)_test' \
+  -R 'hpu_(hardware_ntt_model|runtime_application|ckks_application_codegen|seal_ckks_context)_test' \
   --output-on-failure
 ```
 

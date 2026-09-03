@@ -22,7 +22,8 @@ bool valid_contexts(const std::vector<int>& contexts)
 std::string generate_hpu_bconv_contexts_body_asm(
     const std::vector<int>& source_contexts,
     const std::vector<int>& target_contexts,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     std::ostringstream asm_code;
 
@@ -45,9 +46,11 @@ std::string generate_hpu_bconv_contexts_body_asm(
     // 对每个输入基 b_j 计算: x_j = [a_j * b_hat_inv] mod b_j
     // ==========================================
     // 一次性加载模表对象；DMA 与后续 pmodld 的一致性由硬件维护。
-    asm_code << "        // dload the runtime-relocated complete modulus table\n";
-    asm_code << hpu::dload(POBJ_MOD_CTX, hpu::DataType::mod_ctx,
-                           hpu::DloadFlag::small_bank);
+    if (manage_modulus_table) {
+        asm_code << "        // dload the runtime-relocated complete modulus table\n";
+        asm_code << hpu::dload(POBJ_MOD_CTX, hpu::DataType::mod_ctx,
+                               hpu::DloadFlag::small_bank);
+    }
 
     asm_code << "        /* --- STAGE 1: Precompute in source basis --- */\n";
     for (std::size_t j = 0; j < source_contexts.size(); ++j) {
@@ -94,7 +97,9 @@ std::string generate_hpu_bconv_contexts_body_asm(
         asm_code << hpu::dstore(POBJ_ACC, 1);
     }
 
-    asm_code << hpu::pfree(POBJ_MOD_CTX);
+    if (manage_modulus_table) {
+        asm_code << hpu::pfree(POBJ_MOD_CTX);
+    }
 
     if (append_psync) {
         asm_code << hpu::psync();
@@ -107,7 +112,8 @@ std::string generate_hpu_bconv_body_asm(
     int num_q,
     int num_p,
     int q_offset,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     if (num_p <= 0 || q_offset < 0
         || !hpu::has_mod_context_capacity(num_q, num_p, q_offset)) {
@@ -127,7 +133,8 @@ std::string generate_hpu_bconv_body_asm(
     return generate_hpu_bconv_contexts_body_asm(
         source_contexts,
         target_contexts,
-        append_psync);
+        append_psync,
+        manage_modulus_table);
 }
 
 std::string generate_hpu_bconv_asm(

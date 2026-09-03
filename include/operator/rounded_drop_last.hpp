@@ -7,5 +7,6 @@
 std::string generate_hpu_rounded_drop_last_body_asm(
     int num_q,
     int num_components,
-    bool append_psync = false);
+    bool append_psync = false,
+    bool manage_modulus_table = true);
 

@@ -4,7 +4,9 @@
 
 namespace hpu::scheme::ckks {
 
-// Coefficient-domain CKKS multiply, relinearize, and rounded level drop.
+// Multiply two SEAL/HPU-bridge ciphertexts that are already in canonical HPU
+// NTT order, relinearize in the coefficient-domain KeySwitch path, rescale,
+// and return two canonical HPU NTT components over Q without q_last.
 std::string generate_ciphertext_multiply_body_asm(
     int N,
     int num_q,

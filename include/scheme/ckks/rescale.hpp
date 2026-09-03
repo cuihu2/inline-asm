@@ -10,7 +10,8 @@ namespace hpu::scheme::ckks {
 std::string generate_rescale_body_asm(
     int num_q,
     int num_components,
-    bool append_psync = false);
+    bool append_psync = false,
+    bool manage_modulus_table = true);
 
 std::string generate_rescale_asm(
     int num_q,

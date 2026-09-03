@@ -1147,9 +1147,14 @@ CKKS Rescale 输入为 `[component,Q,coefficient]`。对每个 component：
     * q_last^-1 mod q_i
 ```
 
-CKKS CiphertextMultiply 先完整执行 C.5 的公共乘法，再把两个 Q 分量按本节顺序
-Rescale。只有最外层发出 `psync`；scale 和 level 不通过 DMA 进入 HPU，由软件更新为
-`scale_out=scale_a*scale_b/q_last`、`level_out=level_in-1`。
+正式 SEAL/HPU CKKS CiphertextMultiply 不再直接调用 C.5 的 coefficient-input demo。
+SEAL bridge 已把两个输入分量转换为 canonical HPU NTT 物理顺序，因此直接执行
+CMULT，删除原来的四组输入 NTT；随后三个 tensor 分量只做一次 INTT，以复用首版
+系数域 KeySwitch/ModDown 和本节 Rescale。Rescale 后仅对 `Q_without_last` 上的两个
+最终分量执行 NTT。完整流只 dload 一次 `p4=Q|P modulus/mu table`，所有嵌套算子
+复用该 small-bank 对象，最终 dstore 后只发出一个 `psync`。scale 和 level 不通过
+DMA 进入 HPU，由软件更新为 `scale_out=scale_a*scale_b/q_last`、
+`level_out=level_in-1`。
 
 ### C.7 BGV 方案算子
 

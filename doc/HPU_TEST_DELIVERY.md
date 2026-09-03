@@ -146,6 +146,12 @@ Encrypt(ctA, ctB)
   -> Decrypt and compare with mA * mB in Z_t[x]/(x^N+1)
 ```
 
+上面是 coefficient-input 公共 demo 的冻结流程。正式 SEAL/HPU CKKS 入口接收
+canonical HPU NTT 密文，因而跳过其中四组输入 NTT；在 coefficient-domain
+KeySwitch/Rescale 完成后，仅将两个 `Q_without_last` 输出转回 canonical HPU NTT。
+`hpu_ckks_application_codegen_test` 对这些变换的 stage 数和单次 small-bank 模表生命
+周期做独立门禁。
+
 默认配置为 `N=4096`、`num_q=4`、`num_p=3`、`bfv_num_b=6`、`dnum=2`、
 `t=65537`、`hpu_mem_max_lines=65536`。主硬件数据使用确定性零噪声、Pks 可整除的功能测试评估密钥，以获得
 逐位可比结果；BFV 另生成非零误差 host smoke。两者用于 UT/IT 定位，不代表生产密钥安全性。
