@@ -76,6 +76,25 @@ int main()
             throw std::runtime_error("pointwise kernel did not materialize two components");
         }
 
+        const std::string nested_programs[] {
+            hpu::scheme::ckks::generate_add_body_asm(num_q, false, false),
+            hpu::scheme::ckks::generate_subtract_body_asm(num_q, false, false),
+            hpu::scheme::ckks::generate_multiply_plain_body_asm(
+                num_q, false, false),
+            hpu::scheme::ckks::generate_add_plain_body_asm(
+                num_q, false, false),
+            hpu::scheme::ckks::generate_subtract_plain_body_asm(
+                num_q, false, false),
+        };
+        for (const auto& nested : nested_programs) {
+            if (nested.find("dload x10, x11, p4, 2, 1") != std::string::npos
+                || nested.find("pfree p4") != std::string::npos
+                || nested.find("psync") != std::string::npos) {
+                throw std::runtime_error(
+                    "nested pointwise body managed application-lifetime state");
+            }
+        }
+
         const double scale = std::pow(2.0, 40);
         if (!hpu::scheme::ckks::compatible_add_scales(scale, scale)
             || hpu::scheme::ckks::compatible_add_scales(scale, scale * 2.0)

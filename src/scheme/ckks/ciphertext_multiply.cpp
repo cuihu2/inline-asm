@@ -54,7 +54,8 @@ std::string generate_basis_transform_body_asm(
 std::string generate_ciphertext_multiply_body_asm(
     int N,
     const hpu::RnsDecompositionLayout& layout,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     std::ostringstream asm_code;
     bool prefix_q = true;
@@ -77,10 +78,12 @@ std::string generate_ciphertext_multiply_body_asm(
 
     // The modulus and mu table is application-lifetime state in the small
     // bank. Every nested body is told not to reload or release it.
-    asm_code << hpu::dload(
-        modulus_table_object,
-        hpu::DataType::mod_ctx,
-        hpu::DloadFlag::small_bank);
+    if (manage_modulus_table) {
+        asm_code << hpu::dload(
+            modulus_table_object,
+            hpu::DataType::mod_ctx,
+            hpu::DloadFlag::small_bank);
+    }
 
     asm_code
         << "        /* --- Tensor product stays in the input NTT domain --- */\n";
@@ -108,7 +111,9 @@ std::string generate_ciphertext_multiply_body_asm(
         N, retained_q, 2, false,
         "Rescaled c0/c1: coefficient domain -> canonical HPU NTT");
 
-    asm_code << hpu::pfree(modulus_table_object);
+    if (manage_modulus_table) {
+        asm_code << hpu::pfree(modulus_table_object);
+    }
     if (append_psync) {
         asm_code << hpu::psync();
     }
@@ -120,7 +125,8 @@ std::string generate_ciphertext_multiply_body_asm(
     int num_q,
     int num_p,
     int dnum,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     if (!valid_config(N, num_q, num_p, dnum)) {
         return "        // Invalid CKKS multiply config: require N fitting one bank, num_q >= 2, divisible digits, and <= 256 contexts\n";
@@ -128,7 +134,8 @@ std::string generate_ciphertext_multiply_body_asm(
     return generate_ciphertext_multiply_body_asm(
         N,
         hpu::make_contiguous_rns_decomposition_layout(num_q, num_p, dnum),
-        append_psync);
+        append_psync,
+        manage_modulus_table);
 }
 
 std::string generate_ciphertext_multiply_asm(

@@ -8,18 +8,21 @@ namespace hpu::scheme::ckks {
 
 // Multiply two SEAL/HPU-bridge ciphertexts that are already in canonical HPU
 // NTT order, relinearize in the coefficient-domain KeySwitch path, rescale,
-// and return two canonical HPU NTT components over Q without q_last.
+// and return two canonical HPU NTT components over Q without q_last. Set
+// manage_modulus_table=false when nesting this body in a larger application.
 std::string generate_ciphertext_multiply_body_asm(
     int N,
     const hpu::RnsDecompositionLayout& layout,
-    bool append_psync = false);
+    bool append_psync = false,
+    bool manage_modulus_table = true);
 
 std::string generate_ciphertext_multiply_body_asm(
     int N,
     int num_q,
     int num_p,
     int dnum,
-    bool append_psync = false);
+    bool append_psync = false,
+    bool manage_modulus_table = true);
 
 std::string generate_ciphertext_multiply_asm(
     int N,

@@ -284,6 +284,15 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
             hpu_runtime_core
     )
 
+    add_executable(hpu_ckks_polynomial_example
+            examples/ckks_polynomial_x2_plus_one.cpp
+    )
+    target_link_libraries(hpu_ckks_polynomial_example
+            PRIVATE
+            hpu_seal_ckks
+            hpu_fhe_codegen
+    )
+
     if(BUILD_TESTING)
         add_executable(hpu_seal_ckks_context_test
                 test/seal_ckks_context_test.cpp

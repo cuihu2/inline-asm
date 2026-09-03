@@ -25,7 +25,8 @@ bool valid_config(int num_q)
 std::string generate_ciphertext_binary_body(
     int num_q,
     bool subtract,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     std::ostringstream asm_code;
     if (!valid_config(num_q)) {
@@ -34,10 +35,12 @@ std::string generate_ciphertext_binary_body(
     }
     asm_code << "        /* CKKS " << (subtract ? "SUB" : "ADD")
              << ": canonical HPU NTT/Q pointwise ciphertext operation */\n";
-    asm_code << hpu::dload(
-        kModulusTableObject,
-        hpu::DataType::mod_ctx,
-        hpu::DloadFlag::small_bank);
+    if (manage_modulus_table) {
+        asm_code << hpu::dload(
+            kModulusTableObject,
+            hpu::DataType::mod_ctx,
+            hpu::DloadFlag::small_bank);
+    }
     for (int component = 0; component < 2; ++component) {
         for (int basis = 0; basis < num_q; ++basis) {
             asm_code << "        /* component_" << component
@@ -53,7 +56,9 @@ std::string generate_ciphertext_binary_body(
             asm_code << hpu::dstore(kOutputObject, 1);
         }
     }
-    asm_code << hpu::pfree(kModulusTableObject);
+    if (manage_modulus_table) {
+        asm_code << hpu::pfree(kModulusTableObject);
+    }
     if (append_psync) {
         asm_code << hpu::psync();
     }
@@ -63,7 +68,8 @@ std::string generate_ciphertext_binary_body(
 std::string generate_plain_binary_body(
     int num_q,
     bool subtract,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     std::ostringstream asm_code;
     if (!valid_config(num_q)) {
@@ -72,10 +78,12 @@ std::string generate_plain_binary_body(
     }
     asm_code << "        /* CKKS " << (subtract ? "SUB_PLAIN" : "ADD_PLAIN")
              << ": update c0 in canonical HPU NTT/Q; copy c1 */\n";
-    asm_code << hpu::dload(
-        kModulusTableObject,
-        hpu::DataType::mod_ctx,
-        hpu::DloadFlag::small_bank);
+    if (manage_modulus_table) {
+        asm_code << hpu::dload(
+            kModulusTableObject,
+            hpu::DataType::mod_ctx,
+            hpu::DloadFlag::small_bank);
+    }
     for (int basis = 0; basis < num_q; ++basis) {
         asm_code << "        /* q_" << basis << ": out0=c0 op plaintext */\n";
         asm_code << hpu::pmodld(basis);
@@ -94,7 +102,9 @@ std::string generate_plain_binary_body(
         asm_code << hpu::dload(kLeftObject, hpu::DataType::poly);
         asm_code << hpu::dstore(kLeftObject, 1);
     }
-    asm_code << hpu::pfree(kModulusTableObject);
+    if (manage_modulus_table) {
+        asm_code << hpu::pfree(kModulusTableObject);
+    }
     if (append_psync) {
         asm_code << hpu::psync();
     }
@@ -126,17 +136,28 @@ std::string wrap(
 
 } // namespace
 
-std::string generate_add_body_asm(int num_q, bool append_psync)
+std::string generate_add_body_asm(
+    int num_q,
+    bool append_psync,
+    bool manage_modulus_table)
 {
-    return generate_ciphertext_binary_body(num_q, false, append_psync);
+    return generate_ciphertext_binary_body(
+        num_q, false, append_psync, manage_modulus_table);
 }
 
-std::string generate_subtract_body_asm(int num_q, bool append_psync)
+std::string generate_subtract_body_asm(
+    int num_q,
+    bool append_psync,
+    bool manage_modulus_table)
 {
-    return generate_ciphertext_binary_body(num_q, true, append_psync);
+    return generate_ciphertext_binary_body(
+        num_q, true, append_psync, manage_modulus_table);
 }
 
-std::string generate_multiply_plain_body_asm(int num_q, bool append_psync)
+std::string generate_multiply_plain_body_asm(
+    int num_q,
+    bool append_psync,
+    bool manage_modulus_table)
 {
     std::ostringstream asm_code;
     if (!valid_config(num_q)) {
@@ -145,26 +166,38 @@ std::string generate_multiply_plain_body_asm(int num_q, bool append_psync)
     }
     asm_code
         << "        /* CKKS MULTIPLY_PLAIN: canonical HPU NTT/Q pointwise multiply */\n";
-    asm_code << hpu::dload(
-        kModulusTableObject,
-        hpu::DataType::mod_ctx,
-        hpu::DloadFlag::small_bank);
+    if (manage_modulus_table) {
+        asm_code << hpu::dload(
+            kModulusTableObject,
+            hpu::DataType::mod_ctx,
+            hpu::DloadFlag::small_bank);
+    }
     asm_code << ::generate_hpu_pmult_body_asm(num_q, false, false);
-    asm_code << hpu::pfree(kModulusTableObject);
+    if (manage_modulus_table) {
+        asm_code << hpu::pfree(kModulusTableObject);
+    }
     if (append_psync) {
         asm_code << hpu::psync();
     }
     return asm_code.str();
 }
 
-std::string generate_add_plain_body_asm(int num_q, bool append_psync)
+std::string generate_add_plain_body_asm(
+    int num_q,
+    bool append_psync,
+    bool manage_modulus_table)
 {
-    return generate_plain_binary_body(num_q, false, append_psync);
+    return generate_plain_binary_body(
+        num_q, false, append_psync, manage_modulus_table);
 }
 
-std::string generate_subtract_plain_body_asm(int num_q, bool append_psync)
+std::string generate_subtract_plain_body_asm(
+    int num_q,
+    bool append_psync,
+    bool manage_modulus_table)
 {
-    return generate_plain_binary_body(num_q, true, append_psync);
+    return generate_plain_binary_body(
+        num_q, true, append_psync, manage_modulus_table);
 }
 
 std::string generate_add_asm(int num_q, bool append_psync)

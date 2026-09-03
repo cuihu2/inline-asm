@@ -144,6 +144,9 @@ ctest --test-dir build-seal -R hpu_seal_ckks_context_test --output-on-failure
 具体边界、硬件 NTT 模型、runtime 语义及完整命令见
 `doc/HPU_SEAL_BOOTSTRAP.md`。
 
+从工程搭建开始的简明介绍，以及 `f(x)=x^2+1` 的可运行 CKKS/HPU 示例见
+`doc/CKKS_HPU_GETTING_STARTED.md`。
+
 可选 SEAL 三方案 fixture oracle 默认关闭；它仍依赖 legacy reference 产物，并不
 代表 HPU 指令执行。启用后
 使用同一批 reference fixture 验证 BFV/BGV/CKKS 的 Encode、乘法、重线形化、

@@ -1,4 +1,5 @@
 #include "scheme/ckks/ciphertext_multiply.hpp"
+#include "scheme/ckks/basic_arithmetic.hpp"
 
 #include "util/hpu_asm.hpp"
 
@@ -79,6 +80,25 @@ int main()
                 "application emitted a redundant or missing forward NTT");
         require(count(program, "\"pintt ") == expected_pintt,
                 "application emitted a redundant or missing inverse NTT");
+
+        // A larger application owns the small-bank table and final psync.
+        // Nested bodies must be composable without reloading/releasing it.
+        std::string polynomial_program = hpu::dload(
+            4, hpu::DataType::mod_ctx, hpu::DloadFlag::small_bank);
+        polynomial_program +=
+            hpu::scheme::ckks::generate_ciphertext_multiply_body_asm(
+                degree, num_q, num_p, dnum, false, false);
+        polynomial_program += hpu::scheme::ckks::generate_add_plain_body_asm(
+            num_q - 1, false, false);
+        polynomial_program += hpu::pfree(4);
+        polynomial_program += hpu::psync();
+        require(
+            count(polynomial_program, hpu::dload(
+                4, hpu::DataType::mod_ctx,
+                hpu::DloadFlag::small_bank)) == 1
+                && count(polynomial_program, hpu::pfree(4)) == 1
+                && count(polynomial_program, hpu::psync()) == 1,
+            "composed polynomial program duplicated application-lifetime state");
 
         std::cout << "CKKS application codegen lifecycle/transform tests passed\n";
         return 0;
