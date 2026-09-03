@@ -19,13 +19,32 @@ set(HPU_TEST_CONFIG
 option(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE
         "Build the optional BFV/BGV/CKKS differential oracle against SEAL"
         OFF)
+option(HPU_ENABLE_SEAL_INTEGRATION
+        "Build the pinned SEAL CKKS integration layer"
+        OFF)
 option(HPU_ENABLE_SEAL_BFV_ORACLE
         "Deprecated alias for HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE"
         OFF)
 set(HPU_SEAL_SOURCE_DIR
-        "/home/songyexin/fhe/SEAL"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/SEAL"
         CACHE PATH
-        "Modified SEAL source tree used only by the optional differential oracle")
+        "Pinned SEAL source tree used by optional HPU integration targets")
+
+add_library(hpu_hardware_model STATIC
+        src/hpu/model/hardware_ntt.cpp
+)
+target_include_directories(hpu_hardware_model
+        PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+add_library(hpu_runtime_core STATIC
+        src/hpu/runtime/application.cpp
+)
+target_include_directories(hpu_runtime_core
+        PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
 
 if(HPU_ENABLE_SEAL_BFV_ORACLE)
     message(DEPRECATION
@@ -89,6 +108,24 @@ target_link_libraries(inline_asm_codegen
 )
 
 if(BUILD_TESTING)
+    add_executable(hpu_hardware_ntt_model_test
+            test/hardware_ntt_model_test.cpp
+    )
+    target_link_libraries(hpu_hardware_ntt_model_test
+            PRIVATE
+            hpu_hardware_model
+    )
+    add_test(NAME hpu_hardware_ntt_model_test COMMAND hpu_hardware_ntt_model_test)
+
+    add_executable(hpu_runtime_application_test
+            test/runtime_application_test.cpp
+    )
+    target_link_libraries(hpu_runtime_application_test
+            PRIVATE
+            hpu_runtime_core
+    )
+    add_test(NAME hpu_runtime_application_test COMMAND hpu_runtime_application_test)
+
     foreach(INVALID_CONFIG
             invalid_context_overflow
             invalid_num_q
@@ -117,10 +154,11 @@ if(BUILD_TESTING)
     add_test(NAME hpu_scheme_encode_self_test COMMAND hpu_scheme_encode_self_test)
 endif()
 
-if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE)
+if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
     if(NOT EXISTS "${HPU_SEAL_SOURCE_DIR}/CMakeLists.txt")
         message(FATAL_ERROR
-            "HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE requires a SEAL source tree at ${HPU_SEAL_SOURCE_DIR}")
+            "SEAL integration requires a source tree at ${HPU_SEAL_SOURCE_DIR}; "
+            "run git submodule update --init --recursive")
     endif()
     set(SEAL_EXPERIMENTAL_BFV_NO_SMRQ ON CACHE BOOL "" FORCE)
     set(SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK ON CACHE BOOL "" FORCE)
@@ -131,7 +169,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE)
     set(ZLIB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
     add_subdirectory(
         "${HPU_SEAL_SOURCE_DIR}"
-        "${CMAKE_CURRENT_BINARY_DIR}/seal_differential_oracle"
+        "${CMAKE_CURRENT_BINARY_DIR}/seal"
         EXCLUDE_FROM_ALL)
 
     execute_process(
@@ -143,6 +181,40 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE)
     if(NOT HPU_SEAL_GIT_RESULT EQUAL 0)
         set(HPU_SEAL_GIT_COMMIT "unknown")
     endif()
+    set(HPU_SEAL_EXPECTED_COMMIT "96ae20db6649bc7c24e9a34994bedd70f4951f60")
+    if(NOT HPU_SEAL_GIT_COMMIT STREQUAL HPU_SEAL_EXPECTED_COMMIT)
+        message(FATAL_ERROR
+            "SEAL must remain pinned to v4.4.4 (${HPU_SEAL_EXPECTED_COMMIT}); "
+            "found ${HPU_SEAL_GIT_COMMIT}")
+    endif()
+
+    add_library(hpu_seal_ckks STATIC
+            src/hpu/seal/ckks_context.cpp
+            src/hpu/seal/evaluation_key.cpp
+            src/hpu/seal/ntt_bridge.cpp
+    )
+    target_include_directories(hpu_seal_ckks
+            PUBLIC
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    target_link_libraries(hpu_seal_ckks
+            PUBLIC
+            SEAL::seal
+            hpu_hardware_model
+    )
+
+    if(BUILD_TESTING)
+        add_executable(hpu_seal_ckks_context_test
+                test/seal_ckks_context_test.cpp
+        )
+        target_link_libraries(hpu_seal_ckks_context_test
+                PRIVATE
+                hpu_seal_ckks
+        )
+        add_test(NAME hpu_seal_ckks_context_test COMMAND hpu_seal_ckks_context_test)
+    endif()
+
+    if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE)
     execute_process(
         COMMAND git -C "${HPU_SEAL_SOURCE_DIR}" status --porcelain
         OUTPUT_VARIABLE HPU_SEAL_GIT_STATUS
@@ -172,6 +244,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE)
         HPU_SEAL_EVALUATOR_SHA256="${HPU_SEAL_EVALUATOR_SHA256}"
         HPU_SEAL_RNS_CPP_SHA256="${HPU_SEAL_RNS_CPP_SHA256}"
         HPU_SEAL_RNS_HPP_SHA256="${HPU_SEAL_RNS_HPP_SHA256}")
+    endif()
 endif()
 
 add_subdirectory(test/encode)

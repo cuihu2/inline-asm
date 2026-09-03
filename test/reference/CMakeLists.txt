@@ -4,6 +4,7 @@ add_executable(hpu_reference_vectors
 target_link_libraries(hpu_reference_vectors
         PRIVATE
         hpu_test_config
+        hpu_hardware_model
         hpu_scheme_encoding
 )
 
