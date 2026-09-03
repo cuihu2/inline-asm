@@ -30,6 +30,15 @@ set(HPU_SEAL_SOURCE_DIR
         CACHE PATH
         "Pinned SEAL source tree used by optional HPU integration targets")
 
+# GCC 8 implements C++17 std::filesystem in a separate runtime library.
+# Keep that historical detail behind one transitive compatibility target so
+# modern GNU, Clang, and MSVC toolchains retain their normal link lines.
+add_library(hpu_filesystem_compat INTERFACE)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+        AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.0)
+    target_link_libraries(hpu_filesystem_compat INTERFACE stdc++fs)
+endif()
+
 add_library(hpu_hardware_model STATIC
         src/hpu/model/hardware_ntt.cpp
 )
@@ -65,6 +74,7 @@ target_compile_definitions(hpu_test_config
         PRIVATE
         HPU_DEFAULT_TEST_CONFIG_PATH="${HPU_TEST_CONFIG}"
 )
+target_link_libraries(hpu_test_config PUBLIC hpu_filesystem_compat)
 
 add_library(hpu_scheme_encoding STATIC
         src/scheme/detail/integer_encode.cpp
@@ -316,6 +326,8 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
         hpu_seal_differential_test
         test/seal_differential_oracle.cpp)
     target_link_libraries(hpu_seal_differential_test PRIVATE SEAL::seal)
+    target_link_libraries(
+        hpu_seal_differential_test PRIVATE hpu_filesystem_compat)
     target_compile_definitions(hpu_seal_differential_test PRIVATE
         HPU_SEAL_GIT_COMMIT="${HPU_SEAL_GIT_COMMIT}"
         HPU_SEAL_WORKTREE_STATE="${HPU_SEAL_WORKTREE_STATE}"
