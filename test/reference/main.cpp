@@ -2623,7 +2623,7 @@ void validate_hardware_ntt_model(U64 omega,
         to_u32_words(product_physical, "hardware inverse validation input"));
     for (std::size_t position = 0; position < g_n; ++position) {
         if (inverse_words[position]
-            != product_logical[bit_reverse_index(position, g_n)]) {
+            != product_logical[position]) {
             throw std::runtime_error(
                 "hardware PNTT/pointwise/PINTT path violates convolution semantics");
         }

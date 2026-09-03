@@ -13,6 +13,16 @@ constexpr std::size_t kArrayWidth = 128;
 constexpr std::size_t kButterflyCount = 64;
 constexpr std::size_t kMaxDegree = 65536;
 
+std::size_t bit_reverse(std::size_t value, std::size_t degree)
+{
+    std::size_t reversed = 0;
+    for (std::size_t remaining = degree; remaining > 1; remaining >>= 1U) {
+        reversed = (reversed << 1U) | (value & 1U);
+        value >>= 1U;
+    }
+    return reversed;
+}
+
 std::uint32_t add_mod(std::uint32_t left, std::uint32_t right, std::uint32_t modulus)
 {
     const std::uint64_t sum = static_cast<std::uint64_t>(left) + right;
@@ -294,7 +304,14 @@ std::vector<std::uint32_t> HardwareNttModel::forward(
     if (coefficients.size() != degree_) {
         throw std::invalid_argument("forward input length does not equal N");
     }
-    std::vector<std::uint32_t> values = coefficients;
+    // The increasing-m DIT schedule consumes bit-reversed coefficients. The
+    // Python hardware model exposes that memory-level convention directly;
+    // this public API accepts normal coefficient order and performs the boundary
+    // conversion explicitly.
+    std::vector<std::uint32_t> values(degree_);
+    for (std::size_t position = 0; position < degree_; ++position) {
+        values[position] = coefficients[bit_reverse(position, degree_)];
+    }
     std::vector<std::size_t> labels(degree_);
     std::iota(labels.begin(), labels.end(), 0);
     const auto tables = forward_twiddles();
@@ -347,10 +364,13 @@ std::vector<std::uint32_t> HardwareNttModel::inverse(
             store_batch(values, loaded.first, loaded.second);
         }
     }
+    std::vector<std::uint32_t> logical(degree_);
     for (std::size_t position = 0; position < degree_; ++position) {
-        values[position] = mul_mod(values[position], tables.post_scale[position], modulus_);
+        const std::uint32_t corrected = mul_mod(
+            values[position], tables.post_scale[position], modulus_);
+        logical[bit_reverse(position, degree_)] = corrected;
     }
-    return values;
+    return logical;
 }
 
 std::vector<std::uint32_t> negacyclic_forward(

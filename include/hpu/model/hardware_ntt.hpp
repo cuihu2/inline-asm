@@ -41,8 +41,10 @@ public:
     std::vector<std::vector<std::uint32_t>> forward_twiddles() const;
     InverseNttTables inverse_twiddles() const;
 
-    // Forward consumes logical coefficient order and returns HPU physical NTT
-    // order. Inverse consumes that physical order and returns logical order.
+    // Forward consumes normal logical coefficient order, performs the DIT input
+    // bit-reversal required by the hardware memory convention, and returns HPU
+    // physical NTT order. Inverse consumes that physical order and returns
+    // normal logical coefficient order.
     std::vector<std::uint32_t> forward(
         const std::vector<std::uint32_t>& coefficients) const;
     std::vector<std::uint32_t> inverse(

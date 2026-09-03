@@ -42,6 +42,14 @@ versions.
 - physical NTT layout after every P network;
 - data-independent lazy inverse scale tags.
 
+The raw increasing-m DIT hardware schedule consumes coefficients in bit-reversed
+memory order. `HardwareNttModel::forward` and `inverse` expose a mathematical
+API, so they explicitly convert between normal coefficient order and that
+hardware boundary order. The test suite compares the physical result, after the
+reported P-network layout permutation, with an independent mathematical NTT and
+checks `NTT(delta_1)[k] = omega^k`; round-trip alone is not accepted as proof of
+NTT correctness.
+
 The inverse stage tables contain `w_bf = alpha / beta`. The final pointwise
 factor is not merely `N^-1`: it is `lazy_scale[position]^-1 * N^-1`, followed by
 the CKKS inverse twist. The hardware package generator now emits the combined

@@ -42,7 +42,7 @@ int main()
         ::seal::CKKSEncoder encoder(*bundle.context);
         const std::vector<double> input { 0.125, -1.5, 2.25, 3.0 };
         ::seal::Plaintext plaintext;
-        encoder.encode(input, std::pow(2.0, 20), plaintext);
+        encoder.encode(input, std::pow(2.0, 40), plaintext);
         ::seal::Encryptor encryptor(*bundle.context, public_key);
         ::seal::Ciphertext ciphertext;
         encryptor.encrypt(plaintext, ciphertext);
