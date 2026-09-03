@@ -21,6 +21,7 @@
 #include "scheme/bgv/modswitch.hpp"
 #include "scheme/bfv/ciphertext_multiply.hpp"
 #include "scheme/bfv/modswitch.hpp"
+#include "scheme/ckks/basic_arithmetic.hpp"
 #include "scheme/ckks/ciphertext_multiply.hpp"
 #include "scheme/ckks/relinearize.hpp"
 #include "scheme/ckks/rescale.hpp"
@@ -537,6 +538,39 @@ void test_ckks_standalone_ntt_kernels_codegen()
 	std::cout << "Saved standalone SEAL-facing CKKS Relinearize/Rescale kernels\n";
 }
 
+void test_ckks_pointwise_codegen()
+{
+	using Generator = std::string (*)(int, bool);
+	struct PointwiseCase {
+		const char* stem;
+		Generator wrapper;
+		Generator body;
+	};
+	const PointwiseCase cases[] {
+		{"ckks_add", hpu::scheme::ckks::generate_add_asm,
+		 hpu::scheme::ckks::generate_add_body_asm},
+		{"ckks_subtract", hpu::scheme::ckks::generate_subtract_asm,
+		 hpu::scheme::ckks::generate_subtract_body_asm},
+		{"ckks_multiply_plain", hpu::scheme::ckks::generate_multiply_plain_asm,
+		 hpu::scheme::ckks::generate_multiply_plain_body_asm},
+		{"ckks_add_plain", hpu::scheme::ckks::generate_add_plain_asm,
+		 hpu::scheme::ckks::generate_add_plain_body_asm},
+		{"ckks_subtract_plain", hpu::scheme::ckks::generate_subtract_plain_asm,
+		 hpu::scheme::ckks::generate_subtract_plain_body_asm},
+	};
+	for (const auto& pointwise : cases) {
+		if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
+			std::ofstream(std::string("output/") + pointwise.stem + ".cpp")
+				<< pointwise.wrapper(g_ciphertext_multiply_cfg.num_q, true);
+		}
+		if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
+			std::ofstream(std::string("output/") + pointwise.stem + ".asm")
+				<< pointwise.body(g_ciphertext_multiply_cfg.num_q, true);
+		}
+	}
+	std::cout << "Saved zero-transform CKKS Add/Sub/Plain kernels\n";
+}
+
 void test_moddown_codegen()
 {
 	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
@@ -701,6 +735,7 @@ int main(int argc, char* argv[])
 		test_auto_codegen();
 		test_ckks_rotate_codegen();
 		test_ckks_standalone_ntt_kernels_codegen();
+		test_ckks_pointwise_codegen();
 		test_keyswitch_codegen();
 		test_relinearization_codegen();
 		test_ciphertext_multiply_codegen();

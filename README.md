@@ -33,6 +33,7 @@
 - **`scheme/ckks/ciphertext_multiply.hpp/cpp`**：正式 SEAL/HPU 路径直接消费 canonical HPU NTT 密文，不再重复转换四个输入分量；张量积、重线形化、独立 Rescale 后输出 NTT 域 `Q_without_last`。
 - **`scheme/ckks/rotate.hpp/cpp`**：使用 modified-root INTT 把 `NTT_psi(a) -> sigma_k(a)` 融合为一次变换，随后执行 SEAL Galois KeySwitch 并返回 canonical HPU NTT；不再依赖 CPU 系数置换。
 - **`scheme/ckks/relinearize.hpp/cpp`** 与 **`rescale_ntt`**：提供独立的 SEAL-facing NTT 输入/输出 kernel；原有 coefficient-domain Relinearization/Rescale 继续作为复合应用内部核心。
+- **`scheme/ckks/basic_arithmetic.hpp/cpp`**：提供 canonical HPU NTT 域的 Add、Subtract、MultiplyPlain、AddPlain 与 SubtractPlain；全程逐点运算，不生成 NTT/INTT。
 - **`scheme/bgv/encode.hpp/cpp`**：纯 host 实现；提供 signed coefficient encoding 和 generator-3 两行 batching；要求 `t` 为素数且 `2N | (t-1)`。
 - **`scheme/bgv/ciphertext_multiply.hpp/cpp`**：复用公共乘法，并提供 `correction_factor_a * correction_factor_b mod t` 元数据更新。
 - **`scheme/bgv/modswitch.hpp/cpp`**：执行 BGV `mod t and divide q_last`，输出 `Q_without_last` 并更新 correction factor。
@@ -161,6 +162,7 @@ ctest --test-dir build-seal -R hpu_seal --output-on-failure
 - `outputs/bgv_encode/`
 - `outputs/ckks_rescale/`
 - `outputs/ckks_ciphertext_multiply/`
+- `outputs/ckks_{add,subtract,multiply_plain,add_plain,subtract_plain}/`
 - `outputs/bgv_ciphertext_multiply/`
 - `outputs/bgv_modswitch/`
 - `outputs/bfv_encode/`

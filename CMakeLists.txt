@@ -90,6 +90,7 @@ add_library(hpu_fhe_codegen STATIC
         src/operator/ciphertext_multiply.cpp
         src/operator/rounded_drop_last.cpp
         src/scheme/ckks/rescale.cpp
+        src/scheme/ckks/basic_arithmetic.cpp
         src/scheme/ckks/ciphertext_multiply.cpp
         src/scheme/ckks/relinearize.cpp
         src/scheme/ckks/rotate.cpp
@@ -164,6 +165,17 @@ if(BUILD_TESTING)
     add_test(
             NAME hpu_ckks_standalone_kernels_codegen_test
             COMMAND hpu_ckks_standalone_kernels_codegen_test)
+
+    add_executable(hpu_ckks_pointwise_codegen_test
+            test/ckks_pointwise_codegen_test.cpp
+    )
+    target_link_libraries(hpu_ckks_pointwise_codegen_test
+            PRIVATE
+            hpu_fhe_codegen
+    )
+    add_test(
+            NAME hpu_ckks_pointwise_codegen_test
+            COMMAND hpu_ckks_pointwise_codegen_test)
 
     foreach(INVALID_CONFIG
             invalid_context_overflow

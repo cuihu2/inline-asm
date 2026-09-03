@@ -67,6 +67,12 @@ coefficients and then runs the HPU negacyclic model, rather than assuming that
 SEAL and HPU share an evaluation-point order. The reverse bridge is tested for
 exact word equality on an encrypted CKKS ciphertext.
 
+`hpu::seal_adapter::plaintext_to_hpu` applies the same coefficient-mediated
+conversion to an encoded CKKS `Plaintext`. The bridge keeps SEAL's logical
+`[modulus][coefficient]` order while replacing each limb with canonical HPU NTT
+physical order. `parms_id` and `scale` remain host metadata; they are not copied
+into the polynomial word vector. The test requires exact SEAL-word round-trip.
+
 `hpu::seal_adapter::relinearization_key_to_hpu` converts SEAL's `s^2`
 relinearization key from the key context into the same physical Q/P layout. It
 derives the digit and special-modulus counts from `SEALContext`/`RelinKeys`; the
@@ -117,6 +123,16 @@ and terminate with one psync. This leaves Rescale independently schedulable even
 though the combined multiply application can keep coefficient intermediates and
 avoid a needless NTT/INTT round trip.
 
+The zero-transform pointwise layer adds `ckks_add`, `ckks_subtract`,
+`ckks_multiply_plain`, `ckks_add_plain`, and `ckks_subtract_plain`. Every input
+is already at the same `parms_id` in canonical HPU NTT order. Add/Sub and their
+Plain variants require compatible CKKS scales; MultiplyPlain updates host
+metadata to `ciphertext_scale * plaintext_scale`. The HPU streams only issue
+`padd`, `psub`, or `pmul`, keep no more than three regular-bank operands live,
+load the application modulus table once, dstore both result components, and
+emit no PNTT/PINTT. A runtime may alias the unchanged `c1` for AddPlain/SubPlain;
+the standalone ABI materializes it so the output is self-contained.
+
 ## Runtime boundary
 
 `hpu::runtime::Application` is platform-independent. It records the invariants
@@ -166,9 +182,10 @@ cmake --build build-seal -j --target \
   hpu_ckks_application_codegen_test \
   hpu_ckks_rotate_codegen_test \
   hpu_ckks_standalone_kernels_codegen_test \
+  hpu_ckks_pointwise_codegen_test \
   hpu_seal_ckks_context_test
 ctest --test-dir build-seal \
-  -R 'hpu_(hardware_ntt_model|runtime_application|ckks_application_codegen|ckks_rotate_codegen|ckks_standalone_kernels_codegen|seal_ckks_context)_test' \
+  -R 'hpu_(hardware_ntt_model|runtime_application|ckks_application_codegen|ckks_rotate_codegen|ckks_standalone_kernels_codegen|ckks_pointwise_codegen|seal_ckks_context)_test' \
   --output-on-failure
 ```
 

@@ -3,6 +3,7 @@
 #include "hpu/seal/ckks_context.hpp"
 #include "hpu/seal/evaluation_key.hpp"
 #include "hpu/seal/ntt_bridge.hpp"
+#include "scheme/ckks/basic_arithmetic.hpp"
 #include "scheme/ckks/ciphertext_multiply.hpp"
 #include "scheme/ckks/relinearize.hpp"
 #include "scheme/ckks/rescale.hpp"
@@ -53,6 +54,17 @@ int main()
         const std::vector<double> input { 0.125, -1.5, 2.25, 3.0 };
         ::seal::Plaintext plaintext;
         encoder.encode(input, std::pow(2.0, 40), plaintext);
+        const auto hpu_plaintext = hpu::seal_adapter::plaintext_to_hpu(
+            plaintext, *bundle.context);
+        const auto plaintext_round_trip = hpu::seal_adapter::hpu_to_seal_ntt(
+            hpu_plaintext, plaintext.parms_id(), *bundle.context);
+        if (plaintext_round_trip.size() != plaintext.coeff_count()
+            || !std::equal(
+                plaintext_round_trip.begin(), plaintext_round_trip.end(),
+                plaintext.data())) {
+            throw std::runtime_error(
+                "SEAL plaintext NTT -> HPU NTT -> SEAL NTT round-trip failed");
+        }
         ::seal::Encryptor encryptor(*bundle.context, public_key);
         ::seal::Ciphertext ciphertext;
         encryptor.encrypt(plaintext, ciphertext);
@@ -133,6 +145,23 @@ int main()
                 "SEAL-derived standalone CKKS kernel shape was not accepted");
         }
 
+        const int num_q = static_cast<int>(bundle.data_moduli.size());
+        const std::string pointwise_programs[] {
+            hpu::scheme::ckks::generate_add_body_asm(num_q, true),
+            hpu::scheme::ckks::generate_subtract_body_asm(num_q, true),
+            hpu::scheme::ckks::generate_multiply_plain_body_asm(num_q, true),
+            hpu::scheme::ckks::generate_add_plain_body_asm(num_q, true),
+            hpu::scheme::ckks::generate_subtract_plain_body_asm(num_q, true),
+        };
+        for (const auto& program : pointwise_programs) {
+            if (program.find("Invalid CKKS") != std::string::npos
+                || program.find("pntt ") != std::string::npos
+                || program.find("pintt ") != std::string::npos) {
+                throw std::runtime_error(
+                    "SEAL-derived pointwise kernel emitted an invalid transform");
+            }
+        }
+
         for (std::size_t component = 0; component < ciphertext.size(); ++component) {
             const auto hpu_polynomial = hpu::seal_adapter::ciphertext_component_to_hpu(
                 ciphertext, component, *bundle.context);
@@ -157,7 +186,7 @@ int main()
         }
 
         std::cout
-            << "SEAL CKKS N=65536 bridge, keys, and fused Rotate tables passed\n";
+            << "SEAL CKKS N=65536 ciphertext/plaintext bridge, keys, Rotate, and pointwise kernels passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "SEAL CKKS context test failed: " << error.what() << '\n';

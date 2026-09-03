@@ -771,8 +771,9 @@ for each modulus context i:
 
 `util`、`poly` 和 `operator` 提供方案无关的 RNS、NTT、KeySwitch、
 Relinearization 和原始 CiphertextMultiply。`scheme/ckks`、`scheme/bgv` 与 `scheme/bfv`
-位于其上，只组合方案特有步骤并维护软件元数据。方案层当前统一采用系数域输入、
-系数域输出边界；内部 NTT/INTT 仍由公共算子生成。
+位于其上，只组合方案特有步骤并维护软件元数据。正式 SEAL-facing CKKS 路径采用
+canonical HPU NTT 边界；BGV/BFV 及保留的公共 demo 仍以系数域边界为主。需要的
+NTT/INTT 由各算子按其边界契约生成。
 
 三个 `scheme/*/encode` 分别定义纯 host 的方案数学。CKKS 使用 generator-3
 槽位映射、共轭半区和 radix-2 复数 FFT，把最多 `N/2` 个复数槽位量化为带 scale
@@ -800,6 +801,11 @@ out_i = (rounded_i - BConv_q_last_to_q_i(rounded_last))
 `multiply_scale(scale_a, scale_b)` 和 `rescale_scale(product_scale, q_last)` 更新
 软件元数据。`ckks_ciphertext_multiply` 的固定顺序是公共 tensor product、
 重线形化、CKKS Rescale，最终只发出一次 `psync`。
+
+CKKS Add/Sub、MultiplyPlain、AddPlain/SubPlain 直接消费同一 `parms_id` 下的
+canonical HPU NTT 多项式并逐 limb 运算，不生成 NTT/INTT。Add/Sub 及 Plain 加减
+要求 host 检查 scale 兼容；MultiplyPlain 的软件 scale 更新为
+`ciphertext_scale * plaintext_scale`。这些元数据不进入 HPU 指令流。
 
 ### 8.7 BGV 乘法和 ModSwitch
 
@@ -1162,6 +1168,13 @@ post-untwist 表。两个 canonical HPU NTT 输入分别执行一次 modified-ro
 SEAL Galois key 执行 KeySwitch，并将两个 Q 输出恢复为 canonical HPU NTT。若调度
 器把 fused INTT 与 KeySwitch 拆成两个 kernel，边界只需保留
 `domain=coefficient,key_domain=k`，不需要保存 modified-root NTT 状态。
+
+CKKS pointwise 的 HPU_MEM 逻辑布局保持 SEAL 风格的 ciphertext
+`[component][q][coefficient]` 与 plaintext `[q][coefficient]`；runtime 按每条 DMA
+relocation 绑定相应 span。密文 Add/Sub 对两个 component 各执行一次
+`padd`/`psub`；MultiplyPlain 在同一 `q_i` 下复用 plaintext 对象，依次计算
+`c0*pt`、`c1*pt`；AddPlain/SubPlain 只修改 `c0`，standalone 流将原 `c1`
+复制到输出。整个应用只装载一次 `p4` 模表，两个输出都在 terminal `psync` 前写回。
 
 ### C.7 BGV 方案算子
 

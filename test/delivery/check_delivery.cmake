@@ -721,6 +721,16 @@ if(NOT CKKS_RESCALE_NTT_ASM MATCHES
         "CKKS RESCALE NTT: canonical input -> rounded drop-last -> canonical output")
     message(FATAL_ERROR "Standalone SEAL-facing Rescale stream is missing")
 endif()
+foreach(CASE_NAME ckks_add ckks_subtract ckks_multiply_plain
+        ckks_add_plain ckks_subtract_plain)
+    file(READ "${ROOT}/output/${CASE_NAME}.asm" CKKS_POINTWISE_ASM)
+    if(CKKS_POINTWISE_ASM MATCHES "pntt " OR CKKS_POINTWISE_ASM MATCHES "pintt ")
+        message(FATAL_ERROR "${CASE_NAME}: pointwise CKKS stream contains a transform")
+    endif()
+    if(NOT CKKS_POINTWISE_ASM MATCHES "canonical HPU NTT/Q")
+        message(FATAL_ERROR "${CASE_NAME}: canonical HPU NTT contract is missing")
+    endif()
+endforeach()
 file(READ "${ROOT}/outputs/ckks_ciphertext_multiply/test_data/params.json" CKKS_MULTIPLY_PARAMS)
 if(NOT CKKS_MULTIPLY_PARAMS MATCHES "\"scheme\": \"CKKS\""
         OR NOT CKKS_MULTIPLY_PARAMS MATCHES "\"level_delta\": -1"
@@ -916,6 +926,7 @@ function(CHECK_OBJECT_LIFECYCLE RELATIVE_PATH)
 endfunction()
 
 foreach(CASE_NAME ntt intt ckks_rescale ckks_ciphertext_multiply
+        ckks_add ckks_subtract ckks_multiply_plain ckks_add_plain ckks_subtract_plain
         bgv_ciphertext_multiply bgv_modswitch bfv_ciphertext_multiply
         bfv_modswitch mm bconv pmult cmult modup
         moddown auto keyswitch relinearization ciphertext_multiply)
@@ -935,6 +946,7 @@ function(CHECK_MOD_CONTEXT_LOAD RELATIVE_PATH)
 endfunction()
 
 foreach(CASE_NAME ntt intt ckks_rescale ckks_ciphertext_multiply
+        ckks_add ckks_subtract ckks_multiply_plain ckks_add_plain ckks_subtract_plain
         bgv_ciphertext_multiply bgv_modswitch bfv_ciphertext_multiply
         bfv_modswitch bconv pmult cmult modup
         moddown auto keyswitch relinearization ciphertext_multiply)
@@ -964,6 +976,7 @@ function(CHECK_TERMINAL_PSYNC RELATIVE_PATH)
 endfunction()
 
 foreach(CASE_NAME ntt intt ckks_rescale ckks_ciphertext_multiply
+        ckks_add ckks_subtract ckks_multiply_plain ckks_add_plain ckks_subtract_plain
         bgv_ciphertext_multiply bgv_modswitch bfv_ciphertext_multiply
         bfv_modswitch mm bconv pmult cmult modup
         moddown auto keyswitch relinearization ciphertext_multiply)
@@ -972,6 +985,7 @@ endforeach()
 CHECK_TERMINAL_PSYNC("outputs/rv_interface_smoke/rv_interface_smoke.asm")
 
 foreach(CASE_NAME ntt intt ckks_rescale ckks_ciphertext_multiply
+        ckks_add ckks_subtract ckks_multiply_plain ckks_add_plain ckks_subtract_plain
         bgv_ciphertext_multiply bgv_modswitch bfv_ciphertext_multiply
         bfv_modswitch mm bconv pmult cmult modup
         moddown auto keyswitch relinearization ciphertext_multiply)
@@ -1093,6 +1107,7 @@ file(WRITE "${ROOT}/outputs/DELIVERY_REPORT.txt"
     "BGV_AUTO_X3_ROW_ROTATION=PASS\n"
     "CKKS_RESCALE_ROUNDED_DROP_LAST=PASS\n"
     "CKKS_MULTIPLY_RELINEARIZE_RESCALE=PASS\n"
+    "CKKS_POINTWISE_ZERO_TRANSFORM=PASS\n"
     "BGV_MULTIPLY_CORRECTION_FACTOR=PASS\n"
     "BGV_MODSWITCH_DROP_LAST=PASS\n"
     "BGV_CONTEXT_ORDER_Q_P_T=PASS\n"

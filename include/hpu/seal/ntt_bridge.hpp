@@ -25,6 +25,13 @@ HpuRnsPolynomial ciphertext_component_to_hpu(
     std::size_t component,
     const ::seal::SEALContext& context);
 
+// Converts an encoded CKKS plaintext at its current parms_id. CKKS plaintexts
+// are already in SEAL NTT form; conversion still goes through coefficients so
+// the result uses canonical HPU physical order.
+HpuRnsPolynomial plaintext_to_hpu(
+    const ::seal::Plaintext& plaintext,
+    const ::seal::SEALContext& context);
+
 // Inverse bridge used for differential tests and eventual HPU result import.
 // Returns SEAL NTT words in [modulus][coefficient] order.
 std::vector<std::uint64_t> hpu_to_seal_ntt(

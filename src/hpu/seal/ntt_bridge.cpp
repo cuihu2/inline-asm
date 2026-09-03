@@ -82,6 +82,49 @@ HpuRnsPolynomial ciphertext_component_to_hpu(
     return result;
 }
 
+HpuRnsPolynomial plaintext_to_hpu(
+    const ::seal::Plaintext& plaintext,
+    const ::seal::SEALContext& context)
+{
+    if (!plaintext.is_ntt_form()) {
+        throw std::invalid_argument("CKKS plaintext must be in SEAL NTT form");
+    }
+    const auto context_data = require_context_data(plaintext.parms_id(), context);
+    const auto& parameters = context_data->parms();
+    const std::size_t degree = parameters.poly_modulus_degree();
+    const auto& moduli = parameters.coeff_modulus();
+    if (degree > 65536 || plaintext.coeff_count() != degree * moduli.size()) {
+        throw std::invalid_argument(
+            "CKKS plaintext shape is incompatible with the HPU/SEAL context");
+    }
+
+    HpuRnsPolynomial result;
+    result.degree = degree;
+    result.moduli.reserve(moduli.size());
+    result.words.reserve(plaintext.coeff_count());
+    const ::seal::util::NTTTables* seal_tables = context_data->small_ntt_tables();
+    for (std::size_t basis = 0; basis < moduli.size(); ++basis) {
+        const std::uint32_t modulus = narrow(moduli[basis].value(), "SEAL modulus");
+        const std::uint32_t psi = narrow(seal_tables[basis].get_root(), "SEAL NTT root");
+        result.moduli.push_back(modulus);
+
+        std::vector<std::uint64_t> coefficients(
+            plaintext.data() + basis * degree,
+            plaintext.data() + (basis + 1) * degree);
+        ::seal::util::inverse_ntt_negacyclic_harvey(
+            coefficients.data(), seal_tables[basis]);
+        std::vector<std::uint32_t> coefficient_words(degree);
+        for (std::size_t index = 0; index < degree; ++index) {
+            coefficient_words[index] = narrow(
+                coefficients[index], "SEAL plaintext coefficient");
+        }
+        const auto physical = hpu::model::negacyclic_forward(
+            coefficient_words, modulus, psi);
+        result.words.insert(result.words.end(), physical.begin(), physical.end());
+    }
+    return result;
+}
+
 std::vector<std::uint64_t> hpu_to_seal_ntt(
     const HpuRnsPolynomial& polynomial,
     ::seal::parms_id_type parms_id,
