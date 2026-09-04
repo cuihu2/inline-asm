@@ -377,6 +377,66 @@ def _validate_params_and_abi(
     return n, moduli, includes_twiddles
 
 
+def _expected_twiddle_basis_indices(
+    params: Mapping[str, Any],
+    moduli: tuple[int, ...],
+) -> set[int]:
+    expected = set(range(len(moduli)))
+    if "t_mod_id" not in params:
+        return expected
+
+    t_mod_id = _require_int(params["t_mod_id"], "params.t_mod_id", 0)
+    if t_mod_id >= len(moduli):
+        raise DeliveryValidationError("params.t_mod_id is outside the modulus table")
+
+    if "plaintext_modulus" in params:
+        plaintext_modulus = _require_int(
+            params["plaintext_modulus"],
+            "params.plaintext_modulus",
+            MIN_PE_MODULUS,
+        )
+        if moduli[t_mod_id] != plaintext_modulus:
+            raise DeliveryValidationError(
+                "params.t_mod_id does not identify params.plaintext_modulus"
+            )
+    else:
+        if (
+            params.get("scheme") != "BFV"
+            or params.get("context_order") != "Q|Pks|B|m_sk|t"
+            or t_mod_id != len(moduli) - 1
+        ):
+            raise DeliveryValidationError(
+                "params.plaintext_modulus may be omitted only for the terminal "
+                "BFV Q|Pks|B|m_sk|t context"
+            )
+
+    expected.remove(t_mod_id)
+    return expected
+
+
+def _declared_inverse_twiddle_profiles(
+    params: Mapping[str, Any],
+    test_data_root: Path,
+) -> frozenset[str]:
+    if params.get("operation") != "auto":
+        return frozenset()
+
+    layout_path = test_data_root / "AUTO_LAYOUT.json"
+    if not layout_path.exists():
+        return frozenset()
+    layout_path = _required_file(layout_path, test_data_root, "AUTO_LAYOUT.json")
+    layout = _load_json_object(layout_path, "AUTO_LAYOUT.json")
+    profile = _require_text(
+        layout.get("inverse_twiddle_profile"),
+        "AUTO_LAYOUT.inverse_twiddle_profile",
+    )
+    if _SAFE_CASE.fullmatch(profile) is None or profile in {"ntt", "intt"}:
+        raise DeliveryValidationError(
+            "AUTO_LAYOUT.inverse_twiddle_profile is not a safe custom profile name"
+        )
+    return frozenset({profile})
+
+
 def _validate_hpu_mem_config(config: dict[str, Any]) -> tuple[int, int, int, str]:
     if config.get("format_version") != 1:
         raise DeliveryValidationError("hpu_mem_config.json requires format_version 1")
@@ -689,6 +749,7 @@ def _read_twiddles(
     moduli: tuple[int, ...],
     expected_basis_indices: set[int],
     artifacts: Mapping[str, ArtifactSpan],
+    declared_inverse_profiles: frozenset[str] = frozenset(),
 ) -> tuple[TwiddleRecord, ...]:
     rows = _read_csv_exact(path, _TWIDDLE_FIELDS, "twiddle_map.csv")
     records: list[TwiddleRecord] = []
@@ -698,7 +759,7 @@ def _read_twiddles(
     for row_number, row in enumerate(rows, 1):
         direction = row["direction"]
         phase = row["phase"]
-        if direction not in {"ntt", "intt"}:
+        if direction not in {"ntt", "intt"} | declared_inverse_profiles:
             raise DeliveryValidationError(f"twiddle row {row_number} has an invalid direction")
         basis_index = _parse_uint(row["basis_index"], f"twiddle row {row_number} basis_index")
         if basis_index >= len(moduli):
@@ -722,6 +783,15 @@ def _read_twiddles(
             )
         except BindingValidationError as error:
             raise DeliveryValidationError(str(error)) from error
+        stage_name = f"stage_{stage:02d}" if stage >= 0 else phase
+        expected_path = (
+            f"constants/twiddle/{direction}/basis_{basis_index:02d}/"
+            f"{stage_name}.u32.bin"
+        )
+        if artifact_path != expected_path:
+            raise DeliveryValidationError(
+                f"twiddle row {row_number} path does not match its profile and geometry"
+            )
         artifact = artifacts.get(artifact_path)
         if artifact is None:
             raise DeliveryValidationError(
@@ -754,7 +824,11 @@ def _read_twiddles(
                     f"twiddle row {row_number} has invalid pre-twist geometry"
                 )
         elif phase == "post_untwist_scale":
-            if direction != "intt" or stage != -1 or (value_count, batch_count, twiddles_per_batch) != (n, 1, n):
+            if (
+                direction not in {"intt"} | declared_inverse_profiles
+                or stage != -1
+                or (value_count, batch_count, twiddles_per_batch) != (n, 1, n)
+            ):
                 raise DeliveryValidationError(
                     f"twiddle row {row_number} has invalid post-factor geometry"
                 )
@@ -794,6 +868,12 @@ def _read_twiddles(
         for stage in range(log_n):
             expected_identities.add(("ntt", basis_index, "butterfly", stage))
             expected_identities.add(("intt", basis_index, "butterfly", stage))
+        for profile in declared_inverse_profiles:
+            expected_identities.add(
+                (profile, basis_index, "post_untwist_scale", -1)
+            )
+            for stage in range(log_n):
+                expected_identities.add((profile, basis_index, "butterfly", stage))
     if seen != expected_identities:
         raise DeliveryValidationError(
             "twiddle_map does not contain the complete per-basis NTT/INTT schedule"
@@ -895,21 +975,11 @@ def load_delivery_package(case_directory: str | Path) -> DeliveryPackage:
     abi = _load_json_object(abi_path, "abi.json")
     config = _load_json_object(config_path, "hpu_mem_config.json")
     n, moduli, includes_twiddles = _validate_params_and_abi(params, abi)
-    expected_twiddle_basis_indices = set(range(len(moduli)))
-    if "t_mod_id" in params:
-        t_mod_id = _require_int(params["t_mod_id"], "params.t_mod_id", 0)
-        if t_mod_id >= len(moduli):
-            raise DeliveryValidationError("params.t_mod_id is outside the modulus table")
-        plaintext_modulus = _require_int(
-            params.get("plaintext_modulus"),
-            "params.plaintext_modulus",
-            MIN_PE_MODULUS,
-        )
-        if moduli[t_mod_id] != plaintext_modulus:
-            raise DeliveryValidationError(
-                "params.t_mod_id does not identify params.plaintext_modulus"
-            )
-        expected_twiddle_basis_indices.remove(t_mod_id)
+    expected_twiddle_basis_indices = _expected_twiddle_basis_indices(params, moduli)
+    inverse_twiddle_profiles = _declared_inverse_twiddle_profiles(
+        params,
+        test_data_root,
+    )
     base_address, line_bytes, line_count, image_relative_path = _validate_hpu_mem_config(config)
     if line_bytes != abi["line_bytes"]:
         raise DeliveryValidationError("abi and hpu_mem_config line sizes disagree")
@@ -952,6 +1022,7 @@ def load_delivery_package(case_directory: str | Path) -> DeliveryPackage:
             moduli,
             expected_twiddle_basis_indices,
             artifact_index,
+            inverse_twiddle_profiles,
         )
     else:
         if twiddle_path.exists():

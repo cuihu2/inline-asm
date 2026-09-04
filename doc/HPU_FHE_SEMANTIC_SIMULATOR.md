@@ -29,6 +29,9 @@ python3 -m tools.hpu_fhe_semantic_sim validate-delivery \
 `line_map.csv`、`mod_ctx_map.csv`、可选`twiddle_map.csv`、HPU_MEM镜像、
 `.inst32/.cmd26`和`dma_relocation_manifest.csv`。硬件manifest中的
 `readable_path`由主分支决定，当前为`.u32.dec.txt`，接收端不写死展示文件后缀。
+它只校验交付包结构、跨文件ABI一致性、机器码可解码性和可选DMA绑定；不会执行
+`.inst32`指令流，也不会把运行结果与`expected`/golden逐字比较。执行与结果比较必须
+另行构造resolved case后使用`run`，或由目标RTL/板级环境完成。
 
 `dma_relocation_manifest.csv`只说明某条DMA的指令字段，不说明它应绑定哪个数据对象。
 因此模拟器不会按文件名或role猜测，调用方必须显式提供逐DMA映射：
@@ -60,7 +63,9 @@ python3 -m tools.hpu_fhe_semantic_sim validate-delivery \
 不带映射时状态为`VALID_UNRESOLVED`；带完整且匹配的映射时为
 `VALID_RESOLVED`。缺失、额外、重复、越界或与机器码不一致的映射都会失败关闭。
 
-新的方案Encode目录分别为`outputs/ckks_encode`与`outputs/bgv_encode`，不存在旧的
+`outputs/{ckks_encode,bgv_encode,bfv_encode}`是纯host Encode/Decode包，不包含
+`hardware/`、`.inst32/.cmd26`或DMA relocation，因此不属于`validate-delivery`的
+输入范围；它们的host数学自检属于主构建测试，不应报告为本命令已校验。不存在旧的
 单一`outputs/encode`目录。
 
 ### 1.2准备synthetic case（模型单测方式）

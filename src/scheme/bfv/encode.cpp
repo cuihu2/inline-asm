@@ -1,8 +1,8 @@
-#include "scheme/bgv/encode.hpp"
+#include "scheme/bfv/encode.hpp"
 
 #include "scheme/detail/integer_encode.hpp"
 
-namespace hpu::scheme::bgv {
+namespace hpu::scheme::bfv {
 
 std::vector<std::uint64_t> encode_coefficients(
     const std::vector<std::int64_t>& signed_coefficients,
@@ -10,7 +10,7 @@ std::vector<std::uint64_t> encode_coefficients(
     std::uint64_t plaintext_modulus)
 {
     return hpu::scheme::detail::encode_integer_coefficients(
-        signed_coefficients, N, plaintext_modulus, "BGV");
+        signed_coefficients, N, plaintext_modulus, "BFV");
 }
 
 std::vector<std::int64_t> decode_coefficients(
@@ -18,7 +18,7 @@ std::vector<std::int64_t> decode_coefficients(
     std::uint64_t plaintext_modulus)
 {
     return hpu::scheme::detail::decode_integer_coefficients(
-        coefficients, plaintext_modulus, "BGV");
+        coefficients, plaintext_modulus, "BFV");
 }
 
 std::vector<std::uint64_t> encode_slots(
@@ -27,7 +27,7 @@ std::vector<std::uint64_t> encode_slots(
     std::uint64_t plaintext_modulus)
 {
     return hpu::scheme::detail::encode_integer_slots(
-        slots, N, plaintext_modulus, "BGV");
+        slots, N, plaintext_modulus, "BFV");
 }
 
 std::vector<std::int64_t> decode_slots(
@@ -35,7 +35,7 @@ std::vector<std::int64_t> decode_slots(
     std::uint64_t plaintext_modulus)
 {
     return hpu::scheme::detail::decode_integer_slots(
-        coefficients, plaintext_modulus, "BGV");
+        coefficients, plaintext_modulus, "BFV");
 }
 
-} // namespace hpu::scheme::bgv
+} // namespace hpu::scheme::bfv

@@ -133,12 +133,15 @@ int main()
             "psync\n"
             "pfree p0\n");
         const std::string executable =
-            hpu::render_executable_source("smoke", executable_encoded);
+            hpu::render_executable_source("smoke", executable_encoded, 65536);
         const std::string header = hpu::render_executable_header(
             "smoke", hpu::collect_dma_relocations(executable_encoded).size());
         const std::string manifest = hpu::render_dma_manifest(executable_encoded);
         if (hpu::collect_dma_relocations(executable_encoded).size() != 4)
             throw std::runtime_error("executable DMA count mismatch");
+        if (executable.find("#define HPU_MEM_LINE_COUNT UINT64_C(65536)")
+            == std::string::npos)
+            throw std::runtime_error("executable HPU_MEM capacity mismatch");
         if (executable.find("register uintptr_t hpu_rs1 __asm__(\"x10\")")
             == std::string::npos)
             throw std::runtime_error("executable x10 binding mismatch");

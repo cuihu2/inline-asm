@@ -9,7 +9,6 @@
 
 namespace hpu {
 
-inline constexpr std::uint32_t kHpuMemLineCount = 19201;
 inline constexpr std::uint32_t kSmallBankLineCount = 32;
 
 struct DmaRelocation {
@@ -31,7 +30,8 @@ std::string render_executable_header(
     std::size_t dma_count);
 std::string render_executable_source(
     const std::string& stem,
-    const std::vector<EncodedInstruction>& encoded);
+    const std::vector<EncodedInstruction>& encoded,
+    std::uint64_t hpu_mem_line_count);
 std::string render_dma_manifest(
     const std::vector<EncodedInstruction>& encoded);
 

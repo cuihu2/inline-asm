@@ -12,6 +12,21 @@ cmake --build build -j --target hpu_delivery
 ctest --test-dir build --output-on-failure
 ```
 
+需要增加独立 SEAL 数学门禁时使用：
+
+```bash
+cmake -S . -B build-seal \
+  -DHPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE=ON \
+  -DHPU_SEAL_SOURCE_DIR=/home/songyexin/fhe/SEAL
+cmake --build build-seal -j --target hpu_delivery_with_seal
+```
+
+该目标先执行完整 `hpu_delivery`，再用同一批 host fixture 对 BFV、BGV、CKKS
+进行差分。普通交付仍不依赖 SEAL；差分报告写入
+`build-seal/seal_oracle/report.csv`，依赖 commit、工作树状态和实验选项写入同目录
+`metadata.txt`。该验证使用 `sec_level_type::none`，只表示功能正确性，
+不构成安全参数认证。
+
 成功后，`outputs/DELIVERY_REPORT.txt` 中应包含：
 
 ```text
@@ -58,10 +73,10 @@ HPU 算术通过证据。目标证据必须来自 RISC-V 分支真正发出的 H
 
 | 检查项 | 结果 |
 | --- | --- |
-| 算子数据包 | 18 个：12 个公共/多项式算子包，以及 CKKS/BGV Encode、CKKS Rescale、CKKS CiphertextMultiply、BGV CiphertextMultiply、BGV ModSwitch |
+| 算子数据包 | 21 个目录：18 个 HPU 算子包，以及 3 个 CKKS/BGV/BFV host-only Encode/Decode 包 |
 | 数学与硬件文件 | 所有 manifest 路径、字节数、FNV-1a、256B line geometry、主镜像切片和连续 line map 均通过 |
-| Nexus-AM 同步副本 | 需在本次 17 包重新生成后同步；旧 14 包统计不作为本版签字依据 |
-| 生成算子 relocation | 11 份 manifest 的源/解析行数一致，全部 `RESOLVED`；最大 `end_line_exclusive=19137 < 19201` |
+| Nexus-AM 同步副本 | BFV 硬件用例为单 kernel CiphertextMultiply 和 ModSwitch；Encode/Decode 不再同步为 HPU 用例，旧双 kernel 包不作为本版签字依据 |
+| HPU_MEM 容量 | BFV CiphertextMultiply 统一镜像为 30913 line；所有包均由交付门禁检查不超过配置的 65536 line |
 | 本仓库自检 | 指令编码、方案 Encode 和 reference 均通过 |
 | Nexus-AM host 自检 | 53 项无内部失败，但 53 项均按 `PASS_PROBE` 标为 `qualification-pending/Skipped` |
 
@@ -82,14 +97,21 @@ generated-operator relocation manifest；这不影响其独立数据包交付，
 顶层 `hpu_delivery` 依次执行三个程序，再调用 `test/delivery/check_delivery.cmake` 检查文件完整性、FHE 校验结果、阶段标记和指令数量。单独执行 `hpu_reference_vectors` 只会生成数据，不会生成或更新 HPU ASM。
 
 `config/fhe_test.conf` 是唯一的参数输入。HPU 指令生成器和软件 reference 通过
-`hpu_test_config` 共享解析库读取同一份 `N/num_q/num_p/dnum/auto_index`；reference
-还从该文件读取 `plaintext_modulus/seed`。默认 `plaintext_modulus=65537`，供 BGV
-以 `Q|P|t` 顺序安装到 `MOD_ID=num_q+num_p`。顶层 `hpu_delivery` 显式向两个程序传递
+`hpu_test_config` 共享解析库读取同一份
+`N/num_q/num_p/bfv_num_b/hpu_mem_max_lines/dnum/auto_galois_element/plaintext_modulus/seed`。默认
+`plaintext_modulus=65537`；BGV 以 `Q|P|t` 排列上下文，BFV 以
+`Q|Pks|B|m_sk|t` 排列。顶层 `hpu_delivery` 显式向两个程序传递
 CMake cache 变量 `HPU_TEST_CONFIG` 指向的同一路径，避免指令流与数据来自不同参数。
 
 `outputs/*/test_data/params.json` 是 reference 写出的结果清单，不是配置入口。修改
 它不会影响生成逻辑，并会在下一次执行 `hpu_delivery` 时被覆盖。自定义配置可通过
 `cmake -S . -B build -DHPU_TEST_CONFIG=/abs/path/fhe_test.conf` 选择。
+
+`outputs/seal_oracle/parameters.csv` 是同一次 reference 生成的差分接口，冻结 N、
+Q、P0、t、seed、CKKS scale 和各检查点误差上限。SEAL key context 使用
+`Q|P0`，首个密文 context 使用 Q，一次 ModSwitch/Rescale 后使用
+`Q_without_last`。SEAL 只比较方案语义，不比较 HPU twiddle、RNS 中间基、密钥或
+密文的逐字节表示。
 
 ### 2.1 正式交付包
 
@@ -124,18 +146,29 @@ Encrypt(ctA, ctB)
   -> Decrypt and compare with mA * mB in Z_t[x]/(x^N+1)
 ```
 
-默认配置为 `N=4096`、`num_q=4`、`num_p=3`、`dnum=2`、`t=65537`。数据使用确定性、无噪声、P 可整除的功能测试评估密钥，以获得逐位可比结果；它用于 UT/IT 定位，不代表生产密钥安全性。
+默认配置为 `N=4096`、`num_q=4`、`num_p=3`、`bfv_num_b=6`、`dnum=2`、
+`t=65537`、`hpu_mem_max_lines=65536`。主硬件数据使用确定性零噪声、Pks 可整除的功能测试评估密钥，以获得
+逐位可比结果；BFV 另生成非零误差 host smoke。两者用于 UT/IT 定位，不代表生产密钥安全性。
 
-方案闭环从 Encode 开始：CKKS 对 `N/2` 个复数槽位执行 generator-3 canonical
-embedding，BGV 对 `N` 个槽位执行 generator-3 两行 batching。两者均由 host 产生
-RNS-Q 系数 limbs，再由 HPU 流执行 NTT。公共乘法之后，CKKS 执行 rounded Rescale 并验证
+方案闭环从 host Encode 开始：CKKS 对 `N/2` 个复数槽位执行 generator-3 canonical
+embedding，BGV/BFV 对 `N` 个槽位执行 generator-3 两行 batching；Decode 同样在 host
+执行。三者不再生成 HPU Encode 指令、RNS-Q NTT 镜像或 DMA。公共乘法之后，CKKS 执行 rounded Rescale 并验证
 `scale_out=scale_a*scale_b/q_last` 与近似误差；BGV 使用 correction factor `3`、`5`
 执行乘法，再按 `u=-c_last*q_last^-1 mod t` 降层并验证
-`cf_out=cf_in*q_last^-1 mod t`；`X->X^3` 还经过功能密文 Auto、Galois KeySwitch、
-解密和 BatchDecode，验证两行分别左旋一格。BFV 不生成指令，原因见
+`cf_out=cf_in*q_last^-1 mod t`。Auto 直接加载原始密文，在 HPU 上以标准 NTT 加
+`psi^(g^-1 mod 2N)` 专用 INTT 对两个分量执行 `X->X^g`，再使用对应 Galois key
+做 KeySwitch、解密和 BatchDecode；默认 `g=3`
+时额外验证 generator-3 两行分别左旋一格。BFV 使用 no-SMRQ FastBConv、
+Q/Bsk tensor product、FastFloor 和 branchless-SK 生成三分量 Q 密文；同一指令流
+随即从相同 HPU_MEM span 执行 Q/Pks Relinearization，只有最终一个 `psync`，没有
+host copy 或第二次 window commit。随后可独立执行 rounded ModSwitch。完整边界见
 `HPU_PROGRAMMING_MANUAL.md` 第 8.8 节。
 
-生成器和 reference 共同检查 `N` 为 2 的幂且 `ceil(N/64) <= 1024`，对应当前普通 bank 的最大可承载次数 `N=65536`。`dnum` 必须整除 `num_q`，方案上下文还必须满足 `num_q+num_p+1<=256`；BGV batching 进一步要求 `t` 为 PE 范围内素数、`2N | (t-1)`，并与所有 Q/P 模数互素。`dload load_type` 只接受 `0=seg`、`1=poly`、`2=mod_ctx`；编码值 3 为保留值并纳入 RV 负例。
+生成器和 reference 共同检查 `N` 为 2 的幂且 `ceil(N/64) <= 1024`，对应当前普通 bank 的最大可承载次数 `N=65536`。`dnum` 必须整除 `num_q`；BFV 上下文必须满足
+`num_q+num_p+bfv_num_b+2<=256`。BGV/BFV batching 要求 `t` 为 PE 范围内素数、
+`2N | (t-1)`，并与其他模数互素。BFV 还要求所有 Q/Pks/B/m_sk 为互异的
+`1 mod 2N` 32-bit 素数、`m_sk>2*bfv_num_b`，以及 B 总位宽严格超过 no-SMRQ
+误差门限。`dload load_type` 只接受 `0=seg`、`1=poly`、`2=mod_ctx`；编码值 3 为保留值并纳入 RV 负例。
 
 ## 4. 数据格式
 
@@ -163,16 +196,19 @@ RNS-Q 系数 limbs，再由 HPU 流执行 NTT。公共乘法之后，CKKS 执行
 | `hpu_mem_image.u32.bin` | 可整体装入 HPU_MEM window 的连续 `uint32` 镜像 |
 | `images/**/*.u32.bin` | 输入、常量、期望结果的独立 256B-line-padded 镜像 |
 | `line_map.csv` | 每个对象的 byte address、line offset、line count、payload/padded 大小 |
-| `constants/mod_ctx.u32.bin` / `mod_ctx_map.csv` | 每个 Q/P/t 模数的 q 与 `floor(2^64/q)` Barrett mu 物理记录；非 BGV 包不含 t |
+| `constants/mod_ctx.u32.bin` / `mod_ctx_map.csv` | 每个 Q/Pks/B/m_sk/t 模数的 q 与 `floor(2^64/q)` Barrett mu 物理记录；具体 context 由各包裁剪 |
 | `constants/twiddle/**/*.u32.bin` / `twiddle_map.csv` | 仅含 `pntt/pintt` 的包生成；记录每个 basis、方向、phase、stage 的物理 twiddle 和 line 位置 |
 | `hpu_mem_config.json` | HPU_MEM base/size、256B line 参数、`0x00..0x18` CSR 偏移和编程顺序 |
 | `abi.json` | `uint32`、小端、Bank 5、mod context word 布局；`twiddle_images_included` 标明当前包是否携带 NTT/INTT twiddle |
 
-六个方案用例均独立生成 `dma_plan.csv`。`ckks_encode` 和 `bgv_encode` 还包含
-`host/host_manifest.csv`：其中的槽位、signed 系数、Decode 和误差 CSV 仅供 host
-验收，不进入 HPU_MEM；只有 RNS-Q 输入与 NTT-Q 输出出现在 `hardware/`。
+每个 HPU 方案 kernel 均独立生成 `dma_plan.csv`。`ckks_encode`、`bgv_encode` 和
+`bfv_encode` 则是纯 host 包，只包含 `params.json`、可读 CSV、round-trip 结果、
+`host/host_manifest.csv` 和说明文件；它们不包含 `hardware/`、DMA plan 或指令文件。
 BGV ModSwitch 将 `q_last -> t` 和面向 `Q'` 的 BConv target 常量拆成不同文件，
 runtime 不应跨目标基复用其物理 span。
+BFV CiphertextMultiply 另外生成 `memory_lifetime.csv`；BEHZ 输出三分量直接占用后续
+Relinearization 输入 span，runtime 只提交一份 HPU_MEM 镜像和一条完整指令流。
+`dma_plan.csv` 按 3153 条 DMA 的真实顺序覆盖两个算法阶段，不存在中间 host copy。
 
 硬件模上下文 V1 每条记录占 128 bit，按低位到高位为
 `{q[31:0], mu[47:0], reserved[47:0]}`，其中
@@ -196,7 +232,9 @@ twiddle。最终显式执行物理顺序的 `PMUL (N^-1 * psi^-i)`，不依赖 P
 卷积；自然顺序输入曾出现 round-trip 通过而卷积失败。当前 reference 因此额外检查
 `PNTT(a) * PNTT(b) -> PINTT` 的 negacyclic convolution，并逐项对照 coefficient
 image、NTT image、pre/post factor 和全部 stage twiddle。默认 Q0 的冻结结果为
-`AUTOTEST_ORACLE=PASS q=50061313 N=4096 ntt_stages=12 intt_stages=12`。
+`AUTOTEST_ORACLE=PASS q=50061313 N=4096 ntt_stages=12 intt_stages=12`。Auto 包还包含
+`auto_intt_g<g>` profile；`dma_plan.csv` 将前置融合阶段绑定到该 profile，并将后续
+KeySwitch 绑定回标准 profile。`input/ciphertext_q.bin` 未经过 host 自同构。
 
 ## 5. 失败定位
 
@@ -204,7 +242,6 @@ image、NTT image、pre/post factor 和全部 stage twiddle。默认 Q0 的冻�
 | --- | --- |
 | `ckks_encode/host/decoded_*.csv` | generator-3 映射、共轭布局、FFT 方向、scale |
 | `bgv_encode/host/batch_decoded_slots.csv` | generator-3 两行映射、模 t NTT、batching 参数 |
-| `*_encode/.../plaintext*_ntt_q` | host RNS lift、pre-twist、stage twiddle、HPU NTT |
 | `inputs_ntt_q` | NTT、twiddle、模上下文、数据排列 |
 | `tensor_ntt_q` | PE 的 `pmul/pmac`、活动模上下文 |
 | `tensor_coeff_q` | INTT、归一化因子、输出排列 |
@@ -215,9 +252,18 @@ image、NTT image、pre/post factor 和全部 stage twiddle。默认 Q0 的冻�
 | `ckks_ciphertext_multiply/.../ciphertext_out_qprime` | CKKS Rescale、level 与 scale 处理 |
 | `bgv_modswitch/intermediate/u_mod_t` | `q_last -> t` BConv、模 t 取负和逆元 |
 | `bgv_modswitch/expected_qprime` | BGV delta 符号、`q_last^-1`、correction factor |
+| `bfv_ciphertext_multiply/expected/fast_floor_bsk` | no-SMRQ Q->Bsk、`Q^-1 mod Bsk` 与 FastFloor 减法方向 |
+| `bfv_ciphertext_multiply/expected/alpha_msk` | `B->m_sk`、`B^-1 mod m_sk` 与 branchless alpha 上界 |
+| `bfv_ciphertext_multiply/expected/ciphertext_tensor_q` | `out=y+alpha*(-B) mod Q` 和内部三分量顺序 |
+| `bfv_ciphertext_multiply/expected/ciphertext_out_q` | 无 host copy 的 Q/Pks KeySwitch 和三分量到二分量合成 |
+| `bfv_modswitch/expected/ciphertext_qprime` | rounded drop-last 与 BFV scale-and-round 解密 |
 | 最终解密 | 上述节点均通过时再检查方案参数和 host 数据解释 |
 
-同一 reference 还会拆分到 `outputs/{ntt,intt,ckks_encode,bgv_encode,ckks_rescale,ckks_ciphertext_multiply,bgv_ciphertext_multiply,bgv_modswitch,mm,bconv,modup,pmult,cmult,moddown,keyswitch,relinearization,auto,ciphertext_multiply}/test_data/`。每个目录均包含独立 `params.json`、数学输入/期望输出、checksum，以及按实际指令需求裁剪的 `hardware/` 镜像、上下文和 line map，可直接交给对应模块负责人跑 UT。NTT、INTT、CKKS/BGV Encode、CKKS/BGV CiphertextMultiply、KeySwitch、Relinearization、Auto 和公共 CiphertextMultiply 包含 twiddle；其余系数或逐点算子不包含。方案 Encode 的 host 数学、RNS-Q/NTT-Q 边界、元数据和 DLOAD/DSTORE 绑定分别冻结在 `host/`、`params.json` 与 `HPU_PROGRAMMING_MANUAL.md` 附录 C 中。
+同一 reference 还会拆分到 `outputs/{ntt,intt,ckks_encode,bgv_encode,bfv_encode,ckks_rescale,ckks_ciphertext_multiply,bgv_ciphertext_multiply,bgv_modswitch,bfv_ciphertext_multiply,bfv_modswitch,mm,bconv,modup,pmult,cmult,moddown,keyswitch,relinearization,auto,ciphertext_multiply}/test_data/`。其中 18 个 HPU 算子目录包含 `params.json`、数学输入/期望输出、checksum，以及按实际指令需求裁剪的 `hardware/` 镜像、上下文和 line map。三个 `*_encode` 目录只保留 host 数学、元数据、可读向量与 `host_manifest.csv`。NTT、INTT、三种方案 CiphertextMultiply、KeySwitch、Relinearization、Auto 和公共 CiphertextMultiply 包含 twiddle；其余硬件算子不包含。
+
+BFV/BGV host batching 使用与 SEAL 一致的最小 primitive `2N` 次单位根和
+generator-3 两行映射。启用差分门禁后，两个整数方案对 N 个编码系数和全部 N 个
+slots 精确比较；CKKS 对全部 `N/2` 个复数 slots 按生成参数中的误差上限比较。
 
 ## 6. RV 接口用例
 
@@ -240,8 +286,8 @@ image、NTT image、pre/post factor 和全部 stage twiddle。默认 Q0 的冻�
    `line_map.csv` 的实际编号逐条绑定到 `dload/dstore`，并输出 resolved relocation
    manifest；每条记录都必须是 `RESOLVED`。
 2. 为 ct、tensor、ModUp、rlk、KeySwitch 等中间对象分配 scratch，并在提交前检查
-   整个 span 不超过 HPU_MEM window；当前 profile 为 19201 line，末尾 64 line
-   保留为越界 guard。
+   整个 span 不超过 HPU_MEM window；当前软件上限为 65536 line，BFV 单 kernel
+   实际配置 30913 line，末尾 guard 由 IT runtime 在真实 window 之外维护。
 3. 配置 HPU_MEM CSR，执行提交前 cache clean、读回前 invalidate，并处理
    `HPU_STATUS`、`HPU_FAULT_STATUS`、W1C fault 和完成 IRQ。
 4. `psync` 只放在完整程序末尾，用于向 CPU 报告程序完成；算子内部不把它作为

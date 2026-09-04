@@ -16,10 +16,10 @@
 #include "operator/keyswitch.hpp"
 #include "operator/relinearization.hpp"
 #include "operator/ciphertext_multiply.hpp"
-#include "scheme/bgv/encode.hpp"
 #include "scheme/bgv/ciphertext_multiply.hpp"
 #include "scheme/bgv/modswitch.hpp"
-#include "scheme/ckks/encode.hpp"
+#include "scheme/bfv/ciphertext_multiply.hpp"
+#include "scheme/bfv/modswitch.hpp"
 #include "scheme/ckks/ciphertext_multiply.hpp"
 #include "scheme/ckks/rescale.hpp"
 
@@ -99,7 +99,7 @@ struct AutoConfig {
 	int num_q;
 	int num_p;
 	int dnum;
-	int auto_idx;
+	std::uint64_t galois_element;
 };
 
 struct CiphertextMultiplyConfig {
@@ -107,12 +107,6 @@ struct CiphertextMultiplyConfig {
 	int num_q;
 	int num_p;
 	int dnum;
-};
-
-struct EncodeConfig {
-	int N;
-	int num_q;
-	std::uint64_t plaintext_modulus;
 };
 
 struct RescaleConfig {
@@ -126,18 +120,26 @@ struct BgvModswitchConfig {
 	int num_components;
 };
 
+struct BfvConfig {
+	int N;
+	int num_q;
+	int num_p;
+	int num_b;
+	int dnum;
+	std::uint64_t plaintext_modulus;
+};
+
 NttConfig g_ntt_cfg{};
 constexpr MmConfig kMmCfg{0, 1, 2, 3};
-// 为了缩短独立 BConv 示例，采用 num_q = num_p = 1；模上下文使用独立 8-bit MOD_ID
-constexpr BconvConfig kBconvCfg{1, 1, 0, 1, 2, 3, 4, 5, 6};
+BconvConfig g_bconv_cfg{};
 PmultConfig g_pmult_cfg{};
 CmultConfig g_cmult_cfg{};
 ModdownConfig g_moddown_cfg{};
 AutoConfig g_auto_cfg{};
 CiphertextMultiplyConfig g_ciphertext_multiply_cfg{};
-EncodeConfig g_encode_cfg{};
 RescaleConfig g_rescale_cfg{};
 BgvModswitchConfig g_bgv_modswitch_cfg{};
+BfvConfig g_bfv_cfg{};
 
 void configure_generators(const hpu::test::FheTestConfig& config)
 {
@@ -145,56 +147,52 @@ void configure_generators(const hpu::test::FheTestConfig& config)
 	const int num_q = static_cast<int>(config.num_q);
 	const int num_p = static_cast<int>(config.num_p);
 	const int dnum = static_cast<int>(config.dnum);
-	const int auto_index = static_cast<int>(config.auto_index);
 
 	g_ntt_cfg = {N, 0, 1, 2};
+	g_bconv_cfg = {
+		num_q, num_p,
+		0, 1, 2, 3, 4, 5, 6};
 	g_pmult_cfg = {num_q, 0, 1, 2, 3, 4, 5};
 	g_cmult_cfg = {num_q, 0, 1, 2, 3, 4, 5, 6, 7};
 	g_moddown_cfg = {num_q, num_p, 0, 1, 2, 3, 4, 5, 6, 7};
-	g_auto_cfg = {N, num_q, num_p, dnum, auto_index};
+	g_auto_cfg = {N, num_q, num_p, dnum, config.auto_galois_element};
 	g_ciphertext_multiply_cfg = {N, num_q, num_p, dnum};
-	g_encode_cfg = {N, num_q, config.plaintext_modulus};
 	g_rescale_cfg = {num_q, 2};
 	g_bgv_modswitch_cfg = {num_q, num_p, 2};
+	g_bfv_cfg = {
+		N, num_q, num_p, static_cast<int>(config.bfv_num_b), dnum,
+		config.plaintext_modulus};
 }
 
-void test_ckks_encode_codegen()
+void test_bfv_ciphertext_multiply_codegen()
 {
 	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
-		std::ofstream("output/ckks_encode.cpp")
-			<< hpu::scheme::ckks::generate_encode_asm(
-				g_encode_cfg.N, g_encode_cfg.num_q, true);
-		std::cout << "Saved CKKS Encode ASM to output/ckks_encode.cpp\n";
+		std::ofstream("output/bfv_ciphertext_multiply.cpp")
+			<< hpu::scheme::bfv::generate_ciphertext_multiply_asm(
+				g_bfv_cfg.N, g_bfv_cfg.num_q, g_bfv_cfg.num_p,
+				g_bfv_cfg.num_b, g_bfv_cfg.dnum,
+				g_bfv_cfg.plaintext_modulus, true);
 	}
-
 	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
-		std::ofstream("output/ckks_encode.asm")
-			<< hpu::scheme::ckks::generate_encode_body_asm(
-				g_encode_cfg.N, g_encode_cfg.num_q, true);
-		std::cout << "Saved CKKS Encode body ASM to output/ckks_encode.asm\n";
+		std::ofstream("output/bfv_ciphertext_multiply.asm")
+			<< hpu::scheme::bfv::generate_ciphertext_multiply_body_asm(
+				g_bfv_cfg.N, g_bfv_cfg.num_q, g_bfv_cfg.num_p,
+				g_bfv_cfg.num_b, g_bfv_cfg.dnum,
+				g_bfv_cfg.plaintext_modulus, true);
 	}
 }
 
-void test_bgv_encode_codegen()
+void test_bfv_modswitch_codegen()
 {
 	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
-		std::ofstream("output/bgv_encode.cpp")
-			<< hpu::scheme::bgv::generate_encode_asm(
-				g_encode_cfg.N,
-				g_encode_cfg.num_q,
-				g_encode_cfg.plaintext_modulus,
-				true);
-		std::cout << "Saved BGV Encode ASM to output/bgv_encode.cpp\n";
+		std::ofstream("output/bfv_modswitch.cpp")
+			<< hpu::scheme::bfv::generate_modswitch_asm(
+				g_bfv_cfg.num_q, 2, true);
 	}
-
 	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
-		std::ofstream("output/bgv_encode.asm")
-			<< hpu::scheme::bgv::generate_encode_body_asm(
-				g_encode_cfg.N,
-				g_encode_cfg.num_q,
-				g_encode_cfg.plaintext_modulus,
-				true);
-		std::cout << "Saved BGV Encode body ASM to output/bgv_encode.asm\n";
+		std::ofstream("output/bfv_modswitch.asm")
+			<< hpu::scheme::bfv::generate_modswitch_body_asm(
+				g_bfv_cfg.num_q, 2, true);
 	}
 }
 
@@ -366,8 +364,8 @@ void test_bconv_codegen()
 {
 	if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
 		std::string bconv = generate_hpu_bconv_asm(
-		kBconvCfg.num_q,
-		kBconvCfg.num_p,
+		g_bconv_cfg.num_q,
+		g_bconv_cfg.num_p,
 		0,
 		true);
 	std::ofstream("output/bconv.cpp") << bconv;
@@ -376,8 +374,8 @@ void test_bconv_codegen()
 
 	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
 		std::string bconv_body = generate_hpu_bconv_body_asm(
-		kBconvCfg.num_q,
-		kBconvCfg.num_p,
+		g_bconv_cfg.num_q,
+		g_bconv_cfg.num_p,
 		0,
 		true);
 	std::ofstream("output/bconv.asm") << bconv_body;
@@ -456,7 +454,7 @@ void test_auto_codegen()
 		g_auto_cfg.num_q,
 		g_auto_cfg.num_p,
 		g_auto_cfg.dnum,
-		g_auto_cfg.auto_idx,
+		g_auto_cfg.galois_element,
 		true);
 	std::ofstream("output/auto.cpp") << auto_code;
 	std::cout << "Saved auto ASM to output/auto.cpp\n";
@@ -468,7 +466,7 @@ void test_auto_codegen()
 		g_auto_cfg.num_q,
 		g_auto_cfg.num_p,
 		g_auto_cfg.dnum,
-		g_auto_cfg.auto_idx,
+		g_auto_cfg.galois_element,
 		true);
 	std::ofstream("output/auto.asm") << auto_body;
 	std::cout << "Saved auto body ASM to output/auto.asm\n";
@@ -608,17 +606,27 @@ int main(int argc, char* argv[])
 		configure_generators(config);
 		std::cout << "Loaded shared FHE config from " << config_path
 			<< " (N=" << config.N << ", Q=" << config.num_q
-			<< ", P=" << config.num_p << ", dnum=" << config.dnum << ")\n";
+			<< ", P=" << config.num_p << ", B=" << config.bfv_num_b
+			<< ", dnum=" << config.dnum
+			<< ", HPU_MEM_MAX=" << config.hpu_mem_max_lines << ")\n";
 
 		std::filesystem::create_directory("output");
 		std::filesystem::remove("output/rescale.asm");
 		std::filesystem::remove("output/rescale.cpp");
 		std::filesystem::remove("output/encode.asm");
 		std::filesystem::remove("output/encode.cpp");
+		std::filesystem::remove("output/bfv_behz_multiply.asm");
+		std::filesystem::remove("output/bfv_behz_multiply.cpp");
+		std::filesystem::remove("output/bfv_relinearization.asm");
+		std::filesystem::remove("output/bfv_relinearization.cpp");
+		for (const char* scheme : {"ckks", "bgv", "bfv"}) {
+			std::filesystem::remove(
+				std::filesystem::path("output") / (std::string(scheme) + "_encode.asm"));
+			std::filesystem::remove(
+				std::filesystem::path("output") / (std::string(scheme) + "_encode.cpp"));
+		}
 		test_ntt_codegen();
 		test_intt_codegen();
-		test_ckks_encode_codegen();
-		test_bgv_encode_codegen();
 		test_ckks_rescale_codegen();
 		test_mm_codegen();
 		test_bconv_codegen();
@@ -633,6 +641,8 @@ int main(int argc, char* argv[])
 		test_ckks_ciphertext_multiply_codegen();
 		test_bgv_ciphertext_multiply_codegen();
 		test_bgv_modswitch_codegen();
+		test_bfv_ciphertext_multiply_codegen();
+		test_bfv_modswitch_codegen();
 		return 0;
 	} catch (const std::exception& exception) {
 		std::cerr << "Instruction generation failed: " << exception.what() << '\n';

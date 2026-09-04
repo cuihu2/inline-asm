@@ -770,16 +770,21 @@ for each modulus context i:
 ### 8.5 公共算子层与方案算子层
 
 `util`、`poly` 和 `operator` 提供方案无关的 RNS、NTT、KeySwitch、
-Relinearization 和原始 CiphertextMultiply。`scheme/ckks` 与 `scheme/bgv`
+Relinearization 和原始 CiphertextMultiply。`scheme/ckks`、`scheme/bgv` 与 `scheme/bfv`
 位于其上，只组合方案特有步骤并维护软件元数据。方案层当前统一采用系数域输入、
 系数域输出边界；内部 NTT/INTT 仍由公共算子生成。
 
-`scheme/ckks/encode` 与 `scheme/bgv/encode` 分别定义方案数学。CKKS 使用 generator-3
+三个 `scheme/*/encode` 分别定义纯 host 的方案数学。CKKS 使用 generator-3
 槽位映射、共轭半区和 radix-2 复数 FFT，把最多 `N/2` 个复数槽位量化为带 scale
-的 signed 系数；BGV 支持 signed coefficient encoding，并在 `t` 为素数且
+的 signed 系数；BGV/BFV 支持 signed coefficient encoding，并在 `t` 为素数且
 `2N | (t-1)` 时以 generator-3 映射提供两行、共 `N` 槽 batching。Decode 均在
-host 执行。两种 Encode 把 RNS-Q 系数 limbs 交给公共 `plaintext_ntt` 后端，由 HPU
-执行逐 limb 负循环 NTT。
+host 执行。三种 Encode/Decode 都不生成 HPU 指令；Encrypt/runtime 或具体同态算子
+若需要 RNS-Q、NTT-Q 表示，必须在自身边界内完成 lift 和域转换。
+
+BGV/BFV 的模 `t` 负循环 NTT 从全部 primitive `2N` 次单位根中选择数值最小者，
+再应用 generator-3 两行索引映射；该选择与本项目使用的 SEAL BatchEncoder ABI
+一致。选择另一个 primitive root 虽可形成自洽 Encode/Decode，但会改变明文
+多项式系数，不能混入本交付数据。
 
 ### 8.6 CKKS Rescale 与完整乘法
 
@@ -832,29 +837,77 @@ correction_factor_out = correction_factor_in * q_last^-1 mod t
 该流程不需要比较或条件选择，但要求 `gcd(q_last,t)=1`。完整中间值和常量位于
 `outputs/bgv_modswitch/test_data/`。
 
-### 8.8 当前未生成的方案流
+### 8.8 BFV comparison-free BEHZ、重线形化和 ModSwitch
 
 | 方案能力 | 状态 | 当前边界 |
 | --- | --- | --- |
-| CKKS Encode/Decode / Rescale / Multiply | 已实现 | host 复数编解码 + HPU RNS-Q NTT/方案算子 |
-| BGV coefficient/batch Encode/Decode / Multiply / ModSwitch | 已实现 | host 模 t 编解码 + HPU RNS-Q NTT/方案算子 |
-| BFV BEHZ Multiply | 未生成 | ISA 缺少 centered correction 所需的比较和条件选择 |
+| CKKS Encode/Decode / Rescale / Multiply | 已实现 | host-only 复数编解码 + HPU Rescale/Multiply |
+| BGV coefficient/batch Encode/Decode / Multiply / ModSwitch | 已实现 | host-only 模 t 编解码 + HPU Multiply/ModSwitch |
+| BFV coefficient/batch Encode/Decode | 已实现 | host-only 模 t 编解码 |
+| BFV BEHZ Multiply / Relinearization / ModSwitch | 已实现 | no-SMRQ + branchless-SK 单 kernel 乘法功能通路 |
 
-BFV BEHZ 的 `SM-MRQ` 需要根据 `r_m_tilde >= m_tilde/2` 决定是否减去
-`m_tilde`，`fastbconv_sk` 也需要根据 `alpha_sk > m_sk/2` 选择校正路径。
-当前 11 条指令没有逐 lane 比较、符号提取、掩码生成、条件选择或已定义的
-centered-reduction 复合操作，因此不能为任意合法输入生成正确的纯 HPU 流。
-软件不会用固定分支或受限 golden 伪造 BFV 正向用例。
+BFV 使用修改版 SEAL 对应的 `NO_SMRQ + BRANCHLESS_SK` 关系，不生成 `m_tilde`，
+也不执行依赖阈值判断的 centered correction。模上下文固定为：
 
-BFV 只有在硬件提供 compare+mask/select、centered reduction 指令，或冻结由控制器
-选择算术路径的接口后才能启用；届时还需明确 `Bsk/m_sk/m_tilde` 的选取、容量和
-MOD_ID 布局，并覆盖阈值两侧及边界值。算法参考为
-[Microsoft SEAL evaluator](https://github.com/microsoft/SEAL/blob/main/native/src/seal/evaluator.cpp)
-和 [RNS implementation](https://raw.githubusercontent.com/microsoft/SEAL/main/native/src/seal/util/rns.cpp)。
+```text
+Q    = MOD_ID [0, num_q)
+Pks  = MOD_ID [num_q, num_q+num_p)
+B    = MOD_ID [num_q+num_p, num_q+num_p+bfv_num_b)
+m_sk = MOD_ID num_q+num_p+bfv_num_b
+t    = MOD_ID m_sk+1
+```
+
+其中 `Pks` 仅供乘法流后半段的 KeySwitch 使用，不能与 BEHZ 的 B 基混用。参数必须满足
+总 context 不超过 256、所有模数互异且为 `1 mod 2N` 的 32-bit 素数、
+`m_sk > 2*bfv_num_b`，并满足：
+
+```text
+log2(B) > 33 + bitlen(t) + bitlen(Q) + ceil(log2(num_q^2))
+```
+
+单 kernel 的 BEHZ 阶段对两个二分量密文执行：
+
+```text
+FastBConv Q -> Bsk                 // 不做 SmMRq
+NTT under Q and Bsk
+three-component tensor product
+INTT under Q and Bsk
+multiply every limb by t
+v = FastConv(Q -> Bsk)
+z = (x_Bsk - v) * Q^-1 mod Bsk    // FastFloor
+y = FastConv(B -> Q)
+temp = FastConv(B -> m_sk)
+alpha = (temp - z_msk) * B^-1 mod m_sk
+out = y + alpha * (-B) mod Q       // branchless-SK
+```
+
+参数门禁保证 `alpha` 位于已证明的下半区；最后一步始终执行同一条模算术路径，
+所以 11 条 ISA 不需要新增比较、掩码或条件选择。该阶段把三分量系数域 Q 密文
+`dstore` 到统一 HPU_MEM 中，随后的 Q/Pks Relinearization 直接从相同 span `dload`，
+把三分量密文变回二分量；中间不发出 `psync`，也不需要 host copy 或 window 切换。
+完整 `bfv_ciphertext_multiply` 只在 Relinearization 完成后发出一个终止 `psync`。
+默认统一镜像为 30913 line；软件 profile 通过 `hpu_mem_max_lines=65536` 设置验收
+上限，`HPU_MEM_SIZE_LINES` 仍写入当前镜像的真实 line 数。
+
+BFV ModSwitch 对单 kernel 输出的两个
+输出分量复用公共 rounded drop-last：
+
+```text
+c' = round(c / q_last) mod Q_without_last
+```
+
+level 减一；BFV 没有 CKKS scale 或 BGV correction factor 元数据。主硬件包使用
+零噪声、Pks 可整除的精确功能 key，以便逐 stage 定位；
+`outputs/bfv_ciphertext_multiply/test_data/host/noise_smoke/` 另用确定性非零误差完成
+Encode、Multiply、Relinearization、ModSwitch、Decrypt、Decode 闭环。
+
+算法实现以 `/home/songyexin/fhe/SEAL` 中同时启用
+`SEAL_EXPERIMENTAL_BFV_NO_SMRQ` 和
+`SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK` 的修改流程为差分依据；正常构建不依赖 SEAL。
 
 生产密钥生成、安全参数选择、随机数接口、多 level 模数链以及噪声/精度预算仍属于
 后续 host runtime/compiler 工作。当前 Encode/Decode 是自包含的功能实现，但不承担
-生产参数选择或密文元数据持久化。当前测试使用确定性零噪声、P 可整除的功能 fixture，必须标记为
+生产参数选择或密文元数据持久化。当前主硬件测试使用确定性零噪声、P 可整除的功能 fixture，必须标记为
 `TEST_VECTOR_SCOPE=FUNCTIONAL_ONLY`。
 
 ## 9. 汇编器检查和错误
@@ -885,7 +938,7 @@ ctest --test-dir build --output-on-failure
 
 | 文件 | 内容 |
 | --- | --- |
-| `outputs/<case>/<case>.asm` | HPU 汇编指令流 |
+| `outputs/<case>/<case>.asm` | HPU 汇编指令流；三个 `*_encode` host-only 包不生成 |
 | `outputs/<case>/<case>.cpp` | C++ 内联汇编形式 |
 | `outputs/<case>/<case>.inst32` | 每行一个 32-bit 二进制字符串 |
 | `outputs/<case>/<case>.cmd26` | 每行一个控制逻辑 26-bit 二进制命令 |
@@ -989,7 +1042,7 @@ ModDown 的 source context 是 P，target context 是 Q：
 | Stage 2，每个 `q_i` | `p2` | `P^-1 mod q_i` | - |
 | Stage 2，每个 `q_i` | `p0` | - | `(q-correction)*P^-1 mod q_i` |
 
-### C.3 NTT、INTT 与方案 Encode
+### C.3 NTT、INTT 与 host Encode/Decode
 
 NTT/INTT body 假定数据对象和活动模上下文已由外层准备。独立用例使用 `p0` 作为
 数据、`p1` 作为 twiddle；复合算子使用 `p0` 和 `p3`。
@@ -1005,14 +1058,14 @@ NTT/INTT body 假定数据对象和活动模上下文已由外层准备。独立
 OBJ_ID，但控制器可按 out-of-place 协议提交新的物理 base。
 
 CKKS Encode 的 host 顺序是：generator-3 槽位映射、填充共轭半区、复数逆嵌入、
-乘 scale 并舍入为 `int64`、按每个 `q_i` 转为 canonical residue。BGV coefficient
+乘 scale 并舍入为 `int64`。BGV coefficient
 Encode 将 centered signed 值映射到 `mod t`；BatchEncode 把两行 `N/2` 槽写入
-generator-3 根次序并执行模 `t` 逆负循环 NTT，再将系数 canonical lift 到 Q。
+generator-3 根次序，以最小 primitive `2N` 次单位根执行模 `t` 逆负循环 NTT，
+得到明文系数。BFV 使用相同的 BatchEncoder 布局，但保留独立的方案 API。
 
-两种方案交给 HPU 的逻辑输入都是 `[num_q,N]` 系数域 limbs。指令顺序为：加载
-`p4=Q table`；对每个 `q_i` 执行 `pmodld i`、`dload p0=plaintext_coeff_q[i]`、
-加载 `p3` pre-twist/stage twiddle 并完成 NTT，最后
-`dstore p0=plaintext_ntt_q[i],rel=1`。Decode 不生成 HPU 指令。
+Decode 执行上述映射的逆过程。三种方案的 Encode/Decode 均由普通 C++ 在 host CPU
+执行，不产生 `.asm/.inst32/.cmd26`，也没有对象槽位、DMA、模表、twiddle 或
+HPU_MEM 绑定。独立 `ntt/intt` UT 和同态算子内部的 NTT 不受此边界影响。
 
 ### C.4 PMULT 与 CMULT
 
@@ -1073,9 +1126,28 @@ merge t1+ks1
 dstore ciphertext_out_q[0], ciphertext_out_q[1]
 ```
 
-Auto 的 HPU 侧绑定与 KeySwitch 相同；差异是 host 先对两个输入分量执行负循环
-`X->X^3`，随后以旋转后的 `c0` 为 base、旋转后的 `c1` 为 switching component，
-EVK 使用 Galois key。
+Auto 直接接收未置换的系数域密文。HPU 对 `c0`、`c1` 分别执行标准
+`NTT_psi`，随后执行根为 `psi^(g^-1 mod 2N)` 的专用 `INTT`。该组合严格等于
+负循环自同构 `X->X^g`。变换后的 `c0` 作为 base，变换后的 `c1` 作为 switching
+component，再执行普通 ModUp、标准 NTT、Galois-key 乘累加、标准 INTT 和 ModDown。
+自同构必须位于 ModUp 之前；当前 FastBConv 使用 canonical residue 的快速近似转换，
+不能把带负号折返的自同构任意移动到 ModUp 之后。
+
+`pntt/pintt` 指令本身不编码 `g`。runtime 必须按 `dma_plan.csv` 让 Auto 前置阶段的
+`pintt` twiddle load 指向 `constants/twiddle/auto_intt_g<g>/`，其中每个模上下文使用
+`psi_auto=psi^(g^-1 mod 2N) mod q_i`；其余 KeySwitch 变换仍使用标准 `ntt/intt`
+profile。EVK 必须是同一个 `g` 对应的 Galois key。
+对源系数 `a_i X^i`，目标指数为 `e=(i*g) mod 2N`：`e<N` 时写入 `a_i X^e`，
+否则写入 `-a_i X^(e-N)`。合法值满足 `1<=g<2N` 且 `gcd(g,2N)=1`。
+
+generator-3 槽位布局中，行旋转 `step` 对应 `g=3^step mod 2N`；负 `step` 表示
+反向旋转，`g=2N-1` 表示 CKKS 共轭或 BGV/BFV 两行交换。软件可使用
+`hpu::galois_element_from_rotation_step` 和 `hpu::conjugation_galois_element` 计算这些
+元素。正确性由 Auto INTT profile、Galois key、resolved DMA plan 和
+`AUTO_LAYOUT.json` 使用相同的 `g` 来保证；host 只生成输入与 golden，不执行待测置换。
+一个 Auto 调用只对应一个 `g`。向量规约等流程应为所需步长分别生成 Auto 调用，
+例如左旋 `1,2,4,...` 分别使用 `3^1,3^2,3^4,... mod 2N`，runtime 必须随调用选择
+同一 `g` 的 Galois key，不能复用其他旋转步长的 key。
 
 ### C.6 CKKS 方案算子
 
@@ -1126,7 +1198,26 @@ p0 = p0 * q_last^-1
 对应 `c_i'=(c_i-c_last-q_last*u)*q_last^-1 mod q_i`。软件同时更新
 `factor_out=factor_in*q_last^-1 mod t`。
 
-### C.8 物理 span 与数据文件
+### C.8 BFV 单 kernel 方案算子
+
+`bfv_encode` 与 `bgv_encode` 都是纯 host 包：完成 coefficient/batch Encode、Decode
+和 round-trip 验证，不再生成 RNS-Q NTT 硬件流。
+
+`bfv_ciphertext_multiply` 的前半段按指令出现顺序绑定四个 Q 输入分量、
+`Q->Bsk` FastBConv 常量、Q/Bsk twiddle、`t mod Q/Bsk`、`Q^-1 mod Bsk`、
+`B->Q/m_sk` 常量、`B^-1 mod m_sk` 和 `-B mod Q`。输出 shape 固定为
+`[3,num_q,N]`。包内 `memory_lifetime.csv` 规定何时可用已死亡输入或常量区域承接
+scratch。三分量结果占用的 span 随后直接作为 KeySwitch 输入；后半段从同一 window
+加载 Q/Pks twiddle、relinearization key 和 ModUp/ModDown 常量，最终原位写回两个
+Q 分量。默认 `N=4096,Q=4,Pks=3,B=6` 的统一 window 为 30913 line，完整 DMA
+顺序和地址只由同一目录中的 `dma_plan.csv` 与 `hardware/line_map.csv` 规定。
+
+`bfv_modswitch` 接收单 kernel 的二分量 Q 密文，先加 `floor(q_last/2)`，再把
+`q_last` 当单元素 P 基复用 ModDown；输出为 `[2,num_q-1,N]`。其数学 golden 与
+`direct_rounded_divide_last` 逐 limb 比较，随后执行 BFV scale-and-round Decrypt
+和 BatchDecode。
+
+### C.9 物理 span 与数据文件
 
 本附录定义每条 DMA 的逻辑数据身份和先后顺序，不硬编码外存地址。生成包中的文件
 共同构成最终绑定契约：

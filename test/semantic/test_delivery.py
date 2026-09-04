@@ -250,6 +250,35 @@ class MainDeliveryTests(unittest.TestCase):
             self.assertEqual(delivery.params["format_version"], 2)
             self.assertEqual(delivery.params["scheme"], "CKKS")
 
+    def test_accepts_terminal_bfv_t_context_without_repeated_plaintext_modulus(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="hpu_delivery_bfv_t_") as temporary:
+            case = _make_delivery(Path(temporary))
+            params_path = case / "test_data" / "params.json"
+            params = json.loads(params_path.read_text(encoding="utf-8"))
+            params.update(
+                {
+                    "format_version": 2,
+                    "scheme": "BFV",
+                    "context_order": "Q|Pks|B|m_sk|t",
+                    "t_mod_id": 0,
+                }
+            )
+            params_path.write_text(json.dumps(params), encoding="utf-8")
+
+            delivery = load_delivery_package(case)
+
+            self.assertEqual(delivery.mod_contexts[0].modulus, 65537)
+
+    def test_rejects_ambiguous_t_context_without_plaintext_modulus(self) -> None:
+        params = {
+            "format_version": 2,
+            "scheme": "BGV",
+            "context_order": "Q|P|t",
+            "t_mod_id": 0,
+        }
+        with self.assertRaisesRegex(DeliveryValidationError, "may be omitted only"):
+            delivery_module._expected_twiddle_basis_indices(params, (65537,))
+
     def test_rejects_main_validation_limit_violations(self) -> None:
         mutations = (
             ("NTT object limits", lambda params, abi: (params.update(N=131072), abi.update(N=131072))),
@@ -362,6 +391,101 @@ class MainDeliveryTests(unittest.TestCase):
                 artifacts,
             )
             self.assertEqual(len(records), 32)
+
+    def test_accepts_only_the_declared_auto_inverse_twiddle_profile(self) -> None:
+        n = 128
+        modulus = 65537
+        rows: list[tuple[object, ...]] = []
+        artifacts: dict[str, ArtifactSpan] = {}
+        line_offset = 0
+
+        def add(direction: str, phase: str, stage: int, value_count: int) -> None:
+            nonlocal line_offset
+            line_count = (value_count + 63) // 64
+            stage_name = f"stage_{stage:02d}" if stage >= 0 else phase
+            path = f"constants/twiddle/{direction}/basis_00/{stage_name}.u32.bin"
+            batch_count = n // 128 if phase == "butterfly" else 1
+            per_batch = 64 if phase == "butterfly" else n
+            rows.append(
+                (
+                    direction, 0, modulus, phase, stage, value_count, batch_count,
+                    per_batch, "0x00000001", "0x00000000", path, line_offset,
+                    line_count,
+                )
+            )
+            artifacts[path] = ArtifactSpan(
+                relative_path=path,
+                binary_path=Path("/unused") / path,
+                readable_path=None,
+                role="twiddle",
+                shape=str(value_count),
+                address_byte=0x10000000 + line_offset * 256,
+                line_offset=line_offset,
+                line_count=line_count,
+                payload_words=value_count,
+                payload_bytes=value_count * 4,
+                padded_words=line_count * 64,
+                padded_bytes=line_count * 256,
+            )
+            line_offset += line_count
+
+        add("ntt", "pre_twist", -1, n)
+        for stage in range(7):
+            add("ntt", "butterfly", stage, n // 2)
+        for stage in range(7):
+            add("intt", "butterfly", stage, n // 2)
+        add("intt", "post_untwist_scale", -1, n)
+        for stage in range(7):
+            add("auto_intt_g3", "butterfly", stage, n // 2)
+        add("auto_intt_g3", "post_untwist_scale", -1, n)
+
+        with tempfile.TemporaryDirectory(prefix="hpu_delivery_auto_twiddles_") as temporary:
+            path = Path(temporary) / "twiddle_map.csv"
+            _write_csv(path, delivery_module._TWIDDLE_FIELDS, rows)
+            with self.assertRaisesRegex(DeliveryValidationError, "invalid direction"):
+                delivery_module._read_twiddles(
+                    path,
+                    n,
+                    (modulus,),
+                    {0},
+                    artifacts,
+                )
+
+            records = delivery_module._read_twiddles(
+                path,
+                n,
+                (modulus,),
+                {0},
+                artifacts,
+                frozenset({"auto_intt_g3"}),
+            )
+            self.assertEqual(len(records), 24)
+
+    def test_reads_only_a_safe_auto_layout_profile_declaration(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="hpu_delivery_auto_layout_") as temporary:
+            test_data_root = Path(temporary)
+            layout_path = test_data_root / "AUTO_LAYOUT.json"
+            layout_path.write_text(
+                json.dumps({"inverse_twiddle_profile": "auto_intt_g3"}),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                delivery_module._declared_inverse_twiddle_profiles(
+                    {"operation": "auto"},
+                    test_data_root,
+                ),
+                frozenset({"auto_intt_g3"}),
+            )
+
+            layout_path.write_text(
+                json.dumps({"inverse_twiddle_profile": "../escape"}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(DeliveryValidationError, "safe custom profile"):
+                delivery_module._declared_inverse_twiddle_profiles(
+                    {"operation": "auto"},
+                    test_data_root,
+                )
 
 
 if __name__ == "__main__":

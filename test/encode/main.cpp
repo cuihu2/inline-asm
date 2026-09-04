@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "assembler.hpp"
+#include "config/fhe_test_config.hpp"
 #include "executable.hpp"
 
 namespace {
@@ -14,12 +15,12 @@ namespace {
 const std::vector<std::string> kEncodableOutputs{
     "ntt",
     "intt",
-    "ckks_encode",
-    "bgv_encode",
     "ckks_rescale",
     "ckks_ciphertext_multiply",
     "bgv_ciphertext_multiply",
     "bgv_modswitch",
+    "bfv_ciphertext_multiply",
+    "bfv_modswitch",
     "mm",
     "bconv",
     "pmult",
@@ -35,12 +36,12 @@ const std::vector<std::string> kEncodableOutputs{
 const std::vector<std::string> kAllOutputs{
     "ntt",
     "intt",
-    "ckks_encode",
-    "bgv_encode",
     "ckks_rescale",
     "ckks_ciphertext_multiply",
     "bgv_ciphertext_multiply",
     "bgv_modswitch",
+    "bfv_ciphertext_multiply",
+    "bfv_modswitch",
     "mm",
     "bconv",
     "pmult",
@@ -151,7 +152,8 @@ void package_case(const std::filesystem::path& source_root,
 }
 
 void encode_output(const std::filesystem::path& outputs_root,
-                   const std::string& stem) {
+                   const std::string& stem,
+                   std::uint64_t hpu_mem_line_count) {
     const auto case_dir = outputs_root / stem;
     const auto input_path = case_dir / (stem + ".asm");
     const auto output_path = case_dir / (stem + ".inst32");
@@ -159,7 +161,8 @@ void encode_output(const std::filesystem::path& outputs_root,
     const auto encoded = hpu::assemble_source(read_all(input_path));
     write_inst32(output_path, encoded);
     write_cmd26(command_path, encoded);
-    const auto executable = hpu::render_executable_source(stem, encoded);
+    const auto executable = hpu::render_executable_source(
+        stem, encoded, hpu_mem_line_count);
     const auto header = hpu::render_executable_header(
         stem, hpu::collect_dma_relocations(encoded).size());
     const auto manifest = hpu::render_dma_manifest(encoded);
@@ -260,19 +263,34 @@ void write_rv_interface_smoke(const std::filesystem::path& outputs_root) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     try {
+        std::filesystem::path config_path =
+            hpu::test::default_fhe_test_config_path();
+        if (argc == 3 && std::string(argv[1]) == "--config") {
+            config_path = argv[2];
+        } else if (argc != 1) {
+            throw std::runtime_error(
+                "usage: inline_asm_encode_outputs [--config <path>]");
+        }
+        const auto config = hpu::test::load_fhe_test_config(config_path);
         const std::filesystem::path source_root{"output"};
         const std::filesystem::path outputs_root{"outputs"};
         std::filesystem::remove_all(outputs_root / "rescale");
         std::filesystem::remove_all(outputs_root / "encode");
+        std::filesystem::remove_all(outputs_root / "bfv_behz_multiply");
+        std::filesystem::remove_all(outputs_root / "bfv_relinearization");
+        std::filesystem::remove_all(outputs_root / "bfv_ciphertext_multiply");
+        std::filesystem::remove_all(outputs_root / "ckks_encode");
+        std::filesystem::remove_all(outputs_root / "bgv_encode");
+        std::filesystem::remove_all(outputs_root / "bfv_encode");
 
         for (const auto& stem : kAllOutputs) {
             package_case(source_root, outputs_root, stem);
         }
 
         for (const auto& stem : kEncodableOutputs) {
-            encode_output(outputs_root, stem);
+            encode_output(outputs_root, stem, config.hpu_mem_max_lines);
         }
 
         for (const auto& stem : kSkippedOutputs) {

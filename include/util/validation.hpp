@@ -64,11 +64,6 @@ inline constexpr bool is_prime(std::uint64_t value)
     return true;
 }
 
-inline constexpr bool is_valid_plaintext_ntt_config(int N, int num_q)
-{
-    return is_valid_ntt_size(N) && has_mod_context_capacity(num_q);
-}
-
 inline constexpr bool is_valid_rns_decomposition_config(
     int N,
     int num_q,

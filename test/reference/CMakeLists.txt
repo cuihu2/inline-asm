@@ -15,4 +15,14 @@ if(BUILD_TESTING)
                     --config ${HPU_TEST_CONFIG}
     )
     set_tests_properties(hpu_reference_vectors_self_test PROPERTIES TIMEOUT 120)
+
+    add_test(
+            NAME hpu_reference_vectors_general_auto
+            COMMAND hpu_reference_vectors
+                    ${CMAKE_CURRENT_BINARY_DIR}/reference_auto_galois_9_test_data
+                    --config ${CMAKE_CURRENT_SOURCE_DIR}/../config/valid_auto_galois_9.conf
+    )
+    set_tests_properties(
+            hpu_reference_vectors_general_auto
+            PROPERTIES TIMEOUT 120)
 endif()
