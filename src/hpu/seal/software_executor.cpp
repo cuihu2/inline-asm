@@ -35,6 +35,26 @@ std::uint32_t multiply_mod(
         (static_cast<std::uint64_t>(left) * right) % modulus);
 }
 
+std::uint32_t add_mod(
+    std::uint32_t left,
+    std::uint32_t right,
+    std::uint32_t modulus)
+{
+    const std::uint64_t sum = static_cast<std::uint64_t>(left) + right;
+    return static_cast<std::uint32_t>(sum >= modulus ? sum - modulus : sum);
+}
+
+std::uint32_t subtract_mod(
+    std::uint32_t left,
+    std::uint32_t right,
+    std::uint32_t modulus)
+{
+    return left >= right
+        ? left - right
+        : static_cast<std::uint32_t>(
+            static_cast<std::uint64_t>(left) + modulus - right);
+}
+
 const PreparedCanonicalTwiddles& find_tables(
     const std::vector<PreparedCanonicalTwiddles>& tables,
     std::uint8_t modulus_id)
@@ -254,6 +274,258 @@ void CkksSoftwareExecutor::square(
     }
 }
 
+void CkksSoftwareExecutor::validate_evaluation_key(
+    const PreparedEvaluationKey& evaluation_key,
+    const PreparedRnsObject& operand) const
+{
+    if (evaluation_key.data_parms_id != operand.parms_id
+        || evaluation_key.chain_index != operand.chain_index
+        || !hpu::is_valid_rns_decomposition_layout(
+            static_cast<int>(operand.components.front().degree),
+            evaluation_key.rns_layout)
+        || evaluation_key.digits.size()
+            != evaluation_key.rns_layout.key_digits.size()) {
+        throw std::invalid_argument(
+            "CKKS evaluation key does not describe the operand level");
+    }
+    const auto& q_ids = evaluation_key.rns_layout.q_mod_ids;
+    const auto& p_ids = evaluation_key.rns_layout.p_mod_ids;
+    if (p_ids.size() != 1 || q_ids.size() != operand.components.front().limbs.size()) {
+        throw std::invalid_argument(
+            "CKKS software KeySwitch currently requires one SEAL special prime");
+    }
+    std::vector<std::uint8_t> full_ids;
+    for (int id : q_ids) {
+        full_ids.push_back(static_cast<std::uint8_t>(id));
+    }
+    if (!std::equal(
+            full_ids.begin(), full_ids.end(),
+            operand.components.front().modulus_ids.begin())) {
+        throw std::invalid_argument(
+            "CKKS evaluation-key Q order differs from the operand");
+    }
+    full_ids.push_back(static_cast<std::uint8_t>(p_ids.front()));
+    for (std::size_t digit = 0; digit < evaluation_key.digits.size(); ++digit) {
+        if (evaluation_key.rns_layout.key_digits[digit].size() != 1
+            || evaluation_key.digits[digit].size() != 2) {
+            throw std::invalid_argument(
+                "CKKS software KeySwitch requires singleton SEAL RNS digits");
+        }
+        for (const PreparedPolynomial& component : evaluation_key.digits[digit]) {
+            if (component.degree != operand.components.front().degree
+                || component.modulus_ids != full_ids
+                || component.limbs.size() != full_ids.size()) {
+                throw std::invalid_argument(
+                    "CKKS evaluation-key digit has an invalid Q|P shape");
+            }
+        }
+    }
+}
+
+std::vector<std::uint32_t> CkksSoftwareExecutor::transform_limb(
+    const std::vector<std::uint32_t>& words,
+    std::size_t degree,
+    std::uint8_t modulus_id,
+    const std::vector<PreparedCanonicalTwiddles>& tables,
+    bool inverse) const
+{
+    if (words.size() != degree) {
+        throw std::invalid_argument("CKKS transform limb has an invalid degree");
+    }
+    const std::uint32_t q = memory_.modulus(modulus_id);
+    const auto& prepared = find_tables(tables, modulus_id);
+    if (prepared.modulus != q) {
+        throw std::invalid_argument("canonical NTT table modulus mismatch");
+    }
+    hpu::model::HardwareNttModel model(
+        degree, q, hpu::model::pow_mod(prepared.canonical_psi, 2, q));
+    if (inverse) {
+        hpu::model::InverseNttTables inverse_tables;
+        inverse_tables.stages.reserve(prepared.inverse_stages.size());
+        for (const auto& span : prepared.inverse_stages) {
+            inverse_tables.stages.push_back(memory_.read(span, degree / 2));
+        }
+        inverse_tables.post_scale = memory_.read(
+            prepared.post_untwist_scale, degree);
+        return model.inverse(words, inverse_tables);
+    }
+
+    std::vector<std::vector<std::uint32_t>> forward_tables;
+    forward_tables.reserve(prepared.forward_stages.size());
+    for (const auto& span : prepared.forward_stages) {
+        forward_tables.push_back(memory_.read(span, degree / 2));
+    }
+    const auto pre_twist = memory_.read(prepared.pre_twist, degree);
+    auto coefficients = words;
+    for (std::size_t index = 0; index < degree; ++index) {
+        if (coefficients[index] >= q) {
+            throw std::invalid_argument("CKKS coefficient is not reduced modulo q");
+        }
+        coefficients[index] = multiply_mod(
+            coefficients[index], pre_twist[bit_reverse(index, degree)], q);
+    }
+    return model.forward(coefficients, forward_tables);
+}
+
+void CkksSoftwareExecutor::key_switch(
+    const PreparedRnsObject& base_ciphertext,
+    const PreparedRnsObject& switching_component,
+    const PreparedEvaluationKey& evaluation_key,
+    const PreparedKeySwitchConstants& constants,
+    const PreparedRnsObject& output,
+    const std::vector<PreparedCanonicalTwiddles>& tables)
+{
+    validate_object(base_ciphertext, 2);
+    validate_object(switching_component, 1);
+    validate_object(output, 2);
+    require_same_level(base_ciphertext, switching_component, output);
+    if (!compatible_scales(base_ciphertext.scale, switching_component.scale)
+        || !compatible_scales(base_ciphertext.scale, output.scale)) {
+        throw std::invalid_argument("CKKS KeySwitch changed the ciphertext scale");
+    }
+    validate_evaluation_key(evaluation_key, switching_component);
+
+    const std::size_t degree = switching_component.components[0].degree;
+    const auto& q_ids = evaluation_key.rns_layout.q_mod_ids;
+    const std::uint8_t p_id = static_cast<std::uint8_t>(
+        evaluation_key.rns_layout.p_mod_ids.front());
+    std::vector<std::uint8_t> full_ids;
+    full_ids.reserve(q_ids.size() + 1);
+    for (int id : q_ids) {
+        full_ids.push_back(static_cast<std::uint8_t>(id));
+    }
+    full_ids.push_back(p_id);
+
+    constexpr std::uint32_t format_magic = 0x4b535731U;
+    const auto constant_words = memory_.read(
+        constants.values, 5 + q_ids.size() * 2);
+    if (constants.data_parms_id != switching_component.parms_id
+        || constants.chain_index != switching_component.chain_index
+        || constant_words[0] != format_magic
+        || constant_words[1] != p_id
+        || constant_words[2] != memory_.modulus(p_id)
+        || constant_words[3] != (memory_.modulus(p_id) >> 1U)
+        || constant_words[4] != q_ids.size()) {
+        throw std::invalid_argument("invalid HPU_MEM KeySwitch constants");
+    }
+    for (std::size_t basis = 0; basis < q_ids.size(); ++basis) {
+        const std::uint32_t q = memory_.modulus(
+            static_cast<std::uint8_t>(q_ids[basis]));
+        if (constant_words[5 + basis * 2]
+                != static_cast<std::uint32_t>(q_ids[basis])
+            || constant_words[6 + basis * 2]
+                != hpu::model::inverse_mod_prime(
+                    memory_.modulus(p_id) % q, q)) {
+            throw std::invalid_argument("invalid HPU_MEM inverse-P constant");
+        }
+    }
+
+    // Accumulators are [key component][Q|P limb][physical NTT word]. One
+    // source digit is streamed at a time, matching the <=5 live-polynomial
+    // hardware schedule rather than materializing every ModUp digit at once.
+    std::vector<std::vector<std::vector<std::uint32_t>>> accumulators(
+        2, std::vector<std::vector<std::uint32_t>>(
+            full_ids.size(), std::vector<std::uint32_t>(degree, 0)));
+    const auto& switching = switching_component.components[0];
+    for (std::size_t digit = 0; digit < evaluation_key.digits.size(); ++digit) {
+        const int source_id = evaluation_key.rns_layout.key_digits[digit].front();
+        const auto source_found = std::find(
+            switching.modulus_ids.begin(), switching.modulus_ids.end(), source_id);
+        if (source_found == switching.modulus_ids.end()) {
+            throw std::invalid_argument("KeySwitch digit source is absent from active Q");
+        }
+        const std::size_t source_basis = static_cast<std::size_t>(
+            source_found - switching.modulus_ids.begin());
+        const auto source_coefficients = transform_limb(
+            memory_.read(switching.limbs[source_basis], degree),
+            degree, static_cast<std::uint8_t>(source_id), tables, true);
+
+        for (std::size_t target_basis = 0;
+             target_basis < full_ids.size(); ++target_basis) {
+            const std::uint8_t target_id = full_ids[target_basis];
+            const std::uint32_t target_modulus = memory_.modulus(target_id);
+            std::vector<std::uint32_t> converted(degree);
+            for (std::size_t index = 0; index < degree; ++index) {
+                converted[index] = static_cast<std::uint32_t>(
+                    source_coefficients[index] % target_modulus);
+            }
+            const auto digit_ntt = transform_limb(
+                converted, degree, target_id, tables, false);
+            for (std::size_t component = 0; component < 2; ++component) {
+                const auto key_words = memory_.read(
+                    evaluation_key.digits[digit][component].limbs[target_basis],
+                    degree);
+                auto& accumulator = accumulators[component][target_basis];
+                for (std::size_t index = 0; index < degree; ++index) {
+                    accumulator[index] = add_mod(
+                        accumulator[index],
+                        multiply_mod(
+                            digit_ntt[index], key_words[index], target_modulus),
+                        target_modulus);
+                }
+            }
+        }
+    }
+
+    const std::uint32_t p = constant_words[2];
+    const std::uint32_t p_half = constant_words[3];
+    for (std::size_t component = 0; component < 2; ++component) {
+        auto p_coefficients = transform_limb(
+            accumulators[component].back(), degree, p_id, tables, true);
+        for (std::uint32_t& coefficient : p_coefficients) {
+            coefficient = static_cast<std::uint32_t>(
+                (static_cast<std::uint64_t>(coefficient) + p_half) % p);
+        }
+
+        for (std::size_t basis = 0; basis < q_ids.size(); ++basis) {
+            const std::uint8_t q_id = static_cast<std::uint8_t>(q_ids[basis]);
+            const std::uint32_t q = memory_.modulus(q_id);
+            std::vector<std::uint32_t> centered_p(degree);
+            const std::uint32_t p_half_mod_q = p_half % q;
+            for (std::size_t index = 0; index < degree; ++index) {
+                centered_p[index] = subtract_mod(
+                    p_coefficients[index] % q, p_half_mod_q, q);
+            }
+            const auto centered_p_ntt = transform_limb(
+                centered_p, degree, q_id, tables, false);
+            const std::uint32_t inverse_p = constant_words[6 + basis * 2];
+            std::vector<std::uint32_t> result(degree);
+            const auto base = memory_.read(
+                base_ciphertext.components[component].limbs[basis], degree);
+            for (std::size_t index = 0; index < degree; ++index) {
+                const std::uint32_t switched = multiply_mod(
+                    subtract_mod(
+                        accumulators[component][basis][index],
+                        centered_p_ntt[index], q),
+                    inverse_p, q);
+                result[index] = add_mod(base[index], switched, q);
+            }
+            memory_.write(output.components[component].limbs[basis], result);
+        }
+    }
+}
+
+void CkksSoftwareExecutor::relinearize(
+    const PreparedRnsObject& tensor,
+    const PreparedEvaluationKey& relinearization_key,
+    const PreparedKeySwitchConstants& constants,
+    const PreparedRnsObject& output,
+    const std::vector<PreparedCanonicalTwiddles>& tables)
+{
+    validate_object(tensor, 3);
+    validate_object(output, 2);
+    if (tensor.parms_id != output.parms_id
+        || !compatible_scales(tensor.scale, output.scale)) {
+        throw std::invalid_argument("CKKS Relinearize changed level or scale");
+    }
+    PreparedRnsObject base = tensor;
+    base.components.resize(2);
+    PreparedRnsObject switching = tensor;
+    switching.components = {tensor.components[2]};
+    key_switch(
+        base, switching, relinearization_key, constants, output, tables);
+}
+
 void CkksSoftwareExecutor::transform(
     const PreparedRnsObject& input,
     const PreparedRnsObject& output,
@@ -275,45 +547,9 @@ void CkksSoftwareExecutor::transform(
         const auto& destination = output.components[component];
         for (std::size_t basis = 0; basis < source.limbs.size(); ++basis) {
             const std::uint8_t mod_id = source.modulus_ids[basis];
-            const std::uint32_t q = memory_.modulus(mod_id);
-            const auto& prepared = find_tables(tables, mod_id);
-            if (prepared.modulus != q) {
-                throw std::invalid_argument("canonical NTT table modulus mismatch");
-            }
-            hpu::model::HardwareNttModel model(
-                source.degree, q,
-                hpu::model::pow_mod(prepared.canonical_psi, 2, q));
-            std::vector<std::uint32_t> transformed;
-            if (inverse) {
-                hpu::model::InverseNttTables inverse_tables;
-                inverse_tables.stages.reserve(prepared.inverse_stages.size());
-                for (const auto& span : prepared.inverse_stages) {
-                    inverse_tables.stages.push_back(memory_.read(
-                        span, source.degree / 2));
-                }
-                inverse_tables.post_scale = memory_.read(
-                    prepared.post_untwist_scale, source.degree);
-                transformed = model.inverse(
-                    memory_.read(source.limbs[basis], source.degree),
-                    inverse_tables);
-            } else {
-                std::vector<std::vector<std::uint32_t>> forward_tables;
-                forward_tables.reserve(prepared.forward_stages.size());
-                for (const auto& span : prepared.forward_stages) {
-                    forward_tables.push_back(memory_.read(
-                        span, source.degree / 2));
-                }
-                const auto pre_twist = memory_.read(
-                    prepared.pre_twist, source.degree);
-                auto coefficients = memory_.read(
-                    source.limbs[basis], source.degree);
-                for (std::size_t index = 0; index < source.degree; ++index) {
-                    coefficients[index] = multiply_mod(
-                        coefficients[index],
-                        pre_twist[bit_reverse(index, source.degree)], q);
-                }
-                transformed = model.forward(coefficients, forward_tables);
-            }
+            const auto transformed = transform_limb(
+                memory_.read(source.limbs[basis], source.degree),
+                source.degree, mod_id, tables, inverse);
             memory_.write(destination.limbs[basis], transformed);
         }
     }

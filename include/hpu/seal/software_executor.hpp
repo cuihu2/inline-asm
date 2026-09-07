@@ -10,9 +10,9 @@
 
 namespace hpu::seal_adapter {
 
-// SEAL-facing functional execution layer over HpuMemImage. The first milestone
-// executes transform-free canonical-NTT operations exactly; no seal::Evaluator
-// call is made by this class.
+// SEAL-facing functional execution layer over HpuMemImage. Operations consume
+// application-preloaded tables, keys, and constants; no seal::Evaluator call
+// is made by this class.
 class CkksSoftwareExecutor {
 public:
     CkksSoftwareExecutor(
@@ -42,6 +42,19 @@ public:
     void square(
         const PreparedRnsObject& ciphertext,
         const PreparedRnsObject& tensor_output);
+    void key_switch(
+        const PreparedRnsObject& base_ciphertext,
+        const PreparedRnsObject& switching_component,
+        const PreparedEvaluationKey& evaluation_key,
+        const PreparedKeySwitchConstants& constants,
+        const PreparedRnsObject& output,
+        const std::vector<PreparedCanonicalTwiddles>& tables);
+    void relinearize(
+        const PreparedRnsObject& tensor,
+        const PreparedEvaluationKey& relinearization_key,
+        const PreparedKeySwitchConstants& constants,
+        const PreparedRnsObject& output,
+        const std::vector<PreparedCanonicalTwiddles>& tables);
 
     // The coefficient object uses normal logical coefficient order. Twiddle
     // payloads are read from HPU_MEM and consumed in hardware stage order.
@@ -82,6 +95,15 @@ private:
         const PreparedRnsObject& output,
         const std::vector<PreparedCanonicalTwiddles>& tables,
         bool inverse);
+    std::vector<std::uint32_t> transform_limb(
+        const std::vector<std::uint32_t>& words,
+        std::size_t degree,
+        std::uint8_t modulus_id,
+        const std::vector<PreparedCanonicalTwiddles>& tables,
+        bool inverse) const;
+    void validate_evaluation_key(
+        const PreparedEvaluationKey& evaluation_key,
+        const PreparedRnsObject& operand) const;
 
     const ::seal::SEALContext& context_;
     hpu::runtime::HpuSoftwareExecutor memory_;

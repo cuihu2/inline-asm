@@ -31,7 +31,16 @@ struct PreparedRnsObject {
 
 struct PreparedEvaluationKey {
     std::string id;
+    ::seal::parms_id_type data_parms_id{};
+    std::size_t chain_index = 0;
+    hpu::RnsDecompositionLayout rns_layout;
     std::vector<std::vector<PreparedPolynomial>> digits;
+};
+
+struct PreparedKeySwitchConstants {
+    ::seal::parms_id_type data_parms_id{};
+    std::size_t chain_index = 0;
+    hpu::runtime::HpuMemSpan values;
 };
 
 struct PreparedCanonicalTwiddles {
@@ -75,6 +84,9 @@ public:
         std::string id,
         const ::seal::RelinKeys& keys,
         const CkksLevelDescriptor& level);
+    PreparedKeySwitchConstants add_keyswitch_constants(
+        std::string id,
+        const CkksLevelDescriptor& level);
     PreparedEvaluationKey add_galois_key(
         std::string id,
         const ::seal::GaloisKeys& keys,
@@ -102,7 +114,8 @@ private:
         bool read_only);
     PreparedEvaluationKey add_evaluation_key(
         std::string id,
-        const std::vector<HpuKeySwitchDigit>& digits);
+        const std::vector<HpuKeySwitchDigit>& digits,
+        const CkksLevelDescriptor& level);
     const CkksLevelDescriptor& require_level(::seal::parms_id_type parms_id) const;
 
     const ::seal::SEALContext& context_;

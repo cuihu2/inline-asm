@@ -226,10 +226,14 @@ PreparedRnsObject CkksApplicationImageBuilder::add_plaintext(
 
 PreparedEvaluationKey CkksApplicationImageBuilder::add_evaluation_key(
     std::string id,
-    const std::vector<HpuKeySwitchDigit>& digits)
+    const std::vector<HpuKeySwitchDigit>& digits,
+    const CkksLevelDescriptor& level)
 {
     PreparedEvaluationKey result;
     result.id = std::move(id);
+    result.data_parms_id = level.parms_id;
+    result.chain_index = level.chain_index;
+    result.rns_layout = level.rns_layout;
     result.digits.resize(digits.size());
     for (std::size_t digit = 0; digit < digits.size(); ++digit) {
         result.digits[digit].push_back(add_polynomial(
@@ -252,7 +256,42 @@ PreparedEvaluationKey CkksApplicationImageBuilder::add_relinearization_key(
     const CkksLevelDescriptor& authoritative = require_level(level.parms_id);
     return add_evaluation_key(
         std::move(id), relinearization_key_to_hpu(
-            keys, context_, authoritative));
+            keys, context_, authoritative), authoritative);
+}
+
+PreparedKeySwitchConstants CkksApplicationImageBuilder::add_keyswitch_constants(
+    std::string id,
+    const CkksLevelDescriptor& level)
+{
+    constexpr std::uint32_t format_magic = 0x4b535731U; // "KSW1"
+    const CkksLevelDescriptor& authoritative = require_level(level.parms_id);
+    if (authoritative.special_moduli.size() != 1
+        || authoritative.rns_layout.p_mod_ids.size() != 1) {
+        throw std::invalid_argument(
+            "CKKS software KeySwitch constants require one special prime");
+    }
+    const std::uint32_t p = authoritative.special_moduli.front();
+    std::vector<std::uint32_t> words{
+        format_magic,
+        static_cast<std::uint32_t>(authoritative.rns_layout.p_mod_ids.front()),
+        p,
+        p >> 1U,
+        static_cast<std::uint32_t>(authoritative.q_moduli.size())
+    };
+    words.reserve(words.size() + authoritative.q_moduli.size() * 2);
+    for (std::size_t basis = 0; basis < authoritative.q_moduli.size(); ++basis) {
+        const std::uint32_t q = authoritative.q_moduli[basis];
+        words.push_back(static_cast<std::uint32_t>(
+            authoritative.rns_layout.q_mod_ids[basis]));
+        words.push_back(hpu::model::inverse_mod_prime(p % q, q));
+    }
+    PreparedKeySwitchConstants result;
+    result.data_parms_id = authoritative.parms_id;
+    result.chain_index = authoritative.chain_index;
+    result.values = image_.add(
+        std::move(id), words,
+        hpu::runtime::AllocationKind::constant, true).span;
+    return result;
 }
 
 PreparedEvaluationKey CkksApplicationImageBuilder::add_galois_key(
@@ -264,7 +303,7 @@ PreparedEvaluationKey CkksApplicationImageBuilder::add_galois_key(
     const CkksLevelDescriptor& authoritative = require_level(level.parms_id);
     return add_evaluation_key(
         std::move(id), galois_key_to_hpu(
-            keys, galois_element, context_, authoritative));
+            keys, galois_element, context_, authoritative), authoritative);
 }
 
 std::vector<PreparedFusedAutomorphismTwiddles>

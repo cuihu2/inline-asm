@@ -190,18 +190,30 @@ Ciphertext * Plaintext
 Ciphertext + Plaintext
 Ciphertext - Plaintext
 Square(Ciphertext) -> (t0,t1,t2)
+KeySwitch(base, switching_component, evk) -> (base0+ks0, base1+ks1)
+Relinearize(t0,t1,t2,rlk) -> (t0+ks0,t1+ks1)
 coefficient <-> canonical HPU NTT
 ```
 
-前五种点运算和 Square 直接工作在 canonical HPU NTT physical order。变换路径会
+前五种点运算、Square 和 KeySwitch 的乘加直接工作在 canonical HPU NTT physical
+order。KeySwitch 从当前 level descriptor 取得 active-Q singleton digits 和固定
+P 的全局 MOD_ID，逐 digit 完成 INTT、跨基约减、NTT 和 evaluation-key 乘加，最后
+按 P 做带舍入 ModDown。当前 frozen SEAL 版本使用一个 special prime，执行器会显式
+拒绝多-P 形状；每次只流式保留一个 digit 的临时对象，符合最多 5 个活跃多项式的
+SRAM 约束。应用 image 还为每个 level 预装带版本标记的 KeySwitch 常量记录，包含
+P、P/2 和每个 active q 的 `P^-1 mod q_i`；执行时从 HPU_MEM 消费该记录。
+
+变换路径会
 从同一个 HPU_MEM image 读取 pre-twist、每个 stage 的 N/2 个 twiddle，以及
 INTT post-untwist/scale；不会在执行时偷偷重新生成另一套表。
 `hpu_seal_ckks_software_executor_test` 将输出转换回 SEAL NTT，并要求和独立
-`seal::Evaluator` 输出逐字相同，同时要求表驱动的 INTT→NTT 恢复原密文。
+`seal::Evaluator` 输出逐字相同，包括 Square 后的独立 KeySwitch/Relinearize，
+同时要求表驱动的 INTT→NTT 恢复原密文。
 
 ## 8. 下一步
 
-下一阶段会在同一 HPU_MEM 软件执行层上增加 KeySwitch/Relinearize 和 Rescale。
+下一阶段会在同一 HPU_MEM 软件执行层上增加 Rescale，并把本示例的
+Square→Relinearize→Rescale 主计算链切换到软件执行器。
 届时本示例将同时运行：
 
 1. HPU 软件执行器路径；

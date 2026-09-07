@@ -53,6 +53,8 @@ int main()
         ::seal::KeyGenerator key_generator(*bundle.context);
         ::seal::PublicKey public_key;
         key_generator.create_public_key(public_key);
+        ::seal::RelinKeys relinearization_keys;
+        key_generator.create_relin_keys(relinearization_keys);
         ::seal::CKKSEncoder encoder(*bundle.context);
         constexpr double scale = 4096.0;
         ::seal::Plaintext plain_a;
@@ -66,9 +68,14 @@ int main()
         encryptor.encrypt(plain_b, cipher_b);
 
         hpu::seal_adapter::CkksApplicationImageBuilder builder(
-            *bundle.context, 256);
+            *bundle.context, 384);
         builder.add_modulus_table();
         const auto canonical_twiddles = builder.add_canonical_twiddles();
+        const auto prepared_relinearization_key =
+            builder.add_relinearization_key(
+                "key/relinearization", relinearization_keys, level);
+        const auto keyswitch_constants = builder.add_keyswitch_constants(
+            "constants/keyswitch/q3", level);
         const auto input_a = builder.add_ciphertext("input/a", cipher_a);
         const auto input_b = builder.add_ciphertext("input/b", cipher_b);
         const auto plaintext = builder.add_plaintext("plain/b", plain_b);
@@ -84,6 +91,10 @@ int main()
             "output/subtract_plain", level, 2, scale);
         const auto square_output = builder.reserve_ciphertext(
             "output/square_tensor", level, 3, scale * scale);
+        const auto relinearized_output = builder.reserve_ciphertext(
+            "output/relinearized", level, 2, scale * scale);
+        const auto direct_key_switch_output = builder.reserve_ciphertext(
+            "output/direct_key_switch", level, 2, scale * scale);
         const auto coefficient_scratch = builder.reserve_ciphertext(
             "scratch/a_coefficient", level, 2, scale);
         const auto restored_ntt = builder.reserve_ciphertext(
@@ -97,6 +108,18 @@ int main()
         executor.add_plain(input_a, plaintext, add_plain_output);
         executor.subtract_plain(input_a, plaintext, subtract_plain_output);
         executor.square(input_a, square_output);
+        executor.relinearize(
+            square_output, prepared_relinearization_key,
+            keyswitch_constants, relinearized_output, canonical_twiddles);
+        auto key_switch_base = square_output;
+        key_switch_base.components.resize(2);
+        auto key_switch_target = square_output;
+        key_switch_target.components = {square_output.components[2]};
+        executor.key_switch(
+            key_switch_base, key_switch_target,
+            prepared_relinearization_key, keyswitch_constants,
+            direct_key_switch_output,
+            canonical_twiddles);
         executor.inverse_ntt(
             input_a, coefficient_scratch, canonical_twiddles);
         executor.forward_ntt(
@@ -123,12 +146,19 @@ int main()
         evaluator.square(cipher_a, expected);
         verify_exact(
             expected, square_output, executor, *bundle.context, "Square");
+        evaluator.relinearize_inplace(expected, relinearization_keys);
+        verify_exact(
+            expected, relinearized_output, executor,
+            *bundle.context, "Relinearize");
+        verify_exact(
+            expected, direct_key_switch_output, executor,
+            *bundle.context, "KeySwitch");
         verify_exact(
             cipher_a, restored_ntt, executor,
             *bundle.context, "HPU NTT/INTT round-trip");
 
         std::cout
-            << "CKKS HPU_MEM software executor pointwise/Square and table-driven NTT/INTT passed exact SEAL NTT comparison\n";
+            << "CKKS HPU_MEM software executor pointwise/Square/KeySwitch/Relinearize and table-driven NTT/INTT passed exact SEAL NTT comparison\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "CKKS software executor test failed: "

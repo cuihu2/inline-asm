@@ -57,6 +57,8 @@ int main()
         const auto& level = builder.levels()[1];
         const auto prepared_relin = builder.add_relinearization_key(
             "relin_q2", relin_keys, level);
+        const auto prepared_keyswitch_constants =
+            builder.add_keyswitch_constants("constants/keyswitch/q2", level);
         const auto prepared_galois = builder.add_galois_key(
             "galois3_q2", galois_keys, 3, level);
         const auto fused = builder.add_fused_automorphism_twiddles(
@@ -79,12 +81,25 @@ int main()
                     && prepared_relin.digits.front().front().modulus_ids
                         == std::vector<std::uint8_t>({0, 1, 3}),
                 "level-specific Q/P evaluation-key image is incorrect");
+        require(prepared_keyswitch_constants.data_parms_id == level.parms_id
+                    && prepared_keyswitch_constants.chain_index == level.chain_index
+                    && prepared_keyswitch_constants.values.line_count == 1,
+                "level-specific KeySwitch constant record is incorrect");
         require(fused.size() == level.q_moduli.size()
                     && fused.front().inverse_stages.size() == 7
                     && output.components.size() == 2,
                 "Rotate twiddles or reserved output shape is incorrect");
 
         const auto& image = builder.image();
+        const auto& keyswitch_allocation = image.allocation(
+            "constants/keyswitch/q2");
+        const std::size_t keyswitch_word_offset = static_cast<std::size_t>(
+            keyswitch_allocation.span.line_offset)
+            * hpu::runtime::kHpuMemLineWords;
+        require(keyswitch_allocation.kind == hpu::runtime::AllocationKind::constant
+                    && keyswitch_allocation.read_only
+                    && image.words()[keyswitch_word_offset] == 0x4b535731U,
+                "KeySwitch constants were not serialized as immutable HPU_MEM data");
         require(image.used_lines() <= image.capacity_lines()
                     && image.words().size()
                         == image.used_lines() * hpu::runtime::kHpuMemLineWords,

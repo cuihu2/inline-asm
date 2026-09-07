@@ -14,6 +14,7 @@ constexpr std::size_t kHpuMemLineWords = 64;
 
 enum class AllocationKind {
     modulus_table,
+    constant,
     ciphertext,
     plaintext,
     evaluation_key,
