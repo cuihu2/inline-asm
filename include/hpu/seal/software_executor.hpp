@@ -39,6 +39,20 @@ public:
         const PreparedRnsObject& ciphertext,
         const PreparedRnsObject& plaintext,
         const PreparedRnsObject& output);
+    void square(
+        const PreparedRnsObject& ciphertext,
+        const PreparedRnsObject& tensor_output);
+
+    // The coefficient object uses normal logical coefficient order. Twiddle
+    // payloads are read from HPU_MEM and consumed in hardware stage order.
+    void forward_ntt(
+        const PreparedRnsObject& coefficient,
+        const PreparedRnsObject& canonical_ntt,
+        const std::vector<PreparedCanonicalTwiddles>& tables);
+    void inverse_ntt(
+        const PreparedRnsObject& canonical_ntt,
+        const PreparedRnsObject& coefficient,
+        const std::vector<PreparedCanonicalTwiddles>& tables);
 
     HpuRnsPolynomial export_component(
         const PreparedRnsObject& object,
@@ -63,6 +77,11 @@ private:
         const PreparedRnsObject& left,
         const PreparedRnsObject& right,
         const PreparedRnsObject& output) const;
+    void transform(
+        const PreparedRnsObject& input,
+        const PreparedRnsObject& output,
+        const std::vector<PreparedCanonicalTwiddles>& tables,
+        bool inverse);
 
     const ::seal::SEALContext& context_;
     hpu::runtime::HpuSoftwareExecutor memory_;

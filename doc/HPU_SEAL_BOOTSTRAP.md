@@ -172,11 +172,13 @@ putting ioctl/MMIO details into CKKS or scheduling code.
 same HPU_MEM image. It validates and loads the packed q/Barrett-mu records once,
 checks every DMA span, and implements exact uint32 modular pointwise
 instructions. `hpu::seal_adapter::CkksSoftwareExecutor` adds CKKS object/level/
-scale validation and currently executes Add, Subtract, MultiplyPlain,
-AddPlain, and SubtractPlain without calling `seal::Evaluator`. Its regression
-converts results back to SEAL NTT form and requires exact word equality with an
-independently evaluated oracle. Transform, KeySwitch, and Rescale execution are
-the next layer; the `x^2+1` example still uses SEAL for that full-chain result.
+scale validation and executes Add, Subtract, MultiplyPlain, AddPlain,
+SubtractPlain, and three-component Square without calling `seal::Evaluator`.
+It also consumes the preloaded pre-twist, stage twiddle, and combined inverse
+post-scale payloads for coefficient/canonical-NTT conversion. Its regression
+requires exact SEAL NTT word equality for arithmetic and an exact table-driven
+INTT/NTT round trip. KeySwitch and Rescale execution are the next layer; the
+`x^2+1` example still uses SEAL for that full-chain result.
 
 ## Linux build and tests
 

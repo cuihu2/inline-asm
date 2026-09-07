@@ -100,6 +100,26 @@ void test_degree(std::size_t degree)
 
     const auto physical = model.forward(input);
     require(model.inverse(physical) == input, "cyclic HPU NTT round-trip failed");
+    const auto forward_tables = model.forward_twiddles();
+    const auto supplied_inverse_tables = model.inverse_twiddles();
+    require(
+        model.forward(input, forward_tables) == physical
+            && model.inverse(physical, supplied_inverse_tables) == input,
+        "HPU NTT did not consume supplied hardware tables correctly");
+    auto perturbed_forward_tables = forward_tables;
+    for (auto& value : perturbed_forward_tables[0]) {
+        value = (value + 1U) % kModulus;
+    }
+    require(
+        model.forward(input, perturbed_forward_tables) != physical,
+        "HPU forward transform ignored the supplied twiddle payload");
+    auto perturbed_inverse_tables = supplied_inverse_tables;
+    for (auto& value : perturbed_inverse_tables.post_scale) {
+        value = (value + 1U) % kModulus;
+    }
+    require(
+        model.inverse(physical, perturbed_inverse_tables) != input,
+        "HPU inverse transform ignored the supplied post-scale payload");
 
     const auto layout = model.forward_layout();
     std::vector<std::uint32_t> logical_ntt(degree);
@@ -121,7 +141,7 @@ void test_degree(std::size_t degree)
         seen[logical] = true;
     }
 
-    const auto inverse_tables = model.inverse_twiddles();
+    const auto inverse_tables = supplied_inverse_tables;
     require(inverse_tables.stages.size() == model.log_degree(), "wrong inverse stage count");
     require(inverse_tables.post_scale.size() == degree, "wrong inverse post-scale size");
 }

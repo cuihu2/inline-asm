@@ -116,6 +116,7 @@ CkksApplicationImageBuilder::add_canonical_twiddles()
             moduli[basis].value(), "SEAL modulus exceeds the HPU uint32 ABI");
         const std::uint32_t psi = narrow(
             seal_tables[basis].get_root(), "SEAL NTT root exceeds the HPU ABI");
+        prepared.canonical_psi = psi;
         const std::string prefix = "constants/twiddle/canonical/mod"
             + std::to_string(basis);
 

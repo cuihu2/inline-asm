@@ -37,6 +37,7 @@ struct PreparedEvaluationKey {
 struct PreparedCanonicalTwiddles {
     std::uint8_t modulus_id = 0;
     std::uint32_t modulus = 0;
+    std::uint32_t canonical_psi = 0;
     hpu::runtime::HpuMemSpan pre_twist;
     std::vector<hpu::runtime::HpuMemSpan> forward_stages;
     std::vector<hpu::runtime::HpuMemSpan> inverse_stages;

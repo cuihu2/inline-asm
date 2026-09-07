@@ -68,6 +68,7 @@ int main()
         hpu::seal_adapter::CkksApplicationImageBuilder builder(
             *bundle.context, 256);
         builder.add_modulus_table();
+        const auto canonical_twiddles = builder.add_canonical_twiddles();
         const auto input_a = builder.add_ciphertext("input/a", cipher_a);
         const auto input_b = builder.add_ciphertext("input/b", cipher_b);
         const auto plaintext = builder.add_plaintext("plain/b", plain_b);
@@ -81,6 +82,12 @@ int main()
             "output/add_plain", level, 2, scale);
         const auto subtract_plain_output = builder.reserve_ciphertext(
             "output/subtract_plain", level, 2, scale);
+        const auto square_output = builder.reserve_ciphertext(
+            "output/square_tensor", level, 3, scale * scale);
+        const auto coefficient_scratch = builder.reserve_ciphertext(
+            "scratch/a_coefficient", level, 2, scale);
+        const auto restored_ntt = builder.reserve_ciphertext(
+            "output/a_restored_ntt", level, 2, scale);
 
         hpu::seal_adapter::CkksSoftwareExecutor executor(
             *bundle.context, builder.image());
@@ -89,6 +96,11 @@ int main()
         executor.multiply_plain(input_a, plaintext, multiply_plain_output);
         executor.add_plain(input_a, plaintext, add_plain_output);
         executor.subtract_plain(input_a, plaintext, subtract_plain_output);
+        executor.square(input_a, square_output);
+        executor.inverse_ntt(
+            input_a, coefficient_scratch, canonical_twiddles);
+        executor.forward_ntt(
+            coefficient_scratch, restored_ntt, canonical_twiddles);
 
         ::seal::Evaluator evaluator(*bundle.context);
         ::seal::Ciphertext expected;
@@ -108,9 +120,15 @@ int main()
         verify_exact(
             expected, subtract_plain_output, executor,
             *bundle.context, "SubtractPlain");
+        evaluator.square(cipher_a, expected);
+        verify_exact(
+            expected, square_output, executor, *bundle.context, "Square");
+        verify_exact(
+            cipher_a, restored_ntt, executor,
+            *bundle.context, "HPU NTT/INTT round-trip");
 
         std::cout
-            << "CKKS HPU_MEM software executor pointwise operations passed exact SEAL NTT comparison\n";
+            << "CKKS HPU_MEM software executor pointwise/Square and table-driven NTT/INTT passed exact SEAL NTT comparison\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "CKKS software executor test failed: "

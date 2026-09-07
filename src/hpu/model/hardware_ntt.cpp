@@ -301,8 +301,25 @@ InverseNttTables HardwareNttModel::inverse_twiddles() const
 std::vector<std::uint32_t> HardwareNttModel::forward(
     const std::vector<std::uint32_t>& coefficients) const
 {
+    return forward(coefficients, forward_twiddles());
+}
+
+std::vector<std::uint32_t> HardwareNttModel::forward(
+    const std::vector<std::uint32_t>& coefficients,
+    const std::vector<std::vector<std::uint32_t>>& tables) const
+{
     if (coefficients.size() != degree_) {
         throw std::invalid_argument("forward input length does not equal N");
+    }
+    if (tables.size() != log_degree_) {
+        throw std::invalid_argument("forward table count does not equal log2(N)");
+    }
+    for (const auto& table : tables) {
+        if (table.size() != degree_ / 2
+            || std::any_of(table.begin(), table.end(),
+                [&](std::uint32_t value) { return value >= modulus_; })) {
+            throw std::invalid_argument("forward stage table has an invalid shape/value");
+        }
     }
     // The increasing-m DIT schedule consumes bit-reversed coefficients. The
     // Python hardware model exposes that memory-level convention directly;
@@ -314,7 +331,6 @@ std::vector<std::uint32_t> HardwareNttModel::forward(
     }
     std::vector<std::size_t> labels(degree_);
     std::iota(labels.begin(), labels.end(), 0);
-    const auto tables = forward_twiddles();
     for (std::size_t stage = 0; stage < log_degree_; ++stage) {
         std::size_t twiddle = 0;
         for (const NttBatch& batch : stage_batches(stage)) {
@@ -341,11 +357,31 @@ std::vector<std::uint32_t> HardwareNttModel::forward(
 std::vector<std::uint32_t> HardwareNttModel::inverse(
     const std::vector<std::uint32_t>& physical_ntt) const
 {
+    return inverse(physical_ntt, inverse_twiddles());
+}
+
+std::vector<std::uint32_t> HardwareNttModel::inverse(
+    const std::vector<std::uint32_t>& physical_ntt,
+    const InverseNttTables& tables) const
+{
     if (physical_ntt.size() != degree_) {
         throw std::invalid_argument("inverse input length does not equal N");
     }
+    if (tables.stages.size() != log_degree_
+        || tables.post_scale.size() != degree_
+        || std::any_of(
+            tables.post_scale.begin(), tables.post_scale.end(),
+            [&](std::uint32_t value) { return value >= modulus_; })) {
+        throw std::invalid_argument("inverse tables have an invalid shape/value");
+    }
+    for (const auto& table : tables.stages) {
+        if (table.size() != degree_ / 2
+            || std::any_of(table.begin(), table.end(),
+                [&](std::uint32_t value) { return value >= modulus_; })) {
+            throw std::invalid_argument("inverse stage table has an invalid shape/value");
+        }
+    }
     std::vector<std::uint32_t> values = physical_ntt;
-    const InverseNttTables tables = inverse_twiddles();
     for (std::size_t inverse_stage = 0; inverse_stage < log_degree_; ++inverse_stage) {
         const std::size_t forward_stage = log_degree_ - 1 - inverse_stage;
         std::size_t twiddle = 0;

@@ -47,8 +47,14 @@ public:
     // normal logical coefficient order.
     std::vector<std::uint32_t> forward(
         const std::vector<std::uint32_t>& coefficients) const;
+    std::vector<std::uint32_t> forward(
+        const std::vector<std::uint32_t>& coefficients,
+        const std::vector<std::vector<std::uint32_t>>& stage_twiddles) const;
     std::vector<std::uint32_t> inverse(
         const std::vector<std::uint32_t>& physical_ntt) const;
+    std::vector<std::uint32_t> inverse(
+        const std::vector<std::uint32_t>& physical_ntt,
+        const InverseNttTables& tables) const;
 
 private:
     std::size_t degree_;

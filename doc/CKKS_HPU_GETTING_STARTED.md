@@ -12,10 +12,11 @@
 5. 用软件模型和 SEAL 语义结果验证各层边界。
 
 目前已经具备“准备真实 CKKS 对象并生成 HPU 程序”的前端路径，以及直接消费
-HPU_MEM span 的第一阶段软件执行器。该执行器已覆盖 canonical HPU NTT 域中的
-Add、Subtract、MultiplyPlain、AddPlain 和 SubtractPlain，并与 SEAL NTT words
-逐字比较。Linux driver/userspace backend，以及包含 KeySwitch/Rescale 的整条程序
-执行仍未完成。因此本文 `x²+1` 示例中：
+HPU_MEM span 的软件执行器。该执行器已覆盖 canonical HPU NTT 域中的 Add、
+Subtract、MultiplyPlain、AddPlain、SubtractPlain、三分量 Square，以及由 HPU_MEM
+twiddle 驱动的 canonical NTT/INTT，并与 SEAL NTT words 逐字比较。Linux
+driver/userspace backend，以及包含 KeySwitch/Rescale 的整条程序执行仍未完成。
+因此本文 `x²+1` 示例中：
 
 - HPU_MEM 布局与 HPU 指令流来自本工程；
 - 解密后的数值结果暂时由 `seal::Evaluator` 计算，只作为语义 oracle；
@@ -188,16 +189,20 @@ Ciphertext - Ciphertext
 Ciphertext * Plaintext
 Ciphertext + Plaintext
 Ciphertext - Plaintext
+Square(Ciphertext) -> (t0,t1,t2)
+coefficient <-> canonical HPU NTT
 ```
 
-这些操作都保持 canonical HPU NTT physical order，因此软件执行器不需要调用
-NTT/INTT。`hpu_seal_ckks_software_executor_test` 将每个输出转换回 SEAL NTT，
-并要求和独立 `seal::Evaluator` 输出逐字相同，而不只是 Decode 后近似相等。
+前五种点运算和 Square 直接工作在 canonical HPU NTT physical order。变换路径会
+从同一个 HPU_MEM image 读取 pre-twist、每个 stage 的 N/2 个 twiddle，以及
+INTT post-untwist/scale；不会在执行时偷偷重新生成另一套表。
+`hpu_seal_ckks_software_executor_test` 将输出转换回 SEAL NTT，并要求和独立
+`seal::Evaluator` 输出逐字相同，同时要求表驱动的 INTT→NTT 恢复原密文。
 
 ## 8. 下一步
 
-下一阶段会在同一 HPU_MEM 软件执行层上增加 NTT/INTT、Square、KeySwitch 和
-Rescale。届时本示例将同时运行：
+下一阶段会在同一 HPU_MEM 软件执行层上增加 KeySwitch/Relinearize 和 Rescale。
+届时本示例将同时运行：
 
 1. HPU 软件执行器路径；
 2. SEAL 语义 oracle；
