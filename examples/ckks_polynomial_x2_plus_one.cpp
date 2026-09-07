@@ -1,5 +1,6 @@
 #include "hpu/seal/application_image.hpp"
 #include "hpu/seal/ckks_context.hpp"
+#include "hpu/seal/software_executor.hpp"
 #include "scheme/ckks/basic_arithmetic.hpp"
 #include "scheme/ckks/ciphertext_multiply.hpp"
 #include "scheme/ckks/rescale.hpp"
@@ -67,8 +68,9 @@ int main(int argc, char** argv)
         ::seal::Ciphertext encrypted_input;
         encryptor.encrypt(encoded_input, encrypted_input);
 
-        // Host-only semantic oracle. This verifies f(x)=x^2+1, but does not
-        // claim that the generated HPU stream has executed.
+        // Independent host oracle. The generated hardware stream is not run on
+        // this host, but the HPU_MEM software path below executes the same FHE
+        // stages without calling Evaluator.
         ::seal::Evaluator evaluator(*bundle.context);
         ::seal::Ciphertext host_result;
         evaluator.square(encrypted_input, host_result);
@@ -105,15 +107,74 @@ int main(int argc, char** argv)
         hpu::seal_adapter::CkksApplicationImageBuilder image_builder(
             *bundle.context, 1000000);
         const auto modulus_table = image_builder.add_modulus_table();
-        image_builder.add_canonical_twiddles();
-        image_builder.add_ciphertext("input/x", encrypted_input);
-        image_builder.add_relinearization_key(
+        const auto canonical_twiddles = image_builder.add_canonical_twiddles();
+        const auto prepared_input = image_builder.add_ciphertext(
+            "input/x", encrypted_input);
+        const auto prepared_relinearization_key =
+            image_builder.add_relinearization_key(
             "key/relinearization/top", relin_keys, top);
-        image_builder.add_plaintext("constant/one/q3", encoded_one);
-        image_builder.reserve_ciphertext(
-            "intermediate/x_squared/q3", after_rescale, 2, host_result.scale());
-        image_builder.reserve_ciphertext(
+        const auto keyswitch_constants = image_builder.add_keyswitch_constants(
+            "constants/keyswitch/top", top);
+        const auto rescale_constants = image_builder.add_rescale_constants(
+            "constants/rescale/top_to_next", top);
+        const auto prepared_one = image_builder.add_plaintext(
+            "constant/one/q3", encoded_one);
+        const auto tensor = image_builder.reserve_ciphertext(
+            "intermediate/x_squared_tensor/top", top, 3,
+            input_scale * input_scale);
+        const auto relinearized = image_builder.reserve_ciphertext(
+            "intermediate/x_squared_relinearized/top", top, 2,
+            input_scale * input_scale);
+        const auto rescaled = image_builder.reserve_ciphertext(
+            "intermediate/x_squared/q3", after_rescale, 2,
+            host_result.scale());
+        const auto hpu_output = image_builder.reserve_ciphertext(
             "output/x_squared_plus_one/q3", after_rescale, 2, host_result.scale());
+
+        // Execute the same application from its HPU_MEM image. SEAL Evaluator
+        // above is now only the independent oracle, not the implementation of
+        // the path being demonstrated.
+        hpu::seal_adapter::CkksSoftwareExecutor software_executor(
+            *bundle.context, image_builder.image());
+        software_executor.square(prepared_input, tensor);
+        software_executor.relinearize(
+            tensor, prepared_relinearization_key, keyswitch_constants,
+            relinearized, canonical_twiddles);
+        software_executor.rescale(
+            relinearized, rescale_constants, rescaled, canonical_twiddles);
+        software_executor.add_plain(rescaled, prepared_one, hpu_output);
+
+        ::seal::Ciphertext imported_hpu_result;
+        imported_hpu_result.resize(
+            *bundle.context, after_rescale.parms_id, 2);
+        imported_hpu_result.is_ntt_form() = true;
+        imported_hpu_result.scale() = hpu_output.scale;
+        for (std::size_t component = 0; component < 2; ++component) {
+            const auto seal_words = hpu::seal_adapter::hpu_to_seal_ntt(
+                software_executor.export_component(hpu_output, component),
+                after_rescale.parms_id, *bundle.context);
+            if (!std::equal(
+                    seal_words.begin(), seal_words.end(),
+                    host_result.data(component))) {
+                throw std::runtime_error(
+                    "HPU software x^2+1 result differs from SEAL NTT words");
+            }
+            std::copy(
+                seal_words.begin(), seal_words.end(),
+                imported_hpu_result.data(component));
+        }
+
+        decryptor.decrypt(imported_hpu_result, decrypted);
+        encoder.decode(decrypted, decoded);
+        maximum_error = 0.0;
+        for (std::size_t index = 0; index < input.size(); ++index) {
+            maximum_error = std::max(
+                maximum_error,
+                std::abs(decoded[index] - (input[index] * input[index] + 1.0)));
+        }
+        if (maximum_error > 5e-3) {
+            throw std::runtime_error("HPU software x^2+1 result exceeded tolerance");
+        }
 
         // Compose two kernel bodies under one application-owned modulus-table
         // lifetime and one terminal psync. The generic multiply's left/right
@@ -158,7 +219,7 @@ int main(int argc, char** argv)
                   << ", SEAL=" << host_result.scale() << '\n'
                   << "Decoded: [" << decoded[0] << ", " << decoded[1]
                   << ", " << decoded[2] << "]\n"
-                  << "Maximum semantic-oracle error: " << maximum_error << '\n'
+                  << "Maximum HPU decoded error: " << maximum_error << '\n'
                   << "Generated HPU body bytes: " << hpu_program.size() << '\n';
         if (print_asm) {
             std::cout << "\n--- generated HPU inline-assembly body ---\n"

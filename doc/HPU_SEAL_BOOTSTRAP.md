@@ -173,7 +173,7 @@ same HPU_MEM image. It validates and loads the packed q/Barrett-mu records once,
 checks every DMA span, and implements exact uint32 modular pointwise
 instructions. `hpu::seal_adapter::CkksSoftwareExecutor` adds CKKS object/level/
 scale validation and executes Add, Subtract, MultiplyPlain, AddPlain,
-SubtractPlain, three-component Square, KeySwitch, and Relinearize without
+SubtractPlain, three-component Square, KeySwitch, Relinearize, and Rescale without
 calling `seal::Evaluator`. KeySwitch streams one active-Q singleton digit at a
 time, extends it to Q|P, accumulates against the HPU_MEM evaluation key, and
 performs SEAL-equivalent rounded ModDown. The current functional executor
@@ -181,11 +181,16 @@ explicitly accepts the frozen SEAL single-special-prime key shape; multi-P is
 rejected instead of being silently approximated. Level-specific P, P/2, and
 `P^-1 mod q_i` values are serialized into a versioned HPU_MEM constant record
 at application initialization and consumed by execution.
+Multi-P KeySwitch remains an explicit follow-up: it requires a generalized
+base-P conversion/rounding record and matching hardware schedule, not merely a
+relaxed shape check.
 It also consumes the preloaded pre-twist, stage twiddle, and combined inverse
 post-scale payloads for coefficient/canonical-NTT conversion. Its regression
 requires exact SEAL NTT word equality for arithmetic and an exact table-driven
-INTT/NTT round trip. Rescale execution is the next layer; the `x^2+1` example
-still uses SEAL for that full-chain result.
+INTT/NTT round trip. Rescale consumes preloaded q-last rounding/inverse
+constants and changes to the adjacent SEAL `parms_id`. The `x^2+1` example now
+executes Square, Relinearize, Rescale, and AddPlain through this HPU_MEM executor;
+SEAL is retained only as the word-exact and decoded semantic oracle.
 
 ## Linux build and tests
 

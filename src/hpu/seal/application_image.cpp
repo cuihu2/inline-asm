@@ -294,6 +294,55 @@ PreparedKeySwitchConstants CkksApplicationImageBuilder::add_keyswitch_constants(
     return result;
 }
 
+PreparedRescaleConstants CkksApplicationImageBuilder::add_rescale_constants(
+    std::string id,
+    const CkksLevelDescriptor& source_level)
+{
+    constexpr std::uint32_t format_magic = 0x52534331U; // "RSC1"
+    const CkksLevelDescriptor& source = require_level(source_level.parms_id);
+    const auto source_data = context_.get_context_data(source.parms_id);
+    const auto destination_data = source_data ? source_data->next_context_data() : nullptr;
+    if (!destination_data || source.q_moduli.size() < 2) {
+        throw std::invalid_argument("CKKS Rescale source has no next data level");
+    }
+    const CkksLevelDescriptor& destination = require_level(
+        destination_data->parms_id());
+    if (destination.q_moduli.size() + 1 != source.q_moduli.size()
+        || !std::equal(
+            destination.q_moduli.begin(), destination.q_moduli.end(),
+            source.q_moduli.begin())
+        || !std::equal(
+            destination.rns_layout.q_mod_ids.begin(),
+            destination.rns_layout.q_mod_ids.end(),
+            source.rns_layout.q_mod_ids.begin())) {
+        throw std::logic_error("CKKS Rescale levels are not a drop-last Q chain");
+    }
+    const std::uint32_t q_last = source.q_moduli.back();
+    std::vector<std::uint32_t> words{
+        format_magic,
+        static_cast<std::uint32_t>(source.rns_layout.q_mod_ids.back()),
+        q_last,
+        q_last >> 1U,
+        static_cast<std::uint32_t>(destination.q_moduli.size())
+    };
+    words.reserve(words.size() + destination.q_moduli.size() * 2);
+    for (std::size_t basis = 0; basis < destination.q_moduli.size(); ++basis) {
+        const std::uint32_t q = destination.q_moduli[basis];
+        words.push_back(static_cast<std::uint32_t>(
+            destination.rns_layout.q_mod_ids[basis]));
+        words.push_back(hpu::model::inverse_mod_prime(q_last % q, q));
+    }
+    PreparedRescaleConstants result;
+    result.source_parms_id = source.parms_id;
+    result.destination_parms_id = destination.parms_id;
+    result.source_chain_index = source.chain_index;
+    result.destination_chain_index = destination.chain_index;
+    result.values = image_.add(
+        std::move(id), words,
+        hpu::runtime::AllocationKind::constant, true).span;
+    return result;
+}
+
 PreparedEvaluationKey CkksApplicationImageBuilder::add_galois_key(
     std::string id,
     const ::seal::GaloisKeys& keys,

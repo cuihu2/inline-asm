@@ -526,6 +526,100 @@ void CkksSoftwareExecutor::relinearize(
         base, switching, relinearization_key, constants, output, tables);
 }
 
+void CkksSoftwareExecutor::rescale(
+    const PreparedRnsObject& input,
+    const PreparedRescaleConstants& constants,
+    const PreparedRnsObject& output,
+    const std::vector<PreparedCanonicalTwiddles>& tables)
+{
+    if (input.components.empty()
+        || input.components.size() != output.components.size()) {
+        throw std::invalid_argument(
+            "CKKS Rescale requires matching nonempty component counts");
+    }
+    validate_object(input, input.components.size());
+    validate_object(output, output.components.size());
+    const auto source_data = context_.get_context_data(input.parms_id);
+    const auto destination_data = source_data
+        ? source_data->next_context_data() : nullptr;
+    if (!destination_data
+        || output.parms_id != destination_data->parms_id()
+        || constants.source_parms_id != input.parms_id
+        || constants.destination_parms_id != output.parms_id
+        || constants.source_chain_index != input.chain_index
+        || constants.destination_chain_index != output.chain_index
+        || input.components.front().limbs.size()
+            != output.components.front().limbs.size() + 1) {
+        throw std::invalid_argument(
+            "CKKS Rescale operands/constants are not adjacent Q levels");
+    }
+
+    const std::size_t retained_count = output.components.front().limbs.size();
+    constexpr std::uint32_t format_magic = 0x52534331U;
+    const auto constant_words = memory_.read(
+        constants.values, 5 + retained_count * 2);
+    const auto& source_ids = input.components.front().modulus_ids;
+    const auto& destination_ids = output.components.front().modulus_ids;
+    const std::uint8_t dropped_id = source_ids.back();
+    const std::uint32_t q_last = memory_.modulus(dropped_id);
+    if (constant_words[0] != format_magic
+        || constant_words[1] != dropped_id
+        || constant_words[2] != q_last
+        || constant_words[3] != (q_last >> 1U)
+        || constant_words[4] != retained_count
+        || !std::equal(
+            destination_ids.begin(), destination_ids.end(),
+            source_ids.begin())
+        || !compatible_scales(
+            input.scale / static_cast<double>(q_last), output.scale)) {
+        throw std::invalid_argument("invalid HPU_MEM CKKS Rescale constants");
+    }
+    for (std::size_t basis = 0; basis < retained_count; ++basis) {
+        const std::uint32_t q = memory_.modulus(destination_ids[basis]);
+        if (constant_words[5 + basis * 2] != destination_ids[basis]
+            || constant_words[6 + basis * 2]
+                != hpu::model::inverse_mod_prime(q_last % q, q)) {
+            throw std::invalid_argument("invalid HPU_MEM inverse-q_last constant");
+        }
+    }
+
+    const std::size_t degree = input.components.front().degree;
+    const std::uint32_t half = constant_words[3];
+    for (std::size_t component = 0; component < input.components.size(); ++component) {
+        auto rounded_last = transform_limb(
+            memory_.read(input.components[component].limbs.back(), degree),
+            degree, dropped_id, tables, true);
+        for (std::uint32_t& coefficient : rounded_last) {
+            coefficient = static_cast<std::uint32_t>(
+                (static_cast<std::uint64_t>(coefficient) + half) % q_last);
+        }
+
+        for (std::size_t basis = 0; basis < retained_count; ++basis) {
+            const std::uint8_t q_id = destination_ids[basis];
+            const std::uint32_t q = memory_.modulus(q_id);
+            const std::uint32_t half_mod_q = half % q;
+            std::vector<std::uint32_t> correction(degree);
+            for (std::size_t index = 0; index < degree; ++index) {
+                correction[index] = subtract_mod(
+                    rounded_last[index] % q, half_mod_q, q);
+            }
+            const auto correction_ntt = transform_limb(
+                correction, degree, q_id, tables, false);
+            const auto source = memory_.read(
+                input.components[component].limbs[basis], degree);
+            const std::uint32_t inverse_q_last =
+                constant_words[6 + basis * 2];
+            std::vector<std::uint32_t> result(degree);
+            for (std::size_t index = 0; index < degree; ++index) {
+                result[index] = multiply_mod(
+                    subtract_mod(source[index], correction_ntt[index], q),
+                    inverse_q_last, q);
+            }
+            memory_.write(output.components[component].limbs[basis], result);
+        }
+    }
+}
+
 void CkksSoftwareExecutor::transform(
     const PreparedRnsObject& input,
     const PreparedRnsObject& output,

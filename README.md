@@ -148,12 +148,15 @@ ctest --test-dir build-seal -R hpu_seal_ckks_context_test --output-on-failure
 `doc/CKKS_HPU_GETTING_STARTED.md`。
 
 当前 HPU_MEM 软件执行器已经对 CKKS Add/Subtract/MultiplyPlain/AddPlain/
-SubtractPlain、三分量 Square、KeySwitch 和 Relinearize 完成 SEAL NTT 逐字差分，
+SubtractPlain、三分量 Square、KeySwitch、Relinearize 和 Rescale 完成 SEAL NTT 逐字差分，
 并能消费预加载 twiddle 完成 canonical HPU NTT/INTT。KeySwitch 按当前 level
 逐个流式处理 active-Q singleton digit，在 `Q|P` 上乘加后执行与 SEAL 等价的
-带舍入 ModDown；当前明确支持 SEAL 的单 special-prime 形式。Rescale 将在同一
-框架上继续接入。P、P/2 和各 `P^-1 mod q_i` 作为 level 专属常量在应用初始化时
+带舍入 ModDown；当前明确支持 SEAL 的单 special-prime 形式，多 P KeySwitch 已列为
+后续兼容项。P、P/2 和各 `P^-1 mod q_i` 作为 level 专属常量在应用初始化时
 写入 HPU_MEM，执行阶段只读取并校验，不临时推导硬件常量。
+Rescale 同样从 HPU_MEM 取得 `q_last/2` 与 `q_last^-1 mod q_i`，并迁移到相邻
+`parms_id`。`x^2+1` 示例的 Square→Relinearize→Rescale→AddPlain 已由该执行器
+真正执行，SEAL Evaluator 只提供独立逐字 oracle。
 
 可选 SEAL 三方案 fixture oracle 默认关闭；它仍依赖 legacy reference 产物，并不
 代表 HPU 指令执行。启用后

@@ -59,6 +59,8 @@ int main()
             "relin_q2", relin_keys, level);
         const auto prepared_keyswitch_constants =
             builder.add_keyswitch_constants("constants/keyswitch/q2", level);
+        const auto prepared_rescale_constants = builder.add_rescale_constants(
+            "constants/rescale/q2_to_q1", level);
         const auto prepared_galois = builder.add_galois_key(
             "galois3_q2", galois_keys, 3, level);
         const auto fused = builder.add_fused_automorphism_twiddles(
@@ -85,6 +87,9 @@ int main()
                     && prepared_keyswitch_constants.chain_index == level.chain_index
                     && prepared_keyswitch_constants.values.line_count == 1,
                 "level-specific KeySwitch constant record is incorrect");
+        require(prepared_rescale_constants.source_parms_id == level.parms_id
+                    && prepared_rescale_constants.values.line_count == 1,
+                "level-specific Rescale constant record is incorrect");
         require(fused.size() == level.q_moduli.size()
                     && fused.front().inverse_stages.size() == 7
                     && output.components.size() == 2,
@@ -100,6 +105,15 @@ int main()
                     && keyswitch_allocation.read_only
                     && image.words()[keyswitch_word_offset] == 0x4b535731U,
                 "KeySwitch constants were not serialized as immutable HPU_MEM data");
+        const auto& rescale_allocation = image.allocation(
+            "constants/rescale/q2_to_q1");
+        const std::size_t rescale_word_offset = static_cast<std::size_t>(
+            rescale_allocation.span.line_offset)
+            * hpu::runtime::kHpuMemLineWords;
+        require(rescale_allocation.kind == hpu::runtime::AllocationKind::constant
+                    && rescale_allocation.read_only
+                    && image.words()[rescale_word_offset] == 0x52534331U,
+                "Rescale constants were not serialized as immutable HPU_MEM data");
         require(image.used_lines() <= image.capacity_lines()
                     && image.words().size()
                         == image.used_lines() * hpu::runtime::kHpuMemLineWords,

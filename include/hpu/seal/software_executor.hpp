@@ -55,6 +55,11 @@ public:
         const PreparedKeySwitchConstants& constants,
         const PreparedRnsObject& output,
         const std::vector<PreparedCanonicalTwiddles>& tables);
+    void rescale(
+        const PreparedRnsObject& input,
+        const PreparedRescaleConstants& constants,
+        const PreparedRnsObject& output,
+        const std::vector<PreparedCanonicalTwiddles>& tables);
 
     // The coefficient object uses normal logical coefficient order. Twiddle
     // payloads are read from HPU_MEM and consumed in hardware stage order.

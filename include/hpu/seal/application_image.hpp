@@ -43,6 +43,14 @@ struct PreparedKeySwitchConstants {
     hpu::runtime::HpuMemSpan values;
 };
 
+struct PreparedRescaleConstants {
+    ::seal::parms_id_type source_parms_id{};
+    ::seal::parms_id_type destination_parms_id{};
+    std::size_t source_chain_index = 0;
+    std::size_t destination_chain_index = 0;
+    hpu::runtime::HpuMemSpan values;
+};
+
 struct PreparedCanonicalTwiddles {
     std::uint8_t modulus_id = 0;
     std::uint32_t modulus = 0;
@@ -87,6 +95,9 @@ public:
     PreparedKeySwitchConstants add_keyswitch_constants(
         std::string id,
         const CkksLevelDescriptor& level);
+    PreparedRescaleConstants add_rescale_constants(
+        std::string id,
+        const CkksLevelDescriptor& source_level);
     PreparedEvaluationKey add_galois_key(
         std::string id,
         const ::seal::GaloisKeys& keys,

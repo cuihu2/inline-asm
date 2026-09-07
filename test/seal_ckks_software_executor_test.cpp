@@ -22,7 +22,9 @@ void verify_exact(
     const char* role)
 {
     if (expected.parms_id() != actual.parms_id
-        || expected.size() != actual.components.size()) {
+        || expected.size() != actual.components.size()
+        || std::abs(expected.scale() - actual.scale)
+            > 1e-12 * std::max(expected.scale(), actual.scale)) {
         throw std::runtime_error(std::string(role) + " output shape mismatch");
     }
     for (std::size_t component = 0; component < expected.size(); ++component) {
@@ -48,7 +50,11 @@ int main()
         const auto bundle = hpu::seal_adapter::create_ckks_context(spec);
         const auto levels = hpu::seal_adapter::create_ckks_level_descriptors(
             *bundle.context);
+        if (levels.size() < 2) {
+            throw std::runtime_error("software executor test needs a Rescale level");
+        }
         const auto& level = levels.front();
+        const auto& next_level = levels[1];
 
         ::seal::KeyGenerator key_generator(*bundle.context);
         ::seal::PublicKey public_key;
@@ -76,6 +82,8 @@ int main()
                 "key/relinearization", relinearization_keys, level);
         const auto keyswitch_constants = builder.add_keyswitch_constants(
             "constants/keyswitch/q3", level);
+        const auto rescale_constants = builder.add_rescale_constants(
+            "constants/rescale/q3_to_q2", level);
         const auto input_a = builder.add_ciphertext("input/a", cipher_a);
         const auto input_b = builder.add_ciphertext("input/b", cipher_b);
         const auto plaintext = builder.add_plaintext("plain/b", plain_b);
@@ -95,6 +103,9 @@ int main()
             "output/relinearized", level, 2, scale * scale);
         const auto direct_key_switch_output = builder.reserve_ciphertext(
             "output/direct_key_switch", level, 2, scale * scale);
+        const auto rescaled_output = builder.reserve_ciphertext(
+            "output/rescaled", next_level, 2,
+            scale * scale / static_cast<double>(level.q_last));
         const auto coefficient_scratch = builder.reserve_ciphertext(
             "scratch/a_coefficient", level, 2, scale);
         const auto restored_ntt = builder.reserve_ciphertext(
@@ -120,6 +131,9 @@ int main()
             prepared_relinearization_key, keyswitch_constants,
             direct_key_switch_output,
             canonical_twiddles);
+        executor.rescale(
+            relinearized_output, rescale_constants,
+            rescaled_output, canonical_twiddles);
         executor.inverse_ntt(
             input_a, coefficient_scratch, canonical_twiddles);
         executor.forward_ntt(
@@ -153,12 +167,16 @@ int main()
         verify_exact(
             expected, direct_key_switch_output, executor,
             *bundle.context, "KeySwitch");
+        evaluator.rescale_to_next_inplace(expected);
+        verify_exact(
+            expected, rescaled_output, executor,
+            *bundle.context, "Rescale");
         verify_exact(
             cipher_a, restored_ntt, executor,
             *bundle.context, "HPU NTT/INTT round-trip");
 
         std::cout
-            << "CKKS HPU_MEM software executor pointwise/Square/KeySwitch/Relinearize and table-driven NTT/INTT passed exact SEAL NTT comparison\n";
+            << "CKKS HPU_MEM software executor pointwise/Square/KeySwitch/Relinearize/Rescale and table-driven NTT/INTT passed exact SEAL NTT comparison\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "CKKS software executor test failed: "

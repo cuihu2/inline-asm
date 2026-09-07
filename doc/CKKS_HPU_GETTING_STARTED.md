@@ -122,8 +122,9 @@ scale 重新编码。这样 AddPlain 的 level、RNS basis 和 scale 都匹配�
 - 所有 Q/P 的 canonical HPU NTT/INTT twiddle；
 - 输入密文 `x` 的两个 Q4 分量；
 - 当前 level 所需的 relinearization key digits；
+- KeySwitch 与 Rescale 的 level 专属只读常量；
 - Q3 上编码的常数 `1`；
-- `x²` 中间密文和 `x²+1` 输出密文的 DDR backing span。
+- Q4 三分量 tensor、重线性化结果、Q3 `x²` 和 `x²+1` 输出的 DDR backing span。
 
 每个 RNS limb 都是独立、256B 对齐的 allocation。对 N=65536，每个 limb 的
 `line_count` 必须恰好为 1024。allocation 名称和 span 构成未来 Linux backend
@@ -169,6 +170,11 @@ psync                                             # 整个应用仅一次
 - 解码结果与最大误差；
 - 生成的 HPU 指令 body 大小。
 
+程序同时从同一 HPU_MEM image 执行
+`Square -> Relinearize -> Rescale -> AddPlain`，把结果转换为 SEAL NTT 后先做
+逐字比较，再解密和 Decode。因此 SEAL Evaluator 在示例中只生成 oracle，不承担
+被测计算。
+
 如果希望查看完整 inline-assembly body：
 
 ```bash
@@ -192,6 +198,7 @@ Ciphertext - Plaintext
 Square(Ciphertext) -> (t0,t1,t2)
 KeySwitch(base, switching_component, evk) -> (base0+ks0, base1+ks1)
 Relinearize(t0,t1,t2,rlk) -> (t0+ks0,t1+ks1)
+Rescale(Qk) -> Q(k-1)
 coefficient <-> canonical HPU NTT
 ```
 
@@ -208,16 +215,20 @@ P、P/2 和每个 active q 的 `P^-1 mod q_i`；执行时从 HPU_MEM 消费该�
 INTT post-untwist/scale；不会在执行时偷偷重新生成另一套表。
 `hpu_seal_ckks_software_executor_test` 将输出转换回 SEAL NTT，并要求和独立
 `seal::Evaluator` 输出逐字相同，包括 Square 后的独立 KeySwitch/Relinearize，
-同时要求表驱动的 INTT→NTT 恢复原密文。
+Rescale 后还必须迁移到准确的下一级 `parms_id`、scale 和 MOD_ID 前缀；同时要求
+表驱动的 INTT→NTT 恢复原密文。Rescale 的 `q_last`、`q_last/2` 和各
+`q_last^-1 mod q_i` 也在应用初始化时写入版本化 HPU_MEM 常量记录。
 
 ## 8. 下一步
 
-下一阶段会在同一 HPU_MEM 软件执行层上增加 Rescale，并把本示例的
-Square→Relinearize→Rescale 主计算链切换到软件执行器。
-届时本示例将同时运行：
+当前示例已经同时运行：
 
 1. HPU 软件执行器路径；
 2. SEAL 语义 oracle；
 3. HPU 输出到 SEAL NTT 的逐字转换与最终 Decode 对比。
 
 这样 `seal::Evaluator` 将只负责给出独立期望值，而不再承担“被测试实现”的工作。
+
+后续工作按两条线推进：补齐 Rotate 的软件执行闭环；将当前明确门禁的单-P
+KeySwitch 扩展为多 P 的通用基扩展和 ModDown。多 P 需要更新常量格式与对应硬件
+调度，不能只放宽参数检查。
