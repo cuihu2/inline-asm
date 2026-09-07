@@ -147,6 +147,10 @@ ctest --test-dir build-seal -R hpu_seal_ckks_context_test --output-on-failure
 从工程搭建开始的简明介绍，以及 `f(x)=x^2+1` 的可运行 CKKS/HPU 示例见
 `doc/CKKS_HPU_GETTING_STARTED.md`。
 
+当前 HPU_MEM 软件执行器已经对 CKKS Add/Subtract/MultiplyPlain/AddPlain/
+SubtractPlain 完成 SEAL NTT 逐字差分；Square/Relinearize/Rescale 执行将在同一
+框架上继续接入。
+
 可选 SEAL 三方案 fixture oracle 默认关闭；它仍依赖 legacy reference 产物，并不
 代表 HPU 指令执行。启用后
 使用同一批 reference fixture 验证 BFV/BGV/CKKS 的 Encode、乘法、重线形化、

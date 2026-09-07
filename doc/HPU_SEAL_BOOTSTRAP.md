@@ -168,6 +168,16 @@ a kernel driver:
 The eventual Linux backend should consume this state/event layer rather than
 putting ioctl/MMIO details into CKKS or scheduling code.
 
+`hpu::runtime::HpuSoftwareExecutor` is the first functional consumer of the
+same HPU_MEM image. It validates and loads the packed q/Barrett-mu records once,
+checks every DMA span, and implements exact uint32 modular pointwise
+instructions. `hpu::seal_adapter::CkksSoftwareExecutor` adds CKKS object/level/
+scale validation and currently executes Add, Subtract, MultiplyPlain,
+AddPlain, and SubtractPlain without calling `seal::Evaluator`. Its regression
+converts results back to SEAL NTT form and requires exact word equality with an
+independently evaluated oracle. Transform, KeySwitch, and Rescale execution are
+the next layer; the `x^2+1` example still uses SEAL for that full-chain result.
+
 ## Linux build and tests
 
 Initialize the frozen dependency:
@@ -203,11 +213,16 @@ cmake --build build-seal -j --target \
   hpu_ckks_standalone_kernels_codegen_test \
   hpu_ckks_pointwise_codegen_test \
   hpu_ckks_multilevel_codegen_test \
-  hpu_seal_ckks_context_test
+  hpu_seal_ckks_context_test \
+  hpu_seal_ckks_application_image_test \
+  hpu_seal_ckks_software_executor_test
 ctest --test-dir build-seal \
-  -R 'hpu_(hardware_ntt_model|runtime_application|ckks_application_codegen|ckks_rotate_codegen|ckks_standalone_kernels_codegen|ckks_pointwise_codegen|ckks_multilevel_codegen|seal_ckks_context)_test' \
+  -R 'hpu_(hardware_ntt_model|runtime_application|ckks_application_codegen|ckks_rotate_codegen|ckks_standalone_kernels_codegen|ckks_pointwise_codegen|ckks_multilevel_codegen|seal_ckks_context|seal_ckks_application_image|seal_ckks_software_executor)_test' \
   --output-on-failure
 ```
+
+The N=65536 walkthrough program is built as
+`hpu_ckks_polynomial_example`; see `doc/CKKS_HPU_GETTING_STARTED.md`.
 
 Generate the full-size reference profile separately because it is much larger
 than the default demo package:

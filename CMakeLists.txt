@@ -54,6 +54,7 @@ target_include_directories(hpu_hardware_model
 add_library(hpu_runtime_core STATIC
         src/hpu/runtime/application.cpp
         src/hpu/runtime/memory_image.cpp
+        src/hpu/runtime/software_executor.cpp
 )
 target_include_directories(hpu_runtime_core
         PUBLIC
@@ -272,6 +273,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
             src/hpu/seal/automorphism.cpp
             src/hpu/seal/evaluation_key.cpp
             src/hpu/seal/ntt_bridge.cpp
+            src/hpu/seal/software_executor.cpp
     )
     target_include_directories(hpu_seal_ckks
             PUBLIC
@@ -314,6 +316,17 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
         add_test(
                 NAME hpu_seal_ckks_application_image_test
                 COMMAND hpu_seal_ckks_application_image_test)
+
+        add_executable(hpu_seal_ckks_software_executor_test
+                test/seal_ckks_software_executor_test.cpp
+        )
+        target_link_libraries(hpu_seal_ckks_software_executor_test
+                PRIVATE
+                hpu_seal_ckks
+        )
+        add_test(
+                NAME hpu_seal_ckks_software_executor_test
+                COMMAND hpu_seal_ckks_software_executor_test)
     endif()
 
     if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE)

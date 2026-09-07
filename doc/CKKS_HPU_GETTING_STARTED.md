@@ -11,12 +11,18 @@
 4. 为 Multiply、Relinearize、Rescale、Rotate 和点运算生成 HPU 扩展指令流；
 5. 用软件模型和 SEAL 语义结果验证各层边界。
 
-目前已经具备“准备真实 CKKS 对象并生成 HPU 程序”的前端路径，但 Linux
-driver/userspace backend 和真正消费整条指令流的软件执行器尚未完成。因此本文示例中：
+目前已经具备“准备真实 CKKS 对象并生成 HPU 程序”的前端路径，以及直接消费
+HPU_MEM span 的第一阶段软件执行器。该执行器已覆盖 canonical HPU NTT 域中的
+Add、Subtract、MultiplyPlain、AddPlain 和 SubtractPlain，并与 SEAL NTT words
+逐字比较。Linux driver/userspace backend，以及包含 KeySwitch/Rescale 的整条程序
+执行仍未完成。因此本文 `x²+1` 示例中：
 
 - HPU_MEM 布局与 HPU 指令流来自本工程；
 - 解密后的数值结果暂时由 `seal::Evaluator` 计算，只作为语义 oracle；
 - 这个 oracle 通过并不等于 HPU 指令已经在硬件上执行。
+
+软件执行器本身不会调用 `seal::Evaluator`；测试只在执行完成后调用 Evaluator
+生成独立期望值。
 
 原仓库的 `N=4096,Q=4,P=3,dnum=2` reference delivery 已降级为 legacy demo，
 不再是 CKKS 主线的参数权威。
@@ -33,7 +39,8 @@ include/hpu/seal, src/hpu/seal
     SEALContext、level descriptor、NTT bridge、评估密钥和 HPU_MEM image
 
 include/hpu/runtime, src/hpu/runtime
-    应用生命周期、五个 regular-bank 槽位、dstore/psync 状态和 DDR image
+    应用生命周期、五个 regular-bank 槽位、dstore/psync 状态、DDR image
+    和基础模运算软件执行器
 
 include/scheme/ckks, src/scheme/ckks
     CKKS kernel 的 HPU inline-assembly codegen
@@ -170,10 +177,27 @@ psync                                             # 整个应用仅一次
 生成流里的 DMA 指令目前仍使用 ABI 规定的 `x10/x11` offset/count 寄存器。未来
 runtime backend 会根据 HPU_MEM allocation manifest 在每次 DMA 前绑定具体 span。
 
-## 7. 下一步
+## 7. 当前软件执行器边界
 
-下一阶段的软件执行器会直接读取同一 HPU_MEM image，并解释 kernel 的模数选择、
-DMA、NTT、逐点算术、KeySwitch 和 Rescale。届时本示例将同时运行：
+`CkksSoftwareExecutor` 从 `HpuMemImage` 复制应用初始 DDR 内容，校验并加载一次
+`constants/modulus_table`，随后以 allocation span 为地址执行模 q 运算。当前支持：
+
+```text
+Ciphertext + Ciphertext
+Ciphertext - Ciphertext
+Ciphertext * Plaintext
+Ciphertext + Plaintext
+Ciphertext - Plaintext
+```
+
+这些操作都保持 canonical HPU NTT physical order，因此软件执行器不需要调用
+NTT/INTT。`hpu_seal_ckks_software_executor_test` 将每个输出转换回 SEAL NTT，
+并要求和独立 `seal::Evaluator` 输出逐字相同，而不只是 Decode 后近似相等。
+
+## 8. 下一步
+
+下一阶段会在同一 HPU_MEM 软件执行层上增加 NTT/INTT、Square、KeySwitch 和
+Rescale。届时本示例将同时运行：
 
 1. HPU 软件执行器路径；
 2. SEAL 语义 oracle；
