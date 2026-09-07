@@ -43,10 +43,10 @@ cmd26[24:0] = control payload
 
 当前实现已经：
 
-1. 将 STG 的 stage 移到原始指令 `[13:10]`，mode/flag 分别使用 `[9:8]`、`[7]`。
+1. STG 在 `[27:25]`、`[24:22]` 重复编码 `PDATA`，在 `[16:14]` 编码 3-bit `PTWID`；stage、mode、flag 分别使用 `[13:10]`、`[9:8]`、`[7]`。
 2. 将 AR3 立即数模式移动到 2-bit MODE 的 `[9:8]`。
 3. 增加 `precode_command26()`，所有可编码算子同时输出 `.inst32` 和 `.cmd26`。
-4. custom1 precode 将原始指令的 `flag/OBJ_ID/TYPE/DIR` 重排到控制 payload，`rs1/rs2` 作为 line offset/count sideband。
+4. custom1 的原始 32-bit payload 已按 `RS2/RS1/flag/OBJ_ID/TYPE/DIR` 控制字段排布，precode 直接使用 `cmd26={1'b1,inst[31:7]}`；`cmd26[24:20]=RS2`、`cmd26[19:15]=RS1`。
 5. 生成 `expected_cmd26.csv`，逐条记录源 payload、控制 payload、custom kind 和最终命令。
 
 ## 3. 项目与最新文档的差异
@@ -73,7 +73,7 @@ cmd26[24:0] = control payload
 文档来源：《HPU 集成与编程手册》3.3、5.2.2、9.1。`rs1/rs2` sideband 给出
 256B line offset 和非零 line count；长度为 0 或越界会触发 fault。
 
-当前 custom1 固定编码 `x10/x11`。生成的可执行 C 入口在每条 DMA 前从类型化
+当前生成器为 custom1 固定编码 `x10/x11`。生成的可执行 C 入口在每条 DMA 前从类型化
 `hpu_dma_span_t[]` 装载实际 offset/count，Nexus-AM 再由 `line_map.csv` 生成逐条
 resolved relocation manifest。交付门禁拒绝 `x0/x0`、零 line count、未解析记录和
 HPU_MEM 越界，因此旧的“只有占位 `.inst32`”问题已经关闭。
@@ -228,7 +228,7 @@ type 3，并将其加入 parser/encoder 和 delivery 负例。原始 TYPE2 位�
 | C2 | custom1 是 rs1/rs2 line sideband，还是 VA 经 DTLB 后形成 `{paddr,len,dir,flags}` descriptor | 较新的《HPU 集成与编程手册》5.2.2/9.1 与较旧《RISC-V核内接口设计》custom1 HpuUnit 章节相反 | 以较新的集成手册为准：`GPR[rs1]=line_offset`、`GPR[rs2]=line_count`，单位 256B；旧 DTLB descriptor 方案不再是项目 ABI |
 | C3 | 模上下文记录是 `mu64+reserved32` 还是 `mu48+reserved48` | 较旧《HPU 控制逻辑设计文档》写 `{reserved[31:0],mu[63:0],q[31:0]}`；较新的《HPU 集成与编程手册》3.5.4 写 `{reserved[47:0],mu[47:0],q[31:0]}`，PE 端口也是 48-bit mu | 以较新的集成手册为准，项目已统一为 `q32+mu48+reserved48` |
 | C4 | NTT/INTT 物理 in-place 或 out-of-place | 较新的《HPU 集成与编程手册》3.4.6 与控制文档均为 out-of-place；较旧《HPU_PE_反串讲》13.6 只是未决记录 | 以较新的集成手册为准：每 stage 物理 out-of-place，完成后向同一 logical object id 提交新 base |
-| C5 | 32-bit 原始指令与 26-bit 内部命令映射 | 《HPU 控制逻辑设计文档》v0.4 规定 `cmd[25]=cmd_kind`；《RISC-V核内接口设计》只确认核侧可提取 custom0 的 `inst[31:7]`，其中后续 custom1 descriptor 方案与控制逻辑的统一命令入口不同 | 按项目负责人最新确认，以《HPU 控制逻辑设计文档》为准：kind 位于最高位，custom1 由 precode 重排语义字段并携带独立 sideband |
+| C5 | 32-bit 原始指令与 26-bit 内部命令映射 | 项目负责人根据硬件组最新说明确认两类 custom 指令均原样保留 `inst[31:7]`，并补充 custom1 高位寄存器顺序 | `cmd26={custom_kind,inst[31:7]}`；`cmd26[24:20]=RS2`、`cmd26[19:15]=RS1`、`cmd26[14]=0`，其后为 flag/OBJ_ID/TYPE/DIR |
 
 ## 5. 建议实施顺序
 

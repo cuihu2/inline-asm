@@ -190,7 +190,7 @@ void write_rv_interface_smoke(const std::filesystem::path& outputs_root) {
         "pmac p2, p0, p1\n"
         "pmac p2, p0, 255\n"
         "pntt p0, p3, 0, 0, 0\n"
-        "pntt p0, p3, 15, 3, 1\n"
+        "pntt p2, p3, 15, 3, 1\n"
         "pintt p0, p3, 0, 0, 0\n"
         "pfree p5\n"
         "dstore x10, x11, p2, 0\n"

@@ -273,7 +273,7 @@ slots 精确比较；CKKS 对全部 `N/2` 个复数 slots 按生成参数中的�
 - `rv_interface_smoke.inst32`：对应 32-bit 指令流。
 - `rv_interface_smoke.cmd26`：对应控制逻辑的 26-bit 命令流。
 - `test_data/expected_decode.csv`：逐条期望 word、command26、`custom0/custom1` 路由和归一化汇编。
-- `test_data/expected_cmd26.csv`：逐条验证 `cmd26[25]=custom_kind`、custom0 payload 直通和 custom1 语义字段重排。
+- `test_data/expected_cmd26.csv`：逐条验证 `cmd26[25]=custom_kind`，以及 custom0/custom1 的 `inst[31:7]` payload 原样直通。
 - `test_data/negative_cases.asm.txt`：包含越界用例，以及必须拒绝的旧 `pshcfg/pshuf/pseed/psample` 助记符。
 
 建议 RV 接口 IT 依次验证 decode 路由、队列 backpressure、顺序发射、`dload -> pmodld -> compute` 的硬件一致性、`dload -> compute -> pfree/dstore rel=1` ownership，以及末尾 `psync` 的 CPU 完成通知。`pfree` 必须在目标对象最后一次使用后生效；已经由 `dstore rel=1` 释放的对象不得重复释放。

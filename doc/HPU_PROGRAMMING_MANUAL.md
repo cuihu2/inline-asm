@@ -16,7 +16,7 @@
 - `include/util/hpu_asm.hpp`：算子生成器使用的汇编封装。
 - `src/`：算子级和完整密文乘法指令流。
 
-除特别说明外，本文中的“当前实现”均指上述软件实现。26-bit HPU 命令以 `cmd26[25]` 区分 custom0/custom1；custom0 的 `inst[31:7]` 直接成为 `cmd26[24:0]`，custom1 则在 precode 阶段按控制逻辑字段重排。`pmodld` 采用 8-bit `MOD_ID`；模表对象通过 `dload type=2, flag[0]=1` 分配到 small Bank 5。
+除特别说明外，本文中的“当前实现”均指上述软件实现。26-bit HPU 命令以 `cmd26[25]` 区分 custom0/custom1；两类指令的 `inst[31:7]` 都直接成为 `cmd26[24:0]`，不执行字段重排。`pmodld` 采用 8-bit `MOD_ID`；模表对象通过 `dload type=2, flag[0]=1` 分配到 small Bank 5。
 
 ## 1. 编程模型
 
@@ -146,20 +146,25 @@ cmd26[25]   = cmd_kind: 0=custom0, 1=custom1
 cmd26[24:0] = payload
 ```
 
-custom0 的 payload 与原始指令去掉低 7-bit opcode 后完全相同：
+两类指令的 payload 都与原始指令去掉低 7-bit opcode 后完全相同：
 
 ```text
 custom0: cmd26 = {1'b0, inst[31:7]}
+custom1: cmd26 = {1'b1, inst[31:7]}
 ```
 
-custom1 的 `rs1/rs2` 用于核侧形成 `mem_line_offset/mem_len_lines` sideband，不进入命令本体。其语义已经冻结为
-`mem_line_offset=GPR[rs1]`、`mem_len_lines=GPR[rs2]`，二者均以 256B HPU line
-为单位；`mem_len_lines` 必须非零且 `offset+count` 不得超过
-`HPU_MEM_SIZE_LINES`。旧《RISC-V核内接口设计》中的 DTLB descriptor 方案不再作为本项目 ABI。precode 从原始 DMA 指令提取语义字段并重排为：
+custom1 的 32-bit payload 已经按控制逻辑字段排布，其中包含 5-bit `rs2` 和
+5-bit `rs1` 寄存器编号；当前可执行 ABI 固定使用 `x10/x11`，寄存器值分别提供
+`mem_line_offset` 和 `mem_len_lines`。二者均以 256B HPU line 为单位；
+`mem_len_lines` 必须非零且 `offset+count` 不得超过 `HPU_MEM_SIZE_LINES`。
+旧《RISC-V核内接口设计》中的 DTLB descriptor 方案不再作为本项目 ABI。
+custom1 的原始 payload 和直通后的命令字段均为：
 
 ```text
 cmd26[25]    = 1
-cmd26[24:14] = 0
+cmd26[24:20] = RS2
+cmd26[19:15] = RS1
+cmd26[14]    = 0
 cmd26[13:10] = {3'b000, flag[0]}
 cmd26[9:6]   = 0
 cmd26[5:3]   = OBJ_ID
@@ -197,18 +202,21 @@ word = (OPC4 << 28) | (PDST << 25) | (PSRC1 << 22)
 ```text
  31      28 27    25 24    22 21             14 13       10 9    8 7 6       0
 +----------+--------+--------+-----------------+-------------+------+--+---------+
-|   OPC4   | PDATA  | PTWID  |  reserved=0     |   STAGE4    | MODE2| F| 0001011 |
+|   OPC4   | PDATA  | PDATA  |     PTWID       |   STAGE4    | MODE2| F| 0001011 |
 +----------+--------+--------+-----------------+-------------+------+--+---------+
 ```
 
 编码公式：
 
 ```text
-word = (OPC4 << 28) | (PDATA << 25) | (PTWID << 22)
+word = (OPC4 << 28) | (PDATA << 25) | (PDATA << 22)
+     | (PTWID << 14)
      | (STAGE4 << 10) | (MODE2 << 8) | (FLAG1 << 7) | 0x0B
 ```
 
-`stage`、`mode` 和 `flag` 均由汇编显式给出；当前生成器使用 `mode=0, flag=0`。
+`PDATA` 在 `[27:25]` 和 `[24:22]` 重复编码；`PTWID` 是 3-bit 对象号，写入
+`[16:14]`，所以 `[21:17]` 保持为 0。`stage`、`mode` 和 `flag` 均由汇编显式
+给出；当前生成器使用 `mode=0, flag=0`。
 
 ### 3.3 MOD 格式
 
@@ -264,23 +272,24 @@ word = (0b0111 << 28) | 0x0B
 ### 3.6 DMA 格式
 
 ```text
- 31             25 24    20 19    15 14 13    12 11     9 8 7 6       0
-+-----------------+--------+--------+--+--------+---------+--+-+---------+
-|   reserved=0    |  RS2   |  RS1   |D | TYPE2  | OBJ_ID  |SB|0| 0101011 |
-+-----------------+--------+--------+--+--------+---------+--+-+---------+
+ 31    27 26    22 21       18 17 16       13 12     10 9      8 7 6       0
++--------+--------+-----------+--+-----------+----------+--------+-+---------+
+|  RS2   |  RS1   |reserved=0 |SB|reserved=0 |  OBJ_ID  |  OP2   |D| 0101011 |
++--------+--------+-----------+--+-----------+----------+--------+-+---------+
 ```
 
 编码公式：
 
 ```text
-word = (RS2 << 20) | (RS1 << 15) | (DIR << 14)
-     | (TYPE2 << 12) | (OBJ_ID << 9)
-     | (SMALL_BANK << 8) | 0x2B
+OP2 = dload ? TYPE : {REL, 1'b0}
+word = (RS2 << 27) | (RS1 << 22)
+     | (SMALL_BANK << 17) | (OBJ_ID << 10)
+     | (OP2 << 8) | (DIR << 7) | 0x2B
 ```
 
-`SMALL_BANK` 是 dload 的 `flag[0]`；1 表示请求 allocator 将小对象放入 `SMALL_BANK_ID=5`。dstore 中该位必须为 0。`RS1/RS2` 编码的是寄存器编号，不是寄存器值。
+`SMALL_BANK` 是 dload 的 `flag[0]`；1 表示请求 allocator 将小对象放入 `SMALL_BANK_ID=5`。dstore 中该位必须为 0。`OP2` 对 dload 直接编码 2-bit `TYPE`；对 dstore 编码 `{REL, 1'b0}`。
 
-原始 custom1 的 `RS1/RS2` 由核侧读取并转换成 `mem_line_offset/mem_len_lines` sideband。precode 只把 `SMALL_BANK/OBJ_ID/TYPE/DIR` 重排到 26-bit 命令，因而 `SMALL_BANK=1` 最终表现为 `cmd26.flag[0]=cmd26[10]=1`。
+32-bit custom1 的 `inst[31:7]` 已经等于 `cmd26[24:0]`，precode 不再重排字段。`RS2` 位于高位、`RS1` 位于低位，二者之间不交换；生成 C 在发射该 word 前按固定 `x10/x11` ABI 提供 line offset/count。
 
 ## 4. 算术指令
 
@@ -438,7 +447,7 @@ NTT 发出 `log2(N)` 条指令，stage 从 0 递增到 `log2(N)-1`。
 **示例**
 
 ```asm
-pntt p0, p3, 15, 0, 0    # 0x40C03C0B
+pntt p0, p3, 15, 0, 0    # 0x4000FC0B
 ```
 
 软件通常在每个 stage 前加载 twiddle，并在该 stage 后释放：
@@ -510,7 +519,7 @@ runtime 按 `twiddle_map.csv` 绑定 pre-twist、各 stage twiddle 和 post fact
 **示例**
 
 ```asm
-pintt p0, p3, 15, 0, 0   # 0x50C03C0B
+pintt p0, p3, 15, 0, 0   # 0x5000FC0B
 ```
 
 ## 6. 配置与生命周期指令
@@ -634,9 +643,9 @@ on completion:
 生成入口都要求 `ceil(N/64) <= 1024`。结合 radix-2 要求，当前允许的最大
 多项式次数为 `N=65536`；超出该范围时生成器返回 invalid config，不生成指令流。
 
-`rs1` 和 `rs2` 是 5-bit RISC-V 寄存器编号。执行时固定解释为
-`GPR[rs1]=HPU_MEM line offset`、`GPR[rs2]=line count`，单位均为 256B；
-不存在另一套 DTLB descriptor 解释。生成的 `hpu_program_*` 入口逐条消费
+`rs1` 和 `rs2` 是编码进 32-bit custom1 word 的 5-bit RISC-V 寄存器编号。
+当前生成的可执行程序固定使用 `x10/x11`，其运行时值分别解释为 HPU_MEM line offset
+和 line count，单位均为 256B；不存在另一套 DTLB descriptor 解释。生成的 `hpu_program_*` 入口逐条消费
 `hpu_dma_span_t`，在 custom1 发射前把 line offset/count 装入固定的
 `x10/x11`；DLOAD 和 DSTORE 的 `line count` 都必须非零，DSTORE 不得把
 `x11` 置零。
@@ -645,8 +654,8 @@ on completion:
 **示例**
 
 ```asm
-dload x10, x11, p0, 0, 0  # 0x00B5002B
-dload x10, x11, p4, 2, 1  # 0x00B5292B
+dload x10, x11, p0, 0, 0  # 0x5A80002B
+dload x10, x11, p4, 2, 1  # 0x5A82122B
 ```
 
 ### 7.2 DSTORE - 外部存储器写回
@@ -676,7 +685,7 @@ on completion:
 **示例**
 
 ```asm
-dstore x10, x11, p2, 1    # 0x00B5542B
+dstore x10, x11, p2, 1    # 0x5A800AAB
 ```
 
 <!-- ### 7.3 HPU_MEM CSR
@@ -957,15 +966,15 @@ ctest --test-dir build --output-on-failure
 | `pmul p2, p0, 255` | `0x243FC10B` | `0x0487F82` |
 | `pmac p2, p0, p1` | `0x3400400B` | `0x0680080` |
 | `pmac p2, p0, 255` | `0x343FC10B` | `0x0687F82` |
-| `pntt p0, p3, 15, 0, 0` | `0x40C03C0B` | `0x0818078` |
-| `pintt p0, p3, 15, 0, 0` | `0x50C03C0B` | `0x0A18078` |
+| `pntt p0, p3, 15, 0, 0` | `0x4000FC0B` | `0x08001F8` |
+| `pintt p0, p3, 15, 0, 0` | `0x5000FC0B` | `0x0A001F8` |
 | `pmodld 0` | `0x6000000B` | `0x0C00000` |
 | `pmodld 255` | `0x603FC00B` | `0x0C07F80` |
 | `psync` | `0x7000000B` | `0x0E00000` |
 | `pfree p4` | `0x8100000B` | `0x1020000` |
-| `dload x10, x11, p0, 0, 0` | `0x00B5002B` | `0x2000000` |
-| `dload x10, x11, p4, 2, 1` | `0x00B5292B` | `0x2000424` |
-| `dstore x10, x11, p2, 1` | `0x00B5542B` | `0x2000015` |
+| `dload x10, x11, p0, 0, 0` | `0x5A80002B` | `0x2B50000` |
+| `dload x10, x11, p4, 2, 1` | `0x5A82122B` | `0x2B50424` |
+| `dstore x10, x11, p2, 1` | `0x5A800AAB` | `0x2B50015` |
 
 ## 附录 B：当前实现边界
 
@@ -983,7 +992,7 @@ ctest --test-dir build --output-on-failure
 
 ### C.1 通用规则
 
-- `dload/dstore` 固定编码 `x10/x11`；runtime 在发射前写入当前对象的 256B line
+- `dload/dstore` 在 word 中编码 `rs1/rs2`；当前生成器固定选择 `x10/x11`，runtime 在发射前写入当前对象的 256B line
   offset/count，权威物理位置来自各用例的 `hardware/line_map.csv`。
 - `dload type=2, flag[0]=1` 把模表对象分配到 small Bank 5；随后由
   `pmodld MOD_ID` 选择上下文。模表顺序必须与 MOD_ID 一致。

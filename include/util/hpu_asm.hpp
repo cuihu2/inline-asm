@@ -5,9 +5,9 @@
 
 namespace hpu {
 
-// Frozen CPU/HPU custom1 ABI.  The executable runtime binds a different
-// line_offset/line_count pair before each DMA word, but every encoded DMA
-// instruction names the same two architectural registers.
+// Frozen CPU/HPU custom1 ABI. The DMA instruction encodes both register
+// numbers, and the executable runtime binds line_offset/line_count in x10/x11
+// before each word.
 inline constexpr const char* kDmaOffsetRegister = "x10";
 inline constexpr const char* kDmaCountRegister = "x11";
 
