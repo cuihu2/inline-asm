@@ -90,9 +90,10 @@ mu = floor(2^64 / q), 48-bit Barrett reciprocal
 配置包含 Bank 0-4 五个 1024-line 普通 bank，以及
 `SMALL_BANK_ID=5` 的 32-line small bank；Bank 5 固定 line 范围为
 `0x1400..0x141F`，模表基址 `MOD_TABLE_BASE_LINE=0x1400`。Bank 5 物理上
-可容纳 512 个 128-bit context，但 `pmodld` 的 `MOD_ID` 只有 8 bit，因此
-当前软件 ABI 最多寻址 256 个 context，对应 `0x1400..0x140F`。其余 Bank 5
-空间不扩展 `MOD_ID` 编码。DMA 与后续访问的一致性由硬件维护，软件可在模表
+可容纳 512 个 128-bit context，`pmodld` 的 `MOD_ID` 编码字段仍为 8 bit；但
+当前应用软件 ABI 只允许 `MOD_ID=0..63`，即 `MOD_ID[7:6]` 必须为 0，对应
+`0x1400..0x1403`。其余 Bank 5 空间和 8-bit 保留编码不扩展当前软件上限。
+DMA 与后续访问的一致性由硬件维护，软件可在模表
 `dload` 后直接通过 `pmodld MOD_ID` 选择当前上下文；切换 Q/P limb 前必须重新执行 `pmodld`。
 
 ### 1.5 指令顺序和对象生命周期
@@ -104,7 +105,7 @@ mu = floor(2^64 / q), 48-bit Barrett reciprocal
 3. `pmac` 的目的对象是读写操作数，执行前必须已有有效累加值。
 4. `pntt/pintt` 的数据对象在软件层面是读写对象。
 5. 不再使用的输入、常量、twiddle 和模上下文使用 `pfree` 释放。
-6. 输出使用 `dstore rel=1` 写回时，由 DMA 完成路径释放，之后不得再次 `pfree` 同一对象。
+6. 输出使用 `dstore` 写回后由当前 DMA 完成路径释放；`rel=0/1` 均不得再对同一对象执行 `pfree`。
 7. 一段完整 HPU 程序只在最后发出一次 `psync`，向 CPU 报告程序完成；组合算子的内部阶段不发出 `psync`。
 
 ## 2. 汇编语言约定
@@ -119,7 +120,7 @@ mu = floor(2^64 / q), 48-bit Barrett reciprocal
 | `stage` | 0..15 | NTT/INTT stage |
 | `mode` | 0..3 | custom0 2-bit 模式 |
 | `flag` | 0..1 | custom0 1-bit 标志 |
-| `mod_id` | 编码 0..255，当前物理表 0..127 | 模上下文表编号 |
+| `mod_id` | 编码 0..255，当前软件使用 0..63 | 模上下文表编号；软件要求高两位为 0 |
 | `small_bank` | 0..1 | `dload flag[0]`，1 请求 small Bank 5 |
 
 整数支持十进制和 `0x` 前缀十六进制。助记符不区分大小写，但对象和寄存器前缀应写成小写 `p`、`x`。
@@ -462,19 +463,16 @@ pfree p3
 `pmul pdata, pdata, ptwiddle`，实现逐系数乘 `psi^i`。该步骤不是
 `pntt stage=0` 的隐含行为。
 
-硬件镜像遵循硬件组 `autotest/hw_ntt_intt_complete.py` 的物理执行模型。
-系数域多项式先按 `memory[p] = coefficient[bit_reverse(p)]` 排列，因此
-`pre_twist[p] = psi^bit_reverse(p)`。每个 stage 处理 `N/128` 个 batch；每个
-batch 装入 128 个寄存器，由 64 个 BF lane 顺序消费 64 个 twiddle，BF 后
-对 7-bit 寄存器索引执行一次 P 网络，再写回本 batch。`m=2^stage < 128`
-时 loader 连续装入 128 words；`m >= 128` 时从蝶形的上下两半各取 64 words
-交错装入。stage twiddle 文件严格按“batch 顺序、batch 内 lane 顺序”写出，
-共 `N/2` 个 little-endian `uint32`，即 `N/128` 条 256B line。默认
-`N=4096` 时为 2048 words、32 line。
+硬件镜像中的系数域和 NTT 域多项式均使用自然顺序：
+`memory[i] = polynomial[i]`。`pre_twist[i] = psi^i mod q`。
 
-完成所有 stage 后，NTT 域数据保持 P 网络产生的物理排列：
-`memory[p] = logical_ntt[forward_layout[p]]`。因此 NTT 域明文、密钥和中间
-结果也必须使用同一排列；不能把自然顺序 NTT 数据直接作为硬件镜像。
+每个 stage 固定生成 `N/2` 个 little-endian `uint32` twiddle，即
+`N/128` 条 256B line。当前物理顺序是 group-major radix-2 DIT：对
+`length=2^(stage+1)`，依次遍历每个 butterfly group；组内按
+`j=0..length/2-1` 写出 `omega^(j*N/length) mod q`。不同 group 需要的
+相同 twiddle 也在镜像中重复写入。默认 `N=4096` 时每个 stage 为
+2048 words、32 line。stage 不隐含一次全多项式 shuffle，软件 reference
+中的 bit-reversal 循环只是 DIT 实现细节，不定义额外镜像排列或 HPU 指令。
 
 ### 5.2 PINTT - 逆向 NTT stage
 
@@ -501,16 +499,13 @@ pintt pdata, ptwiddle, stage, 0, 0
 pfree ptwiddle
 ```
 
-硬件 PINTT 使用与前向变换严格对偶的 schedule。指令的 `stage=k` 对应前向
-`stage=log2(N)-1-k` 的 loader；每个 batch 先执行一次 P 的逆网络 `P^-1`，
-再进入 64 个 BF lane。逆表不是简单的自然顺序 `omega^-j` 表，而是由 dual
-schedule 跟踪每个物理位置的 lazy scale，逐 lane 生成
-`w_bf = alpha * beta^-1 mod q`。这样全部 PINTT stage 结束后，物理布局和
-lazy scale 都恢复到系数域约定。
+PINTT 同样按 `stage=0..log2(N)-1` 使用 group-major radix-2 DIT 布局，
+但 twiddle 根改为 `omega^-1 mod q`。每个 stage 仍有 `N/2` 项，group 和
+组内 `j` 的遍历顺序与 PNTT 相同。
 
 随后显式加载 `post_untwist_scale.u32.bin` 并执行
-`dload + pmul + pfree`。物理位置 `p` 的值为
-`N^-1 * psi^-bit_reverse(p) mod q`，同时完成归一化和 negacyclic inverse
+`dload + pmul + pfree`。自然位置 `i` 的值为
+`N^-1 * psi^-i mod q`，同时完成归一化和 negacyclic inverse
 twist。完整的 `PNTT -> pointwise multiply -> PINTT` 已由 reference 与硬件
 schedule 模型逐字比较，结果对应系数域的 negacyclic convolution。
 runtime 按 `twiddle_map.csv` 绑定 pre-twist、各 stage twiddle 和 post factor
@@ -542,12 +537,12 @@ active_mod_context = MOD_TABLE[line][slot]
 
 | 操作数 | 范围 | 含义 |
 | --- | --- | --- |
-| `mod_id` | 0..255 | Bank 5 模上下文表中的 8-bit 表项编号 |
+| `mod_id` | 编码 0..255；当前软件 0..63 | Bank 5 模上下文表编号，软件要求 `mod_id[7:6]=0` |
 
 一条 256B HPU line 可容纳 16 个 128-bit 模上下文，因此
-`mod_id[7:4]` 选择 `0x1400..0x140F` 中的相对 line，`mod_id[3:0]` 选择
-line 内 slot。Bank 5 共 32 line，但 8-bit `MOD_ID` 只能寻址前 16 line，
-所以生成器上限是 256 个 context。`pmodld` 不携带对象号，也不产生多项式
+`mod_id[7:4]` 编码相对 line，`mod_id[3:0]` 选择 line 内 slot。虽然 Bank 5
+共 32 line 且编码字段为 8 bit，当前应用软件 ABI 额外规定 `mod_id[7:6]=0`，
+所以生成器最多使用 64 个 context，即 `0x1400..0x1403`。`pmodld` 不携带对象号，也不产生多项式
 结果；它改变后续模运算使用的 q/Barrett mu。
 
 模表的数据搬入与上下文选择是两个独立步骤。`dload type=2, flag[0]=1` 为模表逻辑对象建立 `ALLOC/V/busy/base/len` 状态，并请求 allocator 将物理 base 放到 Bank 5。DMA 与 `pmodld` 之间的一致性由硬件维护，软件无需插入 `psync`；`pmodld` 只携带 `MOD_ID`，通过 cfg 读口访问模表并更新活动 q/mu。
@@ -585,7 +580,7 @@ release OBJ[psrc]
 pfree p4              # 0x8100000B
 ```
 
-对已经使用 `dstore rel=1` 释放的对象再次执行 `pfree` 属于非法生命周期操作。
+对已经使用任意 `rel` 值执行成功的 `dstore` 对象再次执行 `pfree` 属于非法生命周期操作。
 
 ### 6.3 PSYNC - 程序完成通知
 
@@ -644,11 +639,11 @@ on completion:
 多项式次数为 `N=65536`；超出该范围时生成器返回 invalid config，不生成指令流。
 
 `rs1` 和 `rs2` 是编码进 32-bit custom1 word 的 5-bit RISC-V 寄存器编号。
-当前生成的可执行程序固定使用 `x10/x11`，其运行时值分别解释为 HPU_MEM line offset
-和 line count，单位均为 256B；不存在另一套 DTLB descriptor 解释。生成的 `hpu_program_*` 入口逐条消费
-`hpu_dma_span_t`，在 custom1 发射前把 line offset/count 装入固定的
-`x10/x11`；DLOAD 和 DSTORE 的 `line count` 都必须非零，DSTORE 不得把
-`x11` 置零。
+当前生成的可执行程序固定使用 `x10/x11`。DLOAD 将其运行时值解释为 HPU_MEM
+line offset 和 line count，单位均为 256B；DSTORE 只使用 `x10` 的 offset，
+实际传输长度取对象表中的 `OBJ.len`，当前 RTL 忽略 `x11` 的值。为保持统一
+relocation 接口，生成的 `hpu_program_*` 仍为 DSTORE 装入非零
+`span.line_count`，并检查它与软件跟踪的 `OBJ.len` 相等后再发射。
 调用方必须使用与硬件布局一致、已通过范围和生命周期检查的 span 数组。
 
 **示例**
@@ -669,18 +664,20 @@ dstore rs1, rs2, psrc, rel
 **操作**
 
 ```text
-enqueue_store(GPR[rs1], GPR[rs2], psrc)
+require span.line_count == OBJ[psrc].len
+enqueue_store(GPR[rs1], OBJ[psrc].len, psrc)
 on completion:
-    if rel == 1:
-        release OBJ[psrc]
+    clear OBJ[psrc].V, OBJ[psrc].ALLOC, OBJ[psrc].busy
 ```
 
 | `rel` | 语义 |
 | --- | --- |
-| 0 | 写回完成后保留源对象 |
-| 1 | 写回完成后释放源对象 |
+| 0 | 编码值保留；当前 RTL 写回成功后仍释放源对象 |
+| 1 | 当前 RTL 写回成功后释放源对象 |
 
-`rel` 只允许 0 或 1。源对象必须已经有效，且在 DMA 读取期间不得被覆盖或提前 `pfree`。
+`rel` 只允许 0 或 1。源对象必须已经有效，且在 DMA 读取期间不得被覆盖或提前
+`pfree`。当前 RTL 不使用 `rs2` 决定 DSTORE 长度，也不根据 `rel` 区分释放行为；
+因此软件生命周期分析把两种 `rel` 都视为对象终点。
 
 **示例**
 
@@ -820,7 +817,7 @@ MOD_ID num_q .. num_q+num_p-1    : P
 MOD_ID num_q+num_p               : plaintext modulus t
 ```
 
-因此配置必须满足 `num_q + num_p + 1 <= 256`。当前默认 `t=65537`，可作为
+因此配置必须满足 `num_q + num_p + 1 <= 64`。当前默认 `t=65537`，可作为
 `q32+mu48` 模上下文由 `dload type=2, flag[0]=1` 安装。BGV 乘法复用公共
 CiphertextMultiply，软件同时更新：
 
@@ -867,7 +864,7 @@ t    = MOD_ID m_sk+1
 ```
 
 其中 `Pks` 仅供乘法流后半段的 KeySwitch 使用，不能与 BEHZ 的 B 基混用。参数必须满足
-总 context 不超过 256、所有模数互异且为 `1 mod 2N` 的 32-bit 素数、
+总 context 不超过 64、所有模数互异且为 `1 mod 2N` 的 32-bit 素数、
 `m_sk > 2*bfv_num_b`，并满足：
 
 ```text
@@ -982,7 +979,7 @@ ctest --test-dir build --output-on-failure
 
 1. relocation/runtime 是否把每条 DMA 的实际 line offset/count 装入 `rs1/rs2`。
 2. runtime 是否按 `MOD_TABLE_BASE_LINE=0x1400` 将模表 DMA 搬入 Bank 5。
-3. RTL 是否按 `autotest` 的 batch/lane、P/P^-1 次序消费 twiddle，并按 out-of-place 协议提交各 stage 新 base。
+3. RTL 是否按 `twiddle_map.csv` 的 group-major radix-2 DIT 次序消费每 stage 的 `N/2` 个 twiddle，并按 out-of-place 协议提交各 stage 新 base。
 4. cache maintenance、中断和 fault 的 runtime 实现。
 
 这些事项不由指令编码器证明；当前软件完成度与剩余 RTL/板级签字项以
@@ -992,11 +989,12 @@ ctest --test-dir build --output-on-failure
 
 ### C.1 通用规则
 
-- `dload/dstore` 在 word 中编码 `rs1/rs2`；当前生成器固定选择 `x10/x11`，runtime 在发射前写入当前对象的 256B line
-  offset/count，权威物理位置来自各用例的 `hardware/line_map.csv`。
+- `dload/dstore` 在 word 中编码 `rs1/rs2`；当前生成器固定选择 `x10/x11`。DLOAD
+  使用 offset/count，DSTORE 使用 offset 和硬件对象表的 `OBJ.len`；软件 span
+  中的 count 只用于与 `OBJ.len` 做一致性和目标窗口边界检查。
 - `dload type=2, flag[0]=1` 把模表对象分配到 small Bank 5；随后由
   `pmodld MOD_ID` 选择上下文。模表顺序必须与 MOD_ID 一致。
-- `dstore rel=1` 在写回后释放对象；只读对象最后一次使用后由 `pfree` 释放。
+- 当前 RTL 的 `dstore rel=0/1` 在成功写回后都会释放对象；只读对象最后一次使用后由 `pfree` 释放。
 - 组合算子 body 不发 `psync`，只有最外层完整程序在末尾发出一次。
 - NTT stage 0 前显式加载并乘 `pre_twist`；INTT 结束后显式加载并乘
   `post_untwist_scale`。每个 stage 都重新加载该 stage 的 twiddle。

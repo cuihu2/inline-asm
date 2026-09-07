@@ -138,6 +138,11 @@ int main()
             "dload x10, x11, p0, 1, 0\n"
             "psync\n"
             "pfree p0\n");
+        expect_program_rejected(
+            "dload x10, x11, p0, 1, 0\n"
+            "dstore x10, x11, p0, 0\n"
+            "pfree p0\n"
+            "psync\n");
         const std::string executable =
             hpu::render_executable_source("smoke", executable_encoded, 65536);
         const std::string header = hpu::render_executable_header(
@@ -162,6 +167,9 @@ int main()
                 "hpu_rs2 __asm__(\"x11\") = (uintptr_t)spans[3].line_count;")
             == std::string::npos)
             throw std::runtime_error("executable DSTORE x11/count ABI mismatch");
+        if (executable.find(
+                "spans[3].line_count != hpu_obj_len[2]") == std::string::npos)
+            throw std::runtime_error("executable DSTORE OBJ.len guard mismatch");
         if (executable.find("hpu_rs2 __asm__(\"x11\") = 0;")
             != std::string::npos)
             throw std::runtime_error("executable contains zero-length DMA sideband");

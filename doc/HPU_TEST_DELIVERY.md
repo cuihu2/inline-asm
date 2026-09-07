@@ -46,6 +46,7 @@ HPU_MEM_CSR_MAP=PASS
 MOD_CTX_Q32_MU48=PASS
 MOD_TABLE_BASE_0X1400=PASS
 STAGE_TWIDDLE_LAYOUT=PASS
+GROUP_MAJOR_NTT_SCHEDULE=PASS
 NEGACYCLIC_FACTORS_EXPLICIT=PASS
 NTT_PHYSICAL_OUT_OF_PLACE=PASS
 SCHEME_ENCODE_HOST_BOUNDARY=PASS
@@ -165,7 +166,7 @@ host copy 或第二次 window commit。随后可独立执行 rounded ModSwitch�
 `HPU_PROGRAMMING_MANUAL.md` 第 8.8 节。
 
 生成器和 reference 共同检查 `N` 为 2 的幂且 `ceil(N/64) <= 1024`，对应当前普通 bank 的最大可承载次数 `N=65536`。`dnum` 必须整除 `num_q`；BFV 上下文必须满足
-`num_q+num_p+bfv_num_b+2<=256`。BGV/BFV batching 要求 `t` 为 PE 范围内素数、
+`num_q+num_p+bfv_num_b+2<=64`。BGV/BFV batching 要求 `t` 为 PE 范围内素数、
 `2N | (t-1)`，并与其他模数互素。BFV 还要求所有 Q/Pks/B/m_sk 为互异的
 `1 mod 2N` 32-bit 素数、`m_sk>2*bfv_num_b`，以及 B 总位宽严格超过 no-SMRQ
 误差门限。`dload load_type` 只接受 `0=seg`、`1=poly`、`2=mod_ctx`；编码值 3 为保留值并纳入 RV 负例。
@@ -216,16 +217,16 @@ Relinearization 输入 span，runtime 只提交一份 HPU_MEM 镜像和一条完
 查看时是 `q`、`mu[31:0]`、`{16'b0,mu[47:32]}`、全零保留字。模表通过
 `dload type=2, flag[0]=1` 请求分配到 small Bank 5，DMA 与后续访问的
 一致性由硬件维护，软件可直接由 `pmodld MOD_ID` 选择表项。Bank 5 固定为
-`0x1400..0x141F` 共 32 line，物理可放 512 条记录；但 `MOD_ID` 为 8 bit，
-所以软件只允许 256 个 context，寻址 `0x1400..0x140F`。
+`0x1400..0x141F` 共 32 line，物理可放 512 条记录；`MOD_ID` 编码仍为 8 bit，
+但当前应用软件 ABI 要求 `MOD_ID[7:6]=0`，所以只允许 64 个 context，使用
+`0x1400..0x1403`。
 
-Twiddle 与硬件组 `autotest/hw_ntt_intt_complete.py` 的 128-register 模型一致。
-系数域镜像为 bit-reversed order，NTT 域镜像为全部前向 P 网络后的物理
-layout。NTT stage 0 前显式执行物理顺序的 `PMUL psi^i`；每个 PNTT batch
-由 64 个 BF lane 消费 64 个 twiddle，随后执行 P。PINTT 反向遍历对应的
-前向 stage，每批先执行 `P^-1`，再使用 dual schedule 的 lazy-scale BF
-twiddle。最终显式执行物理顺序的 `PMUL (N^-1 * psi^-i)`，不依赖 PE 隐式
-归一化或 twist。每个 stage 固定 `N/2` 个 `uint32`、`N/128` 条 256B line；
+系数域和 NTT 域镜像均使用自然多项式顺序。NTT stage 0 前显式执行
+`PMUL psi^i`；PNTT 的每个 stage 按 group-major radix-2 DIT 顺序生成并消费
+`N/2` 个 twiddle，每个 butterfly group 重复保存本组所需的幂。PINTT 使用
+相同 group-major 顺序和逆根 `omega^-1`。最终显式执行
+`PMUL (N^-1 * psi^-i)`，不依赖 PE 隐式归一化或 twist。每个 stage 固定
+`N/2` 个 `uint32`、`N/128` 条 256B line；
 默认 `N=4096` 时为 2048 words、32 line。
 
 硬件组原始 round-trip 自测只能证明 PNTT/PINTT 互逆，不能证明逐点乘对应 FHE
@@ -269,22 +270,23 @@ slots 精确比较；CKKS 对全部 `N/2` 个复数 slots 按生成参数中的�
 
 `outputs/rv_interface_smoke/` 包含：
 
-- `rv_interface_smoke.asm`：覆盖 11 条体系结构指令、三种合法 DLoad type、DStore retain/release 和最大合法字段；type 3 作为 reserved 负例。
+- `rv_interface_smoke.asm`：覆盖 11 条体系结构指令、三种合法 DLoad type、DStore 的两种 `rel` 编码（当前 RTL 均释放）和最大合法字段；type 3 作为 reserved 负例。
 - `rv_interface_smoke.inst32`：对应 32-bit 指令流。
 - `rv_interface_smoke.cmd26`：对应控制逻辑的 26-bit 命令流。
 - `test_data/expected_decode.csv`：逐条期望 word、command26、`custom0/custom1` 路由和归一化汇编。
 - `test_data/expected_cmd26.csv`：逐条验证 `cmd26[25]=custom_kind`，以及 custom0/custom1 的 `inst[31:7]` payload 原样直通。
 - `test_data/negative_cases.asm.txt`：包含越界用例，以及必须拒绝的旧 `pshcfg/pshuf/pseed/psample` 助记符。
 
-建议 RV 接口 IT 依次验证 decode 路由、队列 backpressure、顺序发射、`dload -> pmodld -> compute` 的硬件一致性、`dload -> compute -> pfree/dstore rel=1` ownership，以及末尾 `psync` 的 CPU 完成通知。`pfree` 必须在目标对象最后一次使用后生效；已经由 `dstore rel=1` 释放的对象不得重复释放。
+建议 RV 接口 IT 依次验证 decode 路由、队列 backpressure、顺序发射、`dload -> pmodld -> compute` 的硬件一致性、`dload -> compute -> pfree/dstore` ownership，以及末尾 `psync` 的 CPU 完成通知。`pfree` 必须在目标对象最后一次使用后生效；当前 RTL 中已经由任意 `rel` 值的 `dstore` 释放的对象不得重复释放。
 
 ## 7. 硬件联调边界
 
 软件与 Nexus-AM IT runtime 已完成以下事项，不再列为 pending：
 
-1. 按 `GPR[rs1]=line_offset`、`GPR[rs2]=line_count` 的 256B-line ABI，将
-   `line_map.csv` 的实际编号逐条绑定到 `dload/dstore`，并输出 resolved relocation
-   manifest；每条记录都必须是 `RESOLVED`。
+1. 按 256B-line ABI 将 `line_map.csv` 的实际编号逐条绑定到 `dload/dstore`，
+   并输出 resolved relocation manifest；DLOAD 使用 `rs1=offset,rs2=count`，
+   DSTORE 使用 `rs1=offset,OBJ.len=count`，软件同时检查 span count 与 `OBJ.len`
+   一致。每条记录都必须是 `RESOLVED`。
 2. 为 ct、tensor、ModUp、rlk、KeySwitch 等中间对象分配 scratch，并在提交前检查
    整个 span 不超过 HPU_MEM window；当前软件上限为 65536 line，BFV 单 kernel
    实际配置 30913 line，末尾 guard 由 IT runtime 在真实 window 之外维护。
@@ -297,10 +299,10 @@ slots 精确比较；CKKS 对全部 `N/2` 个复数 slots 按生成参数中的�
 
 1. RTL 正确接受 V1 `mod_ctx = {reserved48, mu48, q32}`、32-line Bank 5 与固定
    `MOD_TABLE_BASE_LINE=0x1400`。
-2. `pntt/pintt stage` 按 `twiddle_map.csv` 的 `N/2` 个值，以 `autotest` 定义的
-   batch/lane 和 P/P^-1 次序执行，采用物理 out-of-place 提交和显式 pre/post
-   PMUL；当前数据为 canonical residue，不是 Montgomery 域。
-3. DMA、allocator 和 PE 对 `pfree`、`dstore rel=1`、对象生命周期、FAULT/IRQ 的
+2. `pntt/pintt stage` 按 `twiddle_map.csv` 的 `N/2` 个值，以 group-major
+   radix-2 DIT 次序执行，采用物理 out-of-place 提交和显式 pre/post PMUL；
+   当前数据为 canonical residue，不是 Montgomery 域。
+3. DMA、allocator 和 PE 对 `pfree`、`dstore rel=0/1` 均释放对象、FAULT/IRQ 的
    目标实现与软件 ABI 一致。
 4. 目标输出逐字等于 golden，尾部 guard 未被改写，并提供外部 monitor/波形或板端
    日志。只有这些证据完成后，才可把 `HARDWARE_EXECUTION` 从 `CONDITIONAL`

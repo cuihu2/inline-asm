@@ -14,7 +14,7 @@ std::string generate_hpu_rounded_drop_last_body_asm(
     std::ostringstream asm_code;
     if (num_q < 2 || num_components <= 0
         || !hpu::has_mod_context_capacity(num_q)) {
-        asm_code << "        // Invalid rounded drop-last config: require 2 <= num_q <= 256 and components > 0\n";
+        asm_code << "        // Invalid rounded drop-last config: require 2 <= num_q <= 64 and components > 0\n";
         return asm_code.str();
     }
 
@@ -51,4 +51,3 @@ std::string generate_hpu_rounded_drop_last_body_asm(
     }
     return asm_code.str();
 }
-

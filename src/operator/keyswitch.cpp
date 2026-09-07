@@ -20,7 +20,7 @@ std::string generate_hpu_keyswitch_body_asm(
     std::ostringstream asm_code;
 
     if (!hpu::is_valid_rns_decomposition_config(N, num_q, num_p, dnum)) {
-        asm_code << "        // Invalid config: require power-of-two N fitting 1024 lines, divisible digits, and at most 256 mod contexts\n";
+        asm_code << "        // Invalid config: require power-of-two N fitting 1024 lines, divisible digits, and at most 64 mod contexts\n";
         return asm_code.str();
     }
 
@@ -154,7 +154,7 @@ std::string generate_hpu_keyswitch_asm(
     asm_code << "void hpu_keyswitch_N" << N << "_Q" << num_q << "_P" << num_p << "_D" << dnum << "(void) {\n";
 
     if (!hpu::is_valid_rns_decomposition_config(N, num_q, num_p, dnum)) {
-        asm_code << "    // Invalid config: require power-of-two N fitting 1024 lines, divisible digits, and at most 256 mod contexts\n";
+        asm_code << "    // Invalid config: require power-of-two N fitting 1024 lines, divisible digits, and at most 64 mod contexts\n";
         asm_code << "}\n";
         return asm_code.str();
     }

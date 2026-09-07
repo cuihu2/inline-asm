@@ -53,7 +53,7 @@ std::string generate_modswitch_body_asm(
 {
     std::ostringstream asm_code;
     if (!valid_config(num_q, num_p, num_components)) {
-        asm_code << "        // Invalid BGV ModSwitch config: require num_q >= 2, components > 0, and Q|P|t within 256 contexts\n";
+        asm_code << "        // Invalid BGV ModSwitch config: require num_q >= 2, components > 0, and Q|P|t within 64 contexts\n";
         return asm_code.str();
     }
 

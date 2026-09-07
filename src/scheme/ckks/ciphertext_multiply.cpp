@@ -29,7 +29,7 @@ std::string generate_ciphertext_multiply_body_asm(
 {
     std::ostringstream asm_code;
     if (!valid_config(N, num_q, num_p, dnum)) {
-        asm_code << "        // Invalid CKKS multiply config: require N fitting one bank, num_q >= 2, divisible digits, and <= 256 contexts\n";
+        asm_code << "        // Invalid CKKS multiply config: require N fitting one bank, num_q >= 2, divisible digits, and <= 64 contexts\n";
         return asm_code.str();
     }
 

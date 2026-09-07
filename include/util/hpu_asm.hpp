@@ -21,10 +21,11 @@ inline constexpr int kModTableBaseLine = 0x1400;
 inline constexpr int kModContextsPerLine = 16;
 inline constexpr int kPhysicalModContexts = kSmallBankLines * kModContextsPerLine;
 inline constexpr int kModIdBits = 8;
-inline constexpr int kMaxModContexts =
-    kPhysicalModContexts < (1 << kModIdBits)
-        ? kPhysicalModContexts
-        : (1 << kModIdBits);
+inline constexpr int kEncodedModContexts = 1 << kModIdBits;
+inline constexpr int kMaxModContexts = 64;
+
+static_assert(kMaxModContexts <= kEncodedModContexts);
+static_assert(kMaxModContexts <= kPhysicalModContexts);
 
 inline constexpr int hpu_lines_for_words(int words) {
     return words > 0

@@ -111,7 +111,7 @@ std::string generate_hpu_bconv_body_asm(
 {
     if (num_p <= 0 || q_offset < 0
         || !hpu::has_mod_context_capacity(num_q, num_p, q_offset)) {
-        return "        // Invalid config: require positive bases within the 8-bit MOD_ID capacity\n";
+        return "        // Invalid config: require positive bases within the 64-entry software MOD_ID ABI\n";
     }
 
     std::vector<int> source_contexts;

@@ -26,7 +26,7 @@ std::string generate_rescale_body_asm(
 {
     std::ostringstream asm_code;
     if (!valid_rescale_config(num_q, num_components)) {
-        asm_code << "        // Invalid CKKS Rescale config: require 2 <= num_q <= 256 and num_components > 0\n";
+        asm_code << "        // Invalid CKKS Rescale config: require 2 <= num_q <= 64 and num_components > 0\n";
         return asm_code.str();
     }
 

@@ -103,14 +103,14 @@ void validate(const FheTestConfig& config)
     if (!hpu::has_mod_context_capacity(
             config.num_q, config.num_p, std::size_t{1})) {
         throw std::runtime_error(
-            "num_q + num_p + plaintext context exceeds the 8-bit MOD_ID space");
+            "num_q + num_p + plaintext context exceeds the 64-entry software MOD_ID ABI");
     }
     if (!hpu::has_mod_context_capacity(
             config.num_q,
             config.num_p + config.bfv_num_b,
             std::size_t{2})) {
         throw std::runtime_error(
-            "Q, Pks, BFV B, m_sk, and plaintext contexts exceed the 8-bit MOD_ID space");
+            "Q, Pks, BFV B, m_sk, and plaintext contexts exceed the 64-entry software MOD_ID ABI");
     }
     if (!hpu::is_valid_galois_element(config.N, config.auto_galois_element)) {
         throw std::runtime_error(

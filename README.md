@@ -205,7 +205,7 @@ relocation manifest、line map 与 HPU_MEM 镜像。
 
 配置必须满足 `N` 为不小于 128 的 2 次幂、`ceil(N/64) <= 1024`（即
 `128 <= N <= 65536`）、`num_q >= 2`、`num_q % dnum == 0`、
-`num_q + num_p + bfv_num_b + 2 <= 256`。Auto 的 `auto_galois_element` 必须属于
+`num_q + num_p + bfv_num_b + 2 <= 64`。Auto 的 `auto_galois_element` 必须属于
 `Z_(2N)^*`，即 `1 <= g < 2N` 且 `gcd(g,2N)=1`；默认 `g=3` 表示 generator-3
 槽位布局下每行左旋一格。`hpu::galois_element_from_rotation_step(N,step)` 可把正负
 旋转步数转换为 `g=3^step mod 2N`，`hpu::conjugation_galois_element(N)` 返回共轭元素
@@ -220,8 +220,8 @@ BGV 固定 MOD_ID 顺序为 `Q|P|t`；BFV 固定为 `Q|Pks|B|m_sk|t`。`plaintex
 `hpu_mem_max_lines` 必须适配 33-bit `HPU_MEM_SIZE_LINES` CSR；它是软件验收上限，
 每个包仍按自身真实镜像大小配置 window。BFV reference 还检查
 `log2(B) > 33 + bitlen(t) + bitlen(Q) + ceil(log2(num_q^2))`。small Bank 5 为 32 line，固定范围
-`0x1400..0x141F`，物理可放 512 个 context；由于 `MOD_ID` 只有 8 bit，软件可
-寻址上限为 256。它与 8 个并发对象槽位是两个独立资源。
+`0x1400..0x141F`，物理可放 512 个 context；`MOD_ID` 编码仍为 8 bit，但当前
+应用软件 ABI 要求 `MOD_ID[7:6]=0`，只使用 0..63。它与 8 个并发对象槽位是两个独立资源。
 
 `hpu_delivery` 会根据该配置生成输入、评估密钥、阶段 golden、最终输出、明文校验
 和 artifact checksum。它同时生成独立的 `uint32` HPU_MEM 镜像、q/Barrett
@@ -237,7 +237,7 @@ MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、KeySwitch 和 Relinearizat
 ## 4. 关键设计实现说明
 
 - **基于 HPU 对象槽的 NTT/INTT：**
-  底层不再关注向量的大块切片 `l`。针对 `stage=0~log2(N)-1` 的蝶形运算，`pntt/pintt` 以**第一个对象槽位作为稳定的逻辑数据对象**，**第二个对象槽位作为 twiddle 对象**。控制器按物理 out-of-place 执行并在 stage 完成时提交新的 base；调用方保持逻辑对象号。Negacyclic NTT 在 stage 0 前显式 `PMUL psi^i`，INTT 在最终 stage 后显式 `PMUL (N^-1*psi^-i)`。
+  底层不再关注向量的大块切片 `l`。针对 `stage=0~log2(N)-1` 的蝶形运算，`pntt/pintt` 以**第一个对象槽位作为稳定的逻辑数据对象**，**第二个对象槽位作为 twiddle 对象**。控制器按物理 out-of-place 执行并在 stage 完成时提交新的 base；调用方保持逻辑对象号。系数域与 NTT 域镜像均为自然顺序，每个 stage 的 `N/2` 个 twiddle 按 group-major radix-2 DIT 顺序生成。Negacyclic NTT 在 stage 0 前显式 `PMUL psi^i`，INTT 在最终 stage 后显式 `PMUL (N^-1*psi^-i)`。
   
 - **切片感知的模提升运算：**
   为了支持分解字（Digit Decomposition），`modup` 接口显式接收完整 `num_q`、处理宽度 `num_q_digit` 和 `q_offset`。它保留当前 digit，并对 `Q\digit ∪ P` 执行 BConv，从而为后续 KeySwitch 产生完整 $Q \cup P$ 表示。单纯 Q→P 的基转换仍由独立 `bconv` 原语提供。
@@ -264,7 +264,7 @@ MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、KeySwitch 和 Relinearizat
   `inline-asm` 仍负责汇编生成，`encode` 模块则负责解析、归一化和 32 位编码。两者保留独立边界，但通过同一 CMake 工程统一构建，从而降低汇编语义更新后生成器与编码器失配的风险。
 
 - **11 条指令与对象生命周期：**
-  当前体系结构指令固定为 `padd/psub/pmul/pmac/pntt/pintt/pmodld/pfree/psync/dload/dstore`。旧的 `pshcfg/pshuf/pseed/psample` 已从枚举和编码表移除。临时输入、twiddle 和 small-bank 模表对象会在最后一次使用后生成 `pfree`；以 `dstore rel=1` 导出的结果由 DMA 完成后释放，不再重复 `pfree`。
+  当前体系结构指令固定为 `padd/psub/pmul/pmac/pntt/pintt/pmodld/pfree/psync/dload/dstore`。旧的 `pshcfg/pshuf/pseed/psample` 已从枚举和编码表移除。临时输入、twiddle 和 small-bank 模表对象会在最后一次使用后生成 `pfree`；当前 RTL 对 `dstore rel=0/1` 都在 DMA 成功后释放对象，不再重复 `pfree`。
 
 - **双输入形式兼容：**
   编码器既可处理纯 ASM body，也可处理带有 `__asm__ volatile(...)` 包装的 C++ 内联汇编文本。对于 `void hpu_xxx(void) {`、`: "memory"`、`);` 等生成边界，解析器会做定向忽略；但非法汇编指令本身仍会被保留为错误。
@@ -283,10 +283,10 @@ MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、KeySwitch 和 Relinearizat
 - 每个可编码算子同时生成 `.inst32` 和 `.cmd26`；`cmd26[25]` 区分 custom0/custom1，两类指令都直接携带 `inst[31:7]`；custom1 payload 包含 `RS2/RS1` 编号，其寄存器值提供 offset/count
 - `psync` 只在完整程序的最后发出，用于通知 CPU 整个 HPU 程序已经完成；不得将其插入算子内部作为 DMA 等待或阶段屏障
 - 当前生成器为所有 custom1 指令固定编码 `x10/x11`。可执行 runtime 必须在每条 DMA 前把当前对象的 HPU_MEM line offset/count 装入这两个寄存器；`auto` 也进入统一编码链路。
-- `cmult`、`keyswitch`、`relinearization`、公共/CKKS/BGV `ciphertext_multiply`、BGV `modswitch` 和两个 BFV hardware kernel 均已进入统一 `.asm -> .inst32/.cmd26` 生成链路。BFV 额外要求 `Q|Pks|B|m_sk|t` 总 context 不超过 256，并满足 B 位宽门禁。
+- `cmult`、`keyswitch`、`relinearization`、公共/CKKS/BGV `ciphertext_multiply`、BGV `modswitch` 和两个 BFV hardware kernel 均已进入统一 `.asm -> .inst32/.cmd26` 生成链路。BFV 额外要求 `Q|Pks|B|m_sk|t` 总 context 不超过 64，并满足 B 位宽门禁。
 - `ciphertext_multiply/test_data` 已由软件 reference 自动生成；二进制格式、shape 和校验值见其中的 `params.json` 与 `artifact_manifest.csv`
 - 顶层 `.bin` 是 `uint64` 数学 golden；真正面向 HPU 加载的是 `test_data/hardware/` 下按 256B line 补齐的 `.u32.bin`
-- `hardware/line_map.csv` 给出每个对象的 byte address、line offset 和 line count；custom1 固定使用 `GPR[rs1]=line_offset`、`GPR[rs2]=line_count`（256B line 单位），`hpu_mem_config.json` 给出 HPU_MEM window 值和 `0x00..0x18` CSR 编程顺序
+- `hardware/line_map.csv` 给出每个对象的 byte address、line offset 和 line count；custom1 固定编码 `x10/x11`。DLOAD 使用 offset/count，DSTORE 的实际长度来自 `OBJ.len`，span count 用于软件一致性与边界检查。`hpu_mem_config.json` 给出 HPU_MEM window 值和 `0x00..0x18` CSR 编程顺序
 - 生成的 `hpu_program_*` 入口接收与 DMA 指令等长的 `hpu_dma_span_t[]`；每条 DLOAD/DSTORE custom1 发射前都把非零 line offset/count 装入 `x10/x11`。`nexus-am/tests/hpu-it` 根据硬件布局生成逐行可审计的 resolved relocation manifest。
 
 ---
