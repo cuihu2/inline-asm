@@ -94,7 +94,7 @@ int main()
         ::seal::Ciphertext expected;
         evaluator.add(cipher_a, cipher_b, expected);
         verify_exact(expected, add_output, executor, *bundle.context, "Add");
-        evaluator.subtract(cipher_a, cipher_b, expected);
+        evaluator.sub(cipher_a, cipher_b, expected);
         verify_exact(
             expected, subtract_output, executor, *bundle.context, "Subtract");
         evaluator.multiply_plain(cipher_a, plain_b, expected);
