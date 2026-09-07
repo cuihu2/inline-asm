@@ -46,15 +46,17 @@ int main()
     try {
         hpu::seal_adapter::CkksContextSpec spec;
         spec.poly_modulus_degree = 128;
-        spec.coeff_modulus_bits = {20, 20, 20, 20};
+        spec.coeff_modulus_bits = {20, 20, 20, 20, 20};
         const auto bundle = hpu::seal_adapter::create_ckks_context(spec);
         const auto levels = hpu::seal_adapter::create_ckks_level_descriptors(
             *bundle.context);
-        if (levels.size() < 2) {
-            throw std::runtime_error("software executor test needs a Rescale level");
+        if (levels.size() < 3) {
+            throw std::runtime_error(
+                "software executor test needs Q4 -> Q3 -> Q2 levels");
         }
         const auto& level = levels.front();
         const auto& next_level = levels[1];
+        const auto& bottom_level = levels[2];
 
         ::seal::KeyGenerator key_generator(*bundle.context);
         ::seal::PublicKey public_key;
@@ -66,7 +68,7 @@ int main()
         key_generator.create_galois_keys(
             std::vector<std::uint32_t>{galois_element}, galois_keys);
         ::seal::CKKSEncoder encoder(*bundle.context);
-        constexpr double scale = 4096.0;
+        constexpr double scale = 262144.0;
         ::seal::Plaintext plain_a;
         ::seal::Plaintext plain_b;
         encoder.encode(std::vector<double>{0.25, -1.0}, scale, plain_a);
@@ -78,21 +80,45 @@ int main()
         encryptor.encrypt(plain_b, cipher_b);
 
         hpu::seal_adapter::CkksApplicationImageBuilder builder(
-            *bundle.context, 768);
+            *bundle.context, 1536);
         builder.add_modulus_table();
         const auto canonical_twiddles = builder.add_canonical_twiddles();
         const auto prepared_relinearization_key =
             builder.add_relinearization_key(
-                "key/relinearization", relinearization_keys, level);
+                "key/relinearization/q4", relinearization_keys, level);
         const auto prepared_galois_key = builder.add_galois_key(
-            "key/galois3", galois_keys, galois_element, level);
+            "key/galois3/q4", galois_keys, galois_element, level);
         const auto fused_rotate_tables =
             builder.add_fused_automorphism_twiddles(
-                "rotate3", galois_element, level);
+                "rotate3/q4", galois_element, level);
         const auto keyswitch_constants = builder.add_keyswitch_constants(
-            "constants/keyswitch/q3", level);
+            "constants/keyswitch/q4", level);
         const auto rescale_constants = builder.add_rescale_constants(
-            "constants/rescale/q3_to_q2", level);
+            "constants/rescale/q4_to_q3", level);
+        const auto middle_relinearization_key =
+            builder.add_relinearization_key(
+                "key/relinearization/q3", relinearization_keys, next_level);
+        const auto middle_galois_key = builder.add_galois_key(
+            "key/galois3/q3", galois_keys, galois_element, next_level);
+        const auto middle_fused_rotate_tables =
+            builder.add_fused_automorphism_twiddles(
+                "rotate3/q3", galois_element, next_level);
+        const auto middle_keyswitch_constants = builder.add_keyswitch_constants(
+            "constants/keyswitch/q3", next_level);
+        const auto middle_rescale_constants = builder.add_rescale_constants(
+            "constants/rescale/q3_to_q2", next_level);
+        if (level.rns_layout.p_mod_ids
+                != std::vector<std::uint8_t>({4})
+            || next_level.rns_layout.p_mod_ids
+                != std::vector<std::uint8_t>({4})
+            || bottom_level.rns_layout.p_mod_ids
+                != std::vector<std::uint8_t>({4})
+            || middle_relinearization_key.digits.size() != 3
+            || middle_relinearization_key.digits.front().front().modulus_ids
+                != std::vector<std::uint8_t>({0, 1, 2, 4})) {
+            throw std::runtime_error(
+                "multilevel image did not preserve fixed P MOD_ID 4");
+        }
         const auto input_a = builder.add_ciphertext("input/a", cipher_a);
         const auto input_b = builder.add_ciphertext("input/b", cipher_b);
         const auto plaintext = builder.add_plaintext("plain/b", plain_b);
@@ -112,9 +138,13 @@ int main()
             "output/multiply_tensor", level, 3, scale * scale);
         const auto multiply_relinearized_output = builder.reserve_ciphertext(
             "output/multiply_relinearized", level, 2, scale * scale);
+        const double middle_scale =
+            scale * scale / static_cast<double>(level.q_last);
+        const double bottom_scale = middle_scale * middle_scale
+            / static_cast<double>(next_level.q_last);
         const auto multiply_rescaled_output = builder.reserve_ciphertext(
             "output/multiply_rescaled", next_level, 2,
-            scale * scale / static_cast<double>(level.q_last));
+            middle_scale);
         const auto relinearized_output = builder.reserve_ciphertext(
             "output/relinearized", level, 2, scale * scale);
         const auto direct_key_switch_output = builder.reserve_ciphertext(
@@ -132,6 +162,19 @@ int main()
             hpu::runtime::PolynomialDomain::coefficient, galois_element);
         const auto rotate_output = builder.reserve_ciphertext(
             "output/rotate3", level, 2, scale);
+        const auto middle_rotate_workspace = builder.reserve_ciphertext(
+            "scratch/q3_rotate3_coefficient", next_level, 2, middle_scale,
+            hpu::runtime::PolynomialDomain::coefficient, galois_element);
+        const auto middle_rotate_output = builder.reserve_ciphertext(
+            "output/q3_rotate3", next_level, 2, middle_scale);
+        const auto middle_multiply_output = builder.reserve_ciphertext(
+            "output/q3_multiply_tensor", next_level, 3,
+            middle_scale * middle_scale);
+        const auto middle_relinearized_output = builder.reserve_ciphertext(
+            "output/q3_multiply_relinearized", next_level, 2,
+            middle_scale * middle_scale);
+        const auto bottom_rescaled_output = builder.reserve_ciphertext(
+            "output/q2_rescaled", bottom_level, 2, bottom_scale);
 
         hpu::seal_adapter::CkksSoftwareExecutor executor(
             *bundle.context, builder.image());
@@ -168,6 +211,21 @@ int main()
             input_a, galois_element, prepared_galois_key,
             keyswitch_constants, fused_rotate_tables, canonical_twiddles,
             rotate_workspace, rotate_output);
+        executor.rotate(
+            multiply_rescaled_output, galois_element, middle_galois_key,
+            middle_keyswitch_constants, middle_fused_rotate_tables,
+            canonical_twiddles, middle_rotate_workspace,
+            middle_rotate_output);
+        executor.multiply(
+            multiply_rescaled_output, middle_rotate_output,
+            middle_multiply_output);
+        executor.relinearize(
+            middle_multiply_output, middle_relinearization_key,
+            middle_keyswitch_constants, middle_relinearized_output,
+            canonical_twiddles);
+        executor.rescale(
+            middle_relinearized_output, middle_rescale_constants,
+            bottom_rescaled_output, canonical_twiddles);
         executor.inverse_ntt(
             input_a, coefficient_scratch, canonical_twiddles);
         executor.forward_ntt(
@@ -219,6 +277,29 @@ int main()
         verify_exact(
             expected_multiply, multiply_rescaled_output, executor,
             *bundle.context, "Multiply/Relinearize/Rescale");
+        ::seal::Ciphertext expected_middle_rotate;
+        evaluator.apply_galois(
+            expected_multiply, galois_element, galois_keys,
+            expected_middle_rotate);
+        verify_exact(
+            expected_middle_rotate, middle_rotate_output, executor,
+            *bundle.context, "Q3 Rotate");
+        ::seal::Ciphertext expected_middle_multiply;
+        evaluator.multiply(
+            expected_multiply, expected_middle_rotate,
+            expected_middle_multiply);
+        verify_exact(
+            expected_middle_multiply, middle_multiply_output, executor,
+            *bundle.context, "Q3 Multiply");
+        evaluator.relinearize_inplace(
+            expected_middle_multiply, relinearization_keys);
+        verify_exact(
+            expected_middle_multiply, middle_relinearized_output, executor,
+            *bundle.context, "Q3 Multiply/Relinearize");
+        evaluator.rescale_to_next_inplace(expected_middle_multiply);
+        verify_exact(
+            expected_middle_multiply, bottom_rescaled_output, executor,
+            *bundle.context, "Q3 Multiply/Relinearize/Rescale to Q2");
         ::seal::Ciphertext expected_rotate;
         evaluator.apply_galois(
             cipher_a, galois_element, galois_keys, expected_rotate);
@@ -230,7 +311,7 @@ int main()
             *bundle.context, "HPU NTT/INTT round-trip");
 
         std::cout
-            << "CKKS HPU_MEM software executor pointwise/Multiply/Square/KeySwitch/Relinearize/Rescale/Rotate and table-driven NTT/INTT passed exact SEAL NTT comparison\n";
+            << "CKKS HPU_MEM software executor Q4 -> Q3 -> Q2 pointwise/Multiply/Square/KeySwitch/Relinearize/Rescale/Rotate and table-driven NTT/INTT passed exact SEAL NTT comparison\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "CKKS software executor test failed: "

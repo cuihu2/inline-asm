@@ -98,6 +98,11 @@ contiguous-digit contract.
 The multilevel regression freezes a two-depth codegen sequence: Q4 Multiply
 drops to Q3; Q3 Rotate/Relinearize and another Q3 Multiply use P at MOD_ID 4;
 the resulting Q2 Rotate still uses MOD_ID 4 and never touches dropped Q limbs.
+The functional executor regression now mirrors this policy with an actual Q4
+Multiply/Relinearize/Rescale, Q3 fused Rotate, and Q3
+Multiply/Relinearize/Rescale. Every intermediate and the final Q2 result must
+match SEAL NTT words exactly; the Q3 evaluation key is restricted to MOD_IDs
+`{0,1,2,4}`.
 
 ## First CKKS application stream
 

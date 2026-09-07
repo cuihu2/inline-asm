@@ -222,6 +222,12 @@ Rescale 后还必须迁移到准确的下一级 `parms_id`、scale 和 MOD_ID �
 表驱动的 INTT→NTT 恢复原密文。Rescale 的 `q_last`、`q_last/2` 和各
 `q_last^-1 mod q_i` 也在应用初始化时写入版本化 HPU_MEM 常量记录。
 
+同一回归还建立 Q4|P1 image，并实际执行 Q4
+Multiply→Relinearize→Rescale、Q3 fused Rotate、Q3
+Multiply→Relinearize→Rescale 到 Q2。每一阶段都和 SEAL NTT words 逐字比较；Q3
+只消费 active-Q 的 `{0,1,2}` 和固定 P 的 MOD_ID 4，从而覆盖跨 level 的 key digit、
+modified-root twiddle、常量记录、`parms_id` 与 scale 迁移。
+
 Rotate 使用 modified-root fused INTT，将两个 canonical HPU NTT 分量直接转换成
 `domain=coefficient,key_domain=k`。随后 `sigma_k(c0)` 作为 base、`sigma_k(c1)`
 作为 switching component 进入 Galois KeySwitch，输出恢复为
@@ -240,6 +246,7 @@ permutation，也不会在两阶段之间插入一对多余 NTT/INTT。
 这样 `seal::Evaluator` 将只负责给出独立期望值，而不再承担“被测试实现”的工作。
 
 当前冻结的 SEAL 4.4.4 只产生单 special-prime KeySwitch，因此多 P 已移出近期主线，
-保留为未来脱离当前 SEAL 兼容范围后的独立扩展。近期顺序是：多层软件执行验证、
-slot-step Rotate/Conjugate/Negate、ModSwitch 与自动 level/scale 管理，随后接入
+保留为未来脱离当前 SEAL 兼容范围后的独立扩展。多层软件执行验证已经覆盖
+Q4→Q3→Q2；近期顺序是：slot-step Rotate/Conjugate/Negate、ModSwitch 与自动
+level/scale 管理，随后接入
 application lowering、DMA relocation 和 Linux runtime backend。

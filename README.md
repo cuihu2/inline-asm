@@ -159,6 +159,12 @@ Rescale 同样从 HPU_MEM 取得 `q_last/2` 与 `q_last^-1 mod q_i`，并迁移�
 `parms_id`。`x^2+1` 示例的 Square→Relinearize→Rescale→AddPlain 已由该执行器
 真正执行，SEAL Evaluator 只提供独立逐字 oracle。
 
+多层执行回归使用 Q4|P1 image，完整运行 Q4
+Multiply→Relinearize→Rescale、Q3 fused Rotate、Q3
+Multiply→Relinearize→Rescale，并对最终 Q2 输出逐字比较。Q 逐层缩短时，P 始终
+保持应用全局 MOD_ID 4；Q3 的 evaluation key 只包含 `{0,1,2,4}`，不会读取已丢弃的
+Q limb。
+
 Rotate 软件路径直接消费 modified-root fused INTT 表，把 canonical NTT 输入变成
 `{domain=coefficient,key_domain=k}`，随后从该状态进入 Galois KeySwitch；不会插入
 canonical NTT→INTT 的抵消变换。若跨 kernel，只有这份带 key-domain 的系数 workspace
