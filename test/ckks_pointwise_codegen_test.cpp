@@ -1,5 +1,7 @@
 #include "scheme/ckks/basic_arithmetic.hpp"
 
+#include "util/hpu_asm.hpp"
+
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
