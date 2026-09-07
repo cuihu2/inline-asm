@@ -70,6 +70,22 @@ const PreparedCanonicalTwiddles& find_tables(
     return *found;
 }
 
+const PreparedFusedAutomorphismTwiddles& find_fused_tables(
+    const std::vector<PreparedFusedAutomorphismTwiddles>& tables,
+    std::uint8_t modulus_id)
+{
+    const auto found = std::find_if(
+        tables.begin(), tables.end(),
+        [&](const PreparedFusedAutomorphismTwiddles& entry) {
+            return entry.modulus_id == modulus_id;
+        });
+    if (found == tables.end()) {
+        throw std::invalid_argument(
+            "fused automorphism tables lack an active MOD_ID");
+    }
+    return *found;
+}
+
 } // namespace
 
 CkksSoftwareExecutor::CkksSoftwareExecutor(
@@ -375,13 +391,37 @@ void CkksSoftwareExecutor::key_switch(
     const PreparedRnsObject& output,
     const std::vector<PreparedCanonicalTwiddles>& tables)
 {
+    key_switch_impl(
+        base_ciphertext, switching_component, evaluation_key, constants,
+        output, tables, false);
+}
+
+void CkksSoftwareExecutor::key_switch_impl(
+    const PreparedRnsObject& base_ciphertext,
+    const PreparedRnsObject& switching_component,
+    const PreparedEvaluationKey& evaluation_key,
+    const PreparedKeySwitchConstants& constants,
+    const PreparedRnsObject& output,
+    const std::vector<PreparedCanonicalTwiddles>& tables,
+    bool switching_is_coefficient)
+{
     validate_object(base_ciphertext, 2);
     validate_object(switching_component, 1);
     validate_object(output, 2);
     require_same_level(base_ciphertext, switching_component, output);
     if (!compatible_scales(base_ciphertext.scale, switching_component.scale)
-        || !compatible_scales(base_ciphertext.scale, output.scale)) {
-        throw std::invalid_argument("CKKS KeySwitch changed the ciphertext scale");
+        || !compatible_scales(base_ciphertext.scale, output.scale)
+        || base_ciphertext.domain
+            != hpu::runtime::PolynomialDomain::canonical_ntt_physical
+        || output.domain
+            != hpu::runtime::PolynomialDomain::canonical_ntt_physical
+        || base_ciphertext.key_domain != 1 || output.key_domain != 1
+        || switching_component.domain != (switching_is_coefficient
+            ? hpu::runtime::PolynomialDomain::coefficient
+            : hpu::runtime::PolynomialDomain::canonical_ntt_physical)
+        || (!switching_is_coefficient && switching_component.key_domain != 1)) {
+        throw std::invalid_argument(
+            "CKKS KeySwitch has incompatible scale/representation metadata");
     }
     validate_evaluation_key(evaluation_key, switching_component);
 
@@ -436,9 +476,23 @@ void CkksSoftwareExecutor::key_switch(
         }
         const std::size_t source_basis = static_cast<std::size_t>(
             source_found - switching.modulus_ids.begin());
-        const auto source_coefficients = transform_limb(
-            memory_.read(switching.limbs[source_basis], degree),
-            degree, static_cast<std::uint8_t>(source_id), tables, true);
+        const auto source_words = memory_.read(
+            switching.limbs[source_basis], degree);
+        const auto source_coefficients = switching_is_coefficient
+            ? source_words
+            : transform_limb(
+                source_words, degree, static_cast<std::uint8_t>(source_id),
+                tables, true);
+        if (switching_is_coefficient
+            && std::any_of(
+                source_coefficients.begin(), source_coefficients.end(),
+                [&](std::uint32_t value) {
+                    return value >= memory_.modulus(
+                        static_cast<std::uint8_t>(source_id));
+                })) {
+            throw std::invalid_argument(
+                "coefficient-domain KeySwitch source is not reduced");
+        }
 
         for (std::size_t target_basis = 0;
              target_basis < full_ids.size(); ++target_basis) {
@@ -620,6 +674,93 @@ void CkksSoftwareExecutor::rescale(
     }
 }
 
+void CkksSoftwareExecutor::rotate(
+    const PreparedRnsObject& input,
+    std::uint32_t galois_element,
+    const PreparedEvaluationKey& galois_key,
+    const PreparedKeySwitchConstants& constants,
+    const std::vector<PreparedFusedAutomorphismTwiddles>& fused_tables,
+    const std::vector<PreparedCanonicalTwiddles>& canonical_tables,
+    const PreparedRnsObject& coefficient_workspace,
+    const PreparedRnsObject& output)
+{
+    validate_object(input, 2);
+    validate_object(coefficient_workspace, 2);
+    validate_object(output, 2);
+    require_same_level(input, coefficient_workspace, output);
+    const std::size_t degree = input.components.front().degree;
+    const std::uint64_t ring_order = 2ULL * degree;
+    if ((galois_element & 1U) == 0U || galois_element >= ring_order
+        || !compatible_scales(input.scale, coefficient_workspace.scale)
+        || !compatible_scales(input.scale, output.scale)
+        || input.domain
+            != hpu::runtime::PolynomialDomain::canonical_ntt_physical
+        || input.key_domain != 1
+        || coefficient_workspace.domain
+            != hpu::runtime::PolynomialDomain::coefficient
+        || coefficient_workspace.key_domain != galois_element
+        || output.domain
+            != hpu::runtime::PolynomialDomain::canonical_ntt_physical
+        || output.key_domain != 1) {
+        throw std::invalid_argument(
+            "CKKS Rotate has invalid element/scale/representation metadata");
+    }
+
+    for (std::size_t component = 0; component < 2; ++component) {
+        const auto& source = input.components[component];
+        const auto& workspace = coefficient_workspace.components[component];
+        for (std::size_t basis = 0; basis < source.limbs.size(); ++basis) {
+            const std::uint8_t mod_id = source.modulus_ids[basis];
+            const std::uint32_t q = memory_.modulus(mod_id);
+            const auto& fused = find_fused_tables(fused_tables, mod_id);
+            const auto& canonical = find_tables(canonical_tables, mod_id);
+            if (fused.modulus != q || canonical.modulus != q
+                || fused.canonical_psi != canonical.canonical_psi
+                || hpu::model::pow_mod(
+                    fused.modified_psi, galois_element, q)
+                    != fused.canonical_psi) {
+                throw std::invalid_argument(
+                    "modified-root Rotate table does not match k or canonical psi");
+            }
+            hpu::model::HardwareNttModel model(
+                degree, q,
+                hpu::model::pow_mod(fused.modified_psi, 2, q));
+            hpu::model::InverseNttTables inverse_tables;
+            inverse_tables.stages.reserve(fused.inverse_stages.size());
+            for (const auto& span : fused.inverse_stages) {
+                inverse_tables.stages.push_back(memory_.read(span, degree / 2));
+            }
+            inverse_tables.post_scale = memory_.read(
+                fused.post_untwist_scale, degree);
+            const auto transformed = model.inverse(
+                memory_.read(source.limbs[basis], degree), inverse_tables);
+            memory_.write(workspace.limbs[basis], transformed);
+        }
+    }
+
+    // sigma_k(c0) is the base; sigma_k(c1) is switched from key domain k
+    // back to the canonical secret-key domain. The coefficient workspace is
+    // the only state needed if fused INTT and KeySwitch cross a kernel boundary.
+    for (std::size_t basis = 0;
+         basis < output.components.front().limbs.size(); ++basis) {
+        const std::uint8_t mod_id = output.components[0].modulus_ids[basis];
+        memory_.write(
+            output.components[0].limbs[basis],
+            transform_limb(
+                memory_.read(
+                    coefficient_workspace.components[0].limbs[basis], degree),
+                degree, mod_id, canonical_tables, false));
+        memory_.write(
+            output.components[1].limbs[basis],
+            std::vector<std::uint32_t>(degree, 0));
+    }
+    PreparedRnsObject switching = coefficient_workspace;
+    switching.components = {coefficient_workspace.components[1]};
+    key_switch_impl(
+        output, switching, galois_key, constants, output,
+        canonical_tables, true);
+}
+
 void CkksSoftwareExecutor::transform(
     const PreparedRnsObject& input,
     const PreparedRnsObject& output,
@@ -632,8 +773,16 @@ void CkksSoftwareExecutor::transform(
     validate_object(input, input.components.size());
     validate_object(output, input.components.size());
     if (input.parms_id != output.parms_id
-        || !compatible_scales(input.scale, output.scale)) {
-        throw std::invalid_argument("CKKS transform changed level or scale metadata");
+        || !compatible_scales(input.scale, output.scale)
+        || input.key_domain != output.key_domain
+        || input.domain != (inverse
+            ? hpu::runtime::PolynomialDomain::canonical_ntt_physical
+            : hpu::runtime::PolynomialDomain::coefficient)
+        || output.domain != (inverse
+            ? hpu::runtime::PolynomialDomain::coefficient
+            : hpu::runtime::PolynomialDomain::canonical_ntt_physical)) {
+        throw std::invalid_argument(
+            "CKKS transform has incompatible level/scale/representation metadata");
     }
 
     for (std::size_t component = 0; component < input.components.size(); ++component) {

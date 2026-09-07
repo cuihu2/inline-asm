@@ -60,6 +60,15 @@ public:
         const PreparedRescaleConstants& constants,
         const PreparedRnsObject& output,
         const std::vector<PreparedCanonicalTwiddles>& tables);
+    void rotate(
+        const PreparedRnsObject& input,
+        std::uint32_t galois_element,
+        const PreparedEvaluationKey& galois_key,
+        const PreparedKeySwitchConstants& constants,
+        const std::vector<PreparedFusedAutomorphismTwiddles>& fused_tables,
+        const std::vector<PreparedCanonicalTwiddles>& canonical_tables,
+        const PreparedRnsObject& coefficient_workspace,
+        const PreparedRnsObject& output);
 
     // The coefficient object uses normal logical coefficient order. Twiddle
     // payloads are read from HPU_MEM and consumed in hardware stage order.
@@ -109,6 +118,14 @@ private:
     void validate_evaluation_key(
         const PreparedEvaluationKey& evaluation_key,
         const PreparedRnsObject& operand) const;
+    void key_switch_impl(
+        const PreparedRnsObject& base_ciphertext,
+        const PreparedRnsObject& switching_component,
+        const PreparedEvaluationKey& evaluation_key,
+        const PreparedKeySwitchConstants& constants,
+        const PreparedRnsObject& output,
+        const std::vector<PreparedCanonicalTwiddles>& tables,
+        bool switching_is_coefficient);
 
     const ::seal::SEALContext& context_;
     hpu::runtime::HpuSoftwareExecutor memory_;

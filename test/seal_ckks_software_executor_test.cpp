@@ -61,6 +61,10 @@ int main()
         key_generator.create_public_key(public_key);
         ::seal::RelinKeys relinearization_keys;
         key_generator.create_relin_keys(relinearization_keys);
+        ::seal::GaloisKeys galois_keys;
+        constexpr std::uint32_t galois_element = 3;
+        key_generator.create_galois_keys(
+            std::vector<std::uint32_t>{galois_element}, galois_keys);
         ::seal::CKKSEncoder encoder(*bundle.context);
         constexpr double scale = 4096.0;
         ::seal::Plaintext plain_a;
@@ -74,12 +78,17 @@ int main()
         encryptor.encrypt(plain_b, cipher_b);
 
         hpu::seal_adapter::CkksApplicationImageBuilder builder(
-            *bundle.context, 384);
+            *bundle.context, 640);
         builder.add_modulus_table();
         const auto canonical_twiddles = builder.add_canonical_twiddles();
         const auto prepared_relinearization_key =
             builder.add_relinearization_key(
                 "key/relinearization", relinearization_keys, level);
+        const auto prepared_galois_key = builder.add_galois_key(
+            "key/galois3", galois_keys, galois_element, level);
+        const auto fused_rotate_tables =
+            builder.add_fused_automorphism_twiddles(
+                "rotate3", galois_element, level);
         const auto keyswitch_constants = builder.add_keyswitch_constants(
             "constants/keyswitch/q3", level);
         const auto rescale_constants = builder.add_rescale_constants(
@@ -107,9 +116,15 @@ int main()
             "output/rescaled", next_level, 2,
             scale * scale / static_cast<double>(level.q_last));
         const auto coefficient_scratch = builder.reserve_ciphertext(
-            "scratch/a_coefficient", level, 2, scale);
+            "scratch/a_coefficient", level, 2, scale,
+            hpu::runtime::PolynomialDomain::coefficient);
         const auto restored_ntt = builder.reserve_ciphertext(
             "output/a_restored_ntt", level, 2, scale);
+        const auto rotate_workspace = builder.reserve_ciphertext(
+            "scratch/rotate3_coefficient", level, 2, scale,
+            hpu::runtime::PolynomialDomain::coefficient, galois_element);
+        const auto rotate_output = builder.reserve_ciphertext(
+            "output/rotate3", level, 2, scale);
 
         hpu::seal_adapter::CkksSoftwareExecutor executor(
             *bundle.context, builder.image());
@@ -134,6 +149,10 @@ int main()
         executor.rescale(
             relinearized_output, rescale_constants,
             rescaled_output, canonical_twiddles);
+        executor.rotate(
+            input_a, galois_element, prepared_galois_key,
+            keyswitch_constants, fused_rotate_tables, canonical_twiddles,
+            rotate_workspace, rotate_output);
         executor.inverse_ntt(
             input_a, coefficient_scratch, canonical_twiddles);
         executor.forward_ntt(
@@ -171,12 +190,18 @@ int main()
         verify_exact(
             expected, rescaled_output, executor,
             *bundle.context, "Rescale");
+        ::seal::Ciphertext expected_rotate;
+        evaluator.apply_galois(
+            cipher_a, galois_element, galois_keys, expected_rotate);
+        verify_exact(
+            expected_rotate, rotate_output, executor,
+            *bundle.context, "Rotate");
         verify_exact(
             cipher_a, restored_ntt, executor,
             *bundle.context, "HPU NTT/INTT round-trip");
 
         std::cout
-            << "CKKS HPU_MEM software executor pointwise/Square/KeySwitch/Relinearize/Rescale and table-driven NTT/INTT passed exact SEAL NTT comparison\n";
+            << "CKKS HPU_MEM software executor pointwise/Square/KeySwitch/Relinearize/Rescale/Rotate and table-driven NTT/INTT passed exact SEAL NTT comparison\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "CKKS software executor test failed: "

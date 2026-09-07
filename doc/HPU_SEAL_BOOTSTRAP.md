@@ -173,7 +173,8 @@ same HPU_MEM image. It validates and loads the packed q/Barrett-mu records once,
 checks every DMA span, and implements exact uint32 modular pointwise
 instructions. `hpu::seal_adapter::CkksSoftwareExecutor` adds CKKS object/level/
 scale validation and executes Add, Subtract, MultiplyPlain, AddPlain,
-SubtractPlain, three-component Square, KeySwitch, Relinearize, and Rescale without
+SubtractPlain, three-component Square, KeySwitch, Relinearize, Rescale, and
+Rotate without
 calling `seal::Evaluator`. KeySwitch streams one active-Q singleton digit at a
 time, extends it to Q|P, accumulates against the HPU_MEM evaluation key, and
 performs SEAL-equivalent rounded ModDown. The current functional executor
@@ -191,6 +192,12 @@ INTT/NTT round trip. Rescale consumes preloaded q-last rounding/inverse
 constants and changes to the adjacent SEAL `parms_id`. The `x^2+1` example now
 executes Square, Relinearize, Rescale, and AddPlain through this HPU_MEM executor;
 SEAL is retained only as the word-exact and decoded semantic oracle.
+
+Rotate consumes the preloaded modified-root fused-INTT tables and materializes
+only `{domain=coefficient,key_domain=k}` before entering Galois KeySwitch. No
+canonical forward/inverse pair is inserted between those phases. If a kernel
+boundary is required, this coefficient workspace and its key-domain tag are
+the complete cross-kernel state; registration now preserves both fields.
 
 ## Linux build and tests
 

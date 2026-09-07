@@ -26,6 +26,9 @@ struct PreparedRnsObject {
     ::seal::parms_id_type parms_id{};
     std::size_t chain_index = 0;
     double scale = 1.0;
+    hpu::runtime::PolynomialDomain domain =
+        hpu::runtime::PolynomialDomain::canonical_ntt_physical;
+    std::uint64_t key_domain = 1;
     std::vector<PreparedPolynomial> components;
 };
 
@@ -112,7 +115,10 @@ public:
         std::string id,
         const CkksLevelDescriptor& level,
         std::size_t component_count,
-        double scale);
+        double scale,
+        hpu::runtime::PolynomialDomain domain =
+            hpu::runtime::PolynomialDomain::canonical_ntt_physical,
+        std::uint64_t key_domain = 1);
 
     const hpu::runtime::HpuMemImage& image() const noexcept;
     const std::vector<CkksLevelDescriptor>& levels() const noexcept;

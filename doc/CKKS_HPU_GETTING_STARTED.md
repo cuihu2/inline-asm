@@ -199,6 +199,7 @@ Square(Ciphertext) -> (t0,t1,t2)
 KeySwitch(base, switching_component, evk) -> (base0+ks0, base1+ks1)
 Relinearize(t0,t1,t2,rlk) -> (t0+ks0,t1+ks1)
 Rescale(Qk) -> Q(k-1)
+Rotate_k(Ciphertext) -> Ciphertext
 coefficient <-> canonical HPU NTT
 ```
 
@@ -219,6 +220,13 @@ Rescale 后还必须迁移到准确的下一级 `parms_id`、scale 和 MOD_ID �
 表驱动的 INTT→NTT 恢复原密文。Rescale 的 `q_last`、`q_last/2` 和各
 `q_last^-1 mod q_i` 也在应用初始化时写入版本化 HPU_MEM 常量记录。
 
+Rotate 使用 modified-root fused INTT，将两个 canonical HPU NTT 分量直接转换成
+`domain=coefficient,key_domain=k`。随后 `sigma_k(c0)` 作为 base、`sigma_k(c1)`
+作为 switching component 进入 Galois KeySwitch，输出恢复为
+`canonical_ntt_physical,key_domain=1`。若两阶段拆成 kernel，必须跨边界保存的就是
+这两个系数 workspace 及其 key-domain 元数据；不需要额外的 CPU coefficient
+permutation，也不会在两阶段之间插入一对多余 NTT/INTT。
+
 ## 8. 下一步
 
 当前示例已经同时运行：
@@ -229,6 +237,5 @@ Rescale 后还必须迁移到准确的下一级 `parms_id`、scale 和 MOD_ID �
 
 这样 `seal::Evaluator` 将只负责给出独立期望值，而不再承担“被测试实现”的工作。
 
-后续工作按两条线推进：补齐 Rotate 的软件执行闭环；将当前明确门禁的单-P
-KeySwitch 扩展为多 P 的通用基扩展和 ModDown。多 P 需要更新常量格式与对应硬件
-调度，不能只放宽参数检查。
+下一阶段将当前明确门禁的单-P KeySwitch 扩展为多 P 的通用基扩展和 ModDown。
+多 P 需要更新常量格式与对应硬件调度，不能只放宽参数检查。

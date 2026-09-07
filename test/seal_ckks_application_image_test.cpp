@@ -67,6 +67,9 @@ int main()
             "rotate3_q2", 3, level);
         const auto output = builder.reserve_ciphertext(
             "output_q2", level, 2, std::pow(2.0, 12));
+        const auto rotate_workspace = builder.reserve_ciphertext(
+            "rotate3_coeff_q2", level, 2, std::pow(2.0, 12),
+            hpu::runtime::PolynomialDomain::coefficient, 3);
 
         require(modulus_table.line_count == 1,
                 "Q/P modulus table should fit one small-bank source line");
@@ -92,7 +95,10 @@ int main()
                 "level-specific Rescale constant record is incorrect");
         require(fused.size() == level.q_moduli.size()
                     && fused.front().inverse_stages.size() == 7
-                    && output.components.size() == 2,
+                    && output.components.size() == 2
+                    && rotate_workspace.domain
+                        == hpu::runtime::PolynomialDomain::coefficient
+                    && rotate_workspace.key_domain == 3,
                 "Rotate twiddles or reserved output shape is incorrect");
 
         const auto& image = builder.image();
@@ -132,6 +138,13 @@ int main()
         hpu::seal_adapter::register_rns_object(
             application, prepared_ciphertext, false);
         hpu::seal_adapter::register_rns_object(application, output, true);
+        hpu::seal_adapter::register_rns_object(
+            application, rotate_workspace, false);
+        require(application.object("rotate3_coeff_q2/c0/mod0").domain
+                    == hpu::runtime::PolynomialDomain::coefficient
+                    && application.object("rotate3_coeff_q2/c0/mod0").key_domain
+                        == 3,
+                "Rotate cross-kernel representation metadata was lost");
         const std::string first_input = prepared_ciphertext.components.front().id
             + "/mod" + std::to_string(
                 prepared_ciphertext.components.front().modulus_ids.front());

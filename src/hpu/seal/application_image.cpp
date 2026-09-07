@@ -396,7 +396,9 @@ PreparedRnsObject CkksApplicationImageBuilder::reserve_ciphertext(
     std::string id,
     const CkksLevelDescriptor& level,
     std::size_t component_count,
-    double scale)
+    double scale,
+    hpu::runtime::PolynomialDomain domain,
+    std::uint64_t key_domain)
 {
     const CkksLevelDescriptor& authoritative = require_level(level.parms_id);
     const auto data = context_.get_context_data(authoritative.parms_id);
@@ -408,6 +410,8 @@ PreparedRnsObject CkksApplicationImageBuilder::reserve_ciphertext(
     result.parms_id = authoritative.parms_id;
     result.chain_index = authoritative.chain_index;
     result.scale = scale;
+    result.domain = domain;
+    result.key_domain = key_domain;
     const std::size_t degree = data->parms().poly_modulus_degree();
     for (std::size_t component = 0; component < component_count; ++component) {
         PreparedPolynomial polynomial;
@@ -462,7 +466,8 @@ void register_rns_object(
             state.backing = component.limbs[basis];
             state.level = object.chain_index;
             state.modulus_ids = {component.modulus_ids[basis]};
-            state.domain = hpu::runtime::PolynomialDomain::canonical_ntt_physical;
+            state.domain = object.domain;
+            state.key_domain = object.key_domain;
             state.required_output = required_output;
             application.register_object(
                 component.id + "/mod" + std::to_string(component.modulus_ids[basis]),
