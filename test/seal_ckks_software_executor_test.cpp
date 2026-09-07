@@ -78,7 +78,7 @@ int main()
         encryptor.encrypt(plain_b, cipher_b);
 
         hpu::seal_adapter::CkksApplicationImageBuilder builder(
-            *bundle.context, 640);
+            *bundle.context, 768);
         builder.add_modulus_table();
         const auto canonical_twiddles = builder.add_canonical_twiddles();
         const auto prepared_relinearization_key =
@@ -108,6 +108,13 @@ int main()
             "output/subtract_plain", level, 2, scale);
         const auto square_output = builder.reserve_ciphertext(
             "output/square_tensor", level, 3, scale * scale);
+        const auto multiply_output = builder.reserve_ciphertext(
+            "output/multiply_tensor", level, 3, scale * scale);
+        const auto multiply_relinearized_output = builder.reserve_ciphertext(
+            "output/multiply_relinearized", level, 2, scale * scale);
+        const auto multiply_rescaled_output = builder.reserve_ciphertext(
+            "output/multiply_rescaled", next_level, 2,
+            scale * scale / static_cast<double>(level.q_last));
         const auto relinearized_output = builder.reserve_ciphertext(
             "output/relinearized", level, 2, scale * scale);
         const auto direct_key_switch_output = builder.reserve_ciphertext(
@@ -134,6 +141,14 @@ int main()
         executor.add_plain(input_a, plaintext, add_plain_output);
         executor.subtract_plain(input_a, plaintext, subtract_plain_output);
         executor.square(input_a, square_output);
+        executor.multiply(input_a, input_b, multiply_output);
+        executor.relinearize(
+            multiply_output, prepared_relinearization_key,
+            keyswitch_constants, multiply_relinearized_output,
+            canonical_twiddles);
+        executor.rescale(
+            multiply_relinearized_output, rescale_constants,
+            multiply_rescaled_output, canonical_twiddles);
         executor.relinearize(
             square_output, prepared_relinearization_key,
             keyswitch_constants, relinearized_output, canonical_twiddles);
@@ -190,6 +205,20 @@ int main()
         verify_exact(
             expected, rescaled_output, executor,
             *bundle.context, "Rescale");
+        ::seal::Ciphertext expected_multiply;
+        evaluator.multiply(cipher_a, cipher_b, expected_multiply);
+        verify_exact(
+            expected_multiply, multiply_output, executor,
+            *bundle.context, "Multiply");
+        evaluator.relinearize_inplace(
+            expected_multiply, relinearization_keys);
+        verify_exact(
+            expected_multiply, multiply_relinearized_output, executor,
+            *bundle.context, "Multiply/Relinearize");
+        evaluator.rescale_to_next_inplace(expected_multiply);
+        verify_exact(
+            expected_multiply, multiply_rescaled_output, executor,
+            *bundle.context, "Multiply/Relinearize/Rescale");
         ::seal::Ciphertext expected_rotate;
         evaluator.apply_galois(
             cipher_a, galois_element, galois_keys, expected_rotate);
@@ -201,7 +230,7 @@ int main()
             *bundle.context, "HPU NTT/INTT round-trip");
 
         std::cout
-            << "CKKS HPU_MEM software executor pointwise/Square/KeySwitch/Relinearize/Rescale/Rotate and table-driven NTT/INTT passed exact SEAL NTT comparison\n";
+            << "CKKS HPU_MEM software executor pointwise/Multiply/Square/KeySwitch/Relinearize/Rescale/Rotate and table-driven NTT/INTT passed exact SEAL NTT comparison\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "CKKS software executor test failed: "

@@ -36,6 +36,12 @@ public:
         std::size_t word_count,
         std::uint8_t modulus_id,
         PointwiseOperation operation);
+    void multiply_accumulate(
+        HpuMemSpan accumulator,
+        HpuMemSpan left,
+        HpuMemSpan right,
+        std::size_t word_count,
+        std::uint8_t modulus_id);
 
     const std::vector<std::uint32_t>& words() const noexcept;
 

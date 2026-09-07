@@ -173,8 +173,8 @@ same HPU_MEM image. It validates and loads the packed q/Barrett-mu records once,
 checks every DMA span, and implements exact uint32 modular pointwise
 instructions. `hpu::seal_adapter::CkksSoftwareExecutor` adds CKKS object/level/
 scale validation and executes Add, Subtract, MultiplyPlain, AddPlain,
-SubtractPlain, three-component Square, KeySwitch, Relinearize, Rescale, and
-Rotate without
+SubtractPlain, general two-input Multiply, Square, KeySwitch, Relinearize,
+Rescale, and Rotate without
 calling `seal::Evaluator`. KeySwitch streams one active-Q singleton digit at a
 time, extends it to Q|P, accumulates against the HPU_MEM evaluation key, and
 performs SEAL-equivalent rounded ModDown. The current functional executor
@@ -182,7 +182,8 @@ explicitly accepts the frozen SEAL single-special-prime key shape; multi-P is
 rejected instead of being silently approximated. Level-specific P, P/2, and
 `P^-1 mod q_i` values are serialized into a versioned HPU_MEM constant record
 at application initialization and consumed by execution.
-Multi-P KeySwitch remains an explicit follow-up: it requires a generalized
+Multi-P KeySwitch is outside the frozen SEAL 4.4.4 compatibility target. It is
+kept as a future independent extension because it would require a generalized
 base-P conversion/rounding record and matching hardware schedule, not merely a
 relaxed shape check.
 It also consumes the preloaded pre-twist, stage twiddle, and combined inverse

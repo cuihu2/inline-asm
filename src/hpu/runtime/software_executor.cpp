@@ -143,6 +143,34 @@ void HpuSoftwareExecutor::pointwise(
     write(destination, output);
 }
 
+void HpuSoftwareExecutor::multiply_accumulate(
+    HpuMemSpan accumulator,
+    HpuMemSpan left,
+    HpuMemSpan right,
+    std::size_t word_count,
+    std::uint8_t modulus_id)
+{
+    const std::uint32_t q = modulus(modulus_id);
+    auto accumulator_words = read(accumulator, word_count);
+    const auto left_words = read(left, word_count);
+    const auto right_words = read(right, word_count);
+    for (std::size_t index = 0; index < word_count; ++index) {
+        if (accumulator_words[index] >= q || left_words[index] >= q
+            || right_words[index] >= q) {
+            throw std::invalid_argument(
+                "HPU multiply-accumulate operand is not reduced modulo q");
+        }
+        const std::uint32_t product = static_cast<std::uint32_t>(
+            (static_cast<std::uint64_t>(left_words[index])
+                * right_words[index]) % q);
+        const std::uint64_t sum = static_cast<std::uint64_t>(
+            accumulator_words[index]) + product;
+        accumulator_words[index] = static_cast<std::uint32_t>(
+            sum >= q ? sum - q : sum);
+    }
+    write(accumulator, accumulator_words);
+}
+
 const std::vector<std::uint32_t>& HpuSoftwareExecutor::words() const noexcept
 {
     return words_;

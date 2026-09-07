@@ -13,13 +13,13 @@
 
 目前已经具备“准备真实 CKKS 对象并生成 HPU 程序”的前端路径，以及直接消费
 HPU_MEM span 的软件执行器。该执行器已覆盖 canonical HPU NTT 域中的 Add、
-Subtract、MultiplyPlain、AddPlain、SubtractPlain、三分量 Square，以及由 HPU_MEM
-twiddle 驱动的 canonical NTT/INTT，并与 SEAL NTT words 逐字比较。Linux
-driver/userspace backend，以及包含 KeySwitch/Rescale 的整条程序执行仍未完成。
+Subtract、MultiplyPlain、AddPlain、SubtractPlain、通用密文 Multiply、Square、
+KeySwitch、Relinearize、Rescale、Rotate，以及由 HPU_MEM twiddle 驱动的 canonical
+NTT/INTT，并与 SEAL NTT words 逐字比较。Linux driver/userspace backend 尚未完成。
 因此本文 `x²+1` 示例中：
 
 - HPU_MEM 布局与 HPU 指令流来自本工程；
-- 解密后的数值结果暂时由 `seal::Evaluator` 计算，只作为语义 oracle；
+- 完整算术链由 HPU_MEM 软件执行器运行，`seal::Evaluator` 只生成逐字 oracle；
 - 这个 oracle 通过并不等于 HPU 指令已经在硬件上执行。
 
 软件执行器本身不会调用 `seal::Evaluator`；测试只在执行完成后调用 Evaluator
@@ -192,6 +192,7 @@ runtime backend 会根据 HPU_MEM allocation manifest 在每次 DMA 前绑定具
 ```text
 Ciphertext + Ciphertext
 Ciphertext - Ciphertext
+Ciphertext * Ciphertext -> (t0,t1,t2)
 Ciphertext * Plaintext
 Ciphertext + Plaintext
 Ciphertext - Plaintext
@@ -203,7 +204,7 @@ Rotate_k(Ciphertext) -> Ciphertext
 coefficient <-> canonical HPU NTT
 ```
 
-前五种点运算、Square 和 KeySwitch 的乘加直接工作在 canonical HPU NTT physical
+点运算、Multiply、Square 和 KeySwitch 的乘加直接工作在 canonical HPU NTT physical
 order。KeySwitch 从当前 level descriptor 取得 active-Q singleton digits 和固定
 P 的全局 MOD_ID，逐 digit 完成 INTT、跨基约减、NTT 和 evaluation-key 乘加，最后
 按 P 做带舍入 ModDown。当前 frozen SEAL 版本使用一个 special prime，执行器会显式
@@ -215,7 +216,8 @@ P、P/2 和每个 active q 的 `P^-1 mod q_i`；执行时从 HPU_MEM 消费该�
 从同一个 HPU_MEM image 读取 pre-twist、每个 stage 的 N/2 个 twiddle，以及
 INTT post-untwist/scale；不会在执行时偷偷重新生成另一套表。
 `hpu_seal_ckks_software_executor_test` 将输出转换回 SEAL NTT，并要求和独立
-`seal::Evaluator` 输出逐字相同，包括 Square 后的独立 KeySwitch/Relinearize，
+`seal::Evaluator` 输出逐字相同，包括不同输入的 Multiply→Relinearize→Rescale、
+Square 后的独立 KeySwitch/Relinearize，
 Rescale 后还必须迁移到准确的下一级 `parms_id`、scale 和 MOD_ID 前缀；同时要求
 表驱动的 INTT→NTT 恢复原密文。Rescale 的 `q_last`、`q_last/2` 和各
 `q_last^-1 mod q_i` 也在应用初始化时写入版本化 HPU_MEM 常量记录。
@@ -237,5 +239,7 @@ permutation，也不会在两阶段之间插入一对多余 NTT/INTT。
 
 这样 `seal::Evaluator` 将只负责给出独立期望值，而不再承担“被测试实现”的工作。
 
-下一阶段将当前明确门禁的单-P KeySwitch 扩展为多 P 的通用基扩展和 ModDown。
-多 P 需要更新常量格式与对应硬件调度，不能只放宽参数检查。
+当前冻结的 SEAL 4.4.4 只产生单 special-prime KeySwitch，因此多 P 已移出近期主线，
+保留为未来脱离当前 SEAL 兼容范围后的独立扩展。近期顺序是：多层软件执行验证、
+slot-step Rotate/Conjugate/Negate、ModSwitch 与自动 level/scale 管理，随后接入
+application lowering、DMA relocation 和 Linux runtime backend。

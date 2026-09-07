@@ -42,6 +42,10 @@ public:
     void square(
         const PreparedRnsObject& ciphertext,
         const PreparedRnsObject& tensor_output);
+    void multiply(
+        const PreparedRnsObject& left,
+        const PreparedRnsObject& right,
+        const PreparedRnsObject& tensor_output);
     void key_switch(
         const PreparedRnsObject& base_ciphertext,
         const PreparedRnsObject& switching_component,

@@ -261,32 +261,55 @@ void CkksSoftwareExecutor::square(
     const PreparedRnsObject& ciphertext,
     const PreparedRnsObject& tensor_output)
 {
-    validate_object(ciphertext, 2);
+    multiply(ciphertext, ciphertext, tensor_output);
+}
+
+void CkksSoftwareExecutor::multiply(
+    const PreparedRnsObject& left,
+    const PreparedRnsObject& right,
+    const PreparedRnsObject& tensor_output)
+{
+    validate_object(left, 2);
+    validate_object(right, 2);
     validate_object(tensor_output, 3);
-    if (ciphertext.parms_id != tensor_output.parms_id
+    require_same_level(left, right, tensor_output);
+    if (left.domain
+            != hpu::runtime::PolynomialDomain::canonical_ntt_physical
+        || right.domain
+            != hpu::runtime::PolynomialDomain::canonical_ntt_physical
+        || tensor_output.domain
+            != hpu::runtime::PolynomialDomain::canonical_ntt_physical
+        || left.key_domain != 1 || right.key_domain != 1
+        || tensor_output.key_domain != 1
         || !compatible_scales(
-            ciphertext.scale * ciphertext.scale, tensor_output.scale)) {
-        throw std::invalid_argument("CKKS Square has an incompatible output level/scale");
+            left.scale * right.scale, tensor_output.scale)) {
+        throw std::invalid_argument(
+            "CKKS Multiply has incompatible output scale/representation");
     }
-    const auto& c0 = ciphertext.components[0];
-    const auto& c1 = ciphertext.components[1];
+    const auto& left0 = left.components[0];
+    const auto& left1 = left.components[1];
+    const auto& right0 = right.components[0];
+    const auto& right1 = right.components[1];
     const auto& t0 = tensor_output.components[0];
     const auto& t1 = tensor_output.components[1];
     const auto& t2 = tensor_output.components[2];
-    for (std::size_t basis = 0; basis < c0.limbs.size(); ++basis) {
-        const auto mod_id = c0.modulus_ids[basis];
+    for (std::size_t basis = 0; basis < left0.limbs.size(); ++basis) {
+        const auto mod_id = left0.modulus_ids[basis];
         memory_.pointwise(
-            t0.limbs[basis], c0.limbs[basis], c0.limbs[basis],
-            c0.degree, mod_id, hpu::runtime::PointwiseOperation::multiply);
+            t0.limbs[basis], left0.limbs[basis], right0.limbs[basis],
+            left0.degree, mod_id,
+            hpu::runtime::PointwiseOperation::multiply);
         memory_.pointwise(
-            t1.limbs[basis], c0.limbs[basis], c1.limbs[basis],
-            c0.degree, mod_id, hpu::runtime::PointwiseOperation::multiply);
+            t1.limbs[basis], left0.limbs[basis], right1.limbs[basis],
+            left0.degree, mod_id,
+            hpu::runtime::PointwiseOperation::multiply);
+        memory_.multiply_accumulate(
+            t1.limbs[basis], left1.limbs[basis], right0.limbs[basis],
+            left0.degree, mod_id);
         memory_.pointwise(
-            t1.limbs[basis], t1.limbs[basis], t1.limbs[basis],
-            c0.degree, mod_id, hpu::runtime::PointwiseOperation::add);
-        memory_.pointwise(
-            t2.limbs[basis], c1.limbs[basis], c1.limbs[basis],
-            c0.degree, mod_id, hpu::runtime::PointwiseOperation::multiply);
+            t2.limbs[basis], left1.limbs[basis], right1.limbs[basis],
+            left0.degree, mod_id,
+            hpu::runtime::PointwiseOperation::multiply);
     }
 }
 
