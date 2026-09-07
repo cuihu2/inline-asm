@@ -31,8 +31,9 @@ enum class Mnemonic {
 struct Instruction {
     Mnemonic mnemonic {};
 
-    // Physical object fields reused by AR3 and STG encodings.
-    // For pntt/pintt, these bit positions carry pdata/ptwiddle respectively.
+    // 汇编操作数字段，而非所有格式中固定不变的物理位段。
+    // STG: pdst=pdata，编码到 [27:25] 和 [24:22]；psrc1=ptwiddle，
+    // 编码到 [16:14]。[21:17] 保留为 0；AR3 的字段含义不变。
     int pdst = -1;
     int psrc1 = -1;
     int psrc2 = -1;
