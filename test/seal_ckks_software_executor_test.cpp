@@ -108,11 +108,11 @@ int main()
         const auto middle_rescale_constants = builder.add_rescale_constants(
             "constants/rescale/q3_to_q2", next_level);
         if (level.rns_layout.p_mod_ids
-                != std::vector<std::uint8_t>({4})
+                != std::vector<int>({4})
             || next_level.rns_layout.p_mod_ids
-                != std::vector<std::uint8_t>({4})
+                != std::vector<int>({4})
             || bottom_level.rns_layout.p_mod_ids
-                != std::vector<std::uint8_t>({4})
+                != std::vector<int>({4})
             || middle_relinearization_key.digits.size() != 3
             || middle_relinearization_key.digits.front().front().modulus_ids
                 != std::vector<std::uint8_t>({0, 1, 2, 4})) {
