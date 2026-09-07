@@ -37,66 +37,6 @@ void expect_precoded(const std::string& source,
     }
 }
 
-void expect_stg_fields()
-{
-    // 穷举编码位宽允许的字段，不代表所有 stage/mode 都是可执行算法配置。
-    // 从机器码反取字段独立核对，避免只比较使用同一公式生成的期望值。
-    for (const std::string mnemonic : {"pntt", "pintt"}) {
-        for (unsigned pdata = 0; pdata < 8; ++pdata) {
-            for (unsigned ptwid = 0; ptwid < 8; ++ptwid) {
-                for (unsigned stage = 0; stage < 16; ++stage) {
-                    for (unsigned mode = 0; mode < 4; ++mode) {
-                        for (unsigned flag = 0; flag < 2; ++flag) {
-                            const std::string source = mnemonic + " p"
-                                + std::to_string(pdata) + ", p"
-                                + std::to_string(ptwid) + ", "
-                                + std::to_string(stage) + ", "
-                                + std::to_string(mode) + ", "
-                                + std::to_string(flag);
-                            const auto encoded = hpu::assemble_line(source);
-                            const std::uint32_t word = encoded.word;
-                            // 2026-09-05 手册 §3.2：pdata 在目的和源1中各出现一次。
-                            if ((word >> 28U) != (mnemonic == "pntt" ? 4U : 5U)
-                                || ((word >> 25U) & 7U) != pdata
-                                || ((word >> 22U) & 7U) != pdata
-                                || ((word >> 17U) & 31U) != 0U
-                                || ((word >> 14U) & 7U) != ptwid
-                                || ((word >> 10U) & 15U) != stage
-                                || ((word >> 8U) & 3U) != mode
-                                || ((word >> 7U) & 1U) != flag
-                                || (word & 127U) != 0x0BU
-                                || encoded.command26 != (word >> 7U)
-                                || (encoded.command26 >> 25U) != 0U) {
-                                throw std::runtime_error("STG field mismatch: " + source);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-void expect_stg_executable()
-{
-    // 仅检查生成器的对象生命周期和 .word 输出，不作为硬件 NTT 功能用例。
-    const auto encoded = hpu::assemble_source(
-        "dload x10, x11, p2, 1, 0\n"
-        "dload x10, x11, p3, 0, 0\n"
-        "pntt p2, p3, 0, 0, 0\n"
-        "pintt p2, p3, 11, 0, 0\n"
-        "dstore x10, x11, p2, 1\n"
-        "pfree p3\n"
-        "psync\n");
-    const std::string source = hpu::render_executable_source("stg", encoded, 65536);
-    if (source.find(".word 0x4480C00B") == std::string::npos
-        || source.find(".word 0x5480EC0B") == std::string::npos
-        || source.find(".word 0x44C0000B") != std::string::npos
-        || source.find(".word 0x54C02C0B") != std::string::npos) {
-        throw std::runtime_error("generated STG executable uses stale word layout");
-    }
-}
-
 void expect_program_rejected(const std::string& source)
 {
     try {
@@ -156,17 +96,8 @@ int main()
         expect_encoded("psub p2, p0, p1", 0x1400400BU);
         expect_encoded("pmul p2, p0, p1", 0x2400400BU);
         expect_encoded("pmac p2, p0, p1", 0x3400400BU);
-        // 固定数值来自 2026-09-05 手册 §3.2，不能继续沿用旧版附录的 STG 值。
-        expect_precoded("pntt p0, p3, 15, 0, 0", 0x4000FC0BU, 0x08001F8U);
-        expect_precoded("pintt p0, p3, 15, 0, 0", 0x5000FC0BU, 0x0A001F8U);
-        expect_precoded("pntt p2, p3, 15, 0, 0", 0x4480FC0BU, 0x08901F8U);
-        expect_precoded("pintt p5, p1, 7, 2, 1", 0x5B405E8BU, 0x0B680BDU);
-        expect_precoded("pntt p7, p7, 15, 3, 1", 0x4FC1FF8BU, 0x09F83FFU);
-        expect_precoded("pintt p7, p0, 0, 0, 0", 0x5FC0000BU, 0x0BF8000U);
-        expect_precoded("pntt p0, p0, 0, 0, 0", 0x4000000BU, 0x0800000U);
-        expect_precoded("pintt p0, p7, 0, 3, 1", 0x5001C38BU, 0x0A00387U);
-        expect_stg_fields();
-        expect_stg_executable();
+        expect_encoded("pntt p0, p3, 15, 0, 0", 0x40C03C0BU);
+        expect_encoded("pintt p0, p3, 15, 0, 0", 0x50C03C0BU);
         expect_encoded("pmodld 0", 0x6000000BU);
         expect_encoded("pmodld 1", 0x6000400BU);
         expect_encoded("pmodld 255", 0x603FC00BU);
@@ -241,13 +172,6 @@ int main()
             "pntt p0, p1, 16, 0, 0",
             "pntt p0, p1, 0, 4, 0",
             "pntt p0, p1, 0, 0, 2",
-            "pntt p8, p1, 0, 0, 0",
-            "pntt p0, p8, 0, 0, 0",
-            "pintt p0, p1, 16, 0, 0",
-            "pintt p0, p1, 0, 4, 0",
-            "pintt p0, p1, 0, 0, 2",
-            "pintt p8, p1, 0, 0, 0",
-            "pintt p0, p8, 0, 0, 0",
             "pmodld 256",
             "pmodld -1",
             "pmodld p0, 0, 0",

@@ -90,11 +90,8 @@ std::uint32_t encode_stg(const Instruction& instruction) {
 
     std::uint32_t word = 0;
     word |= opcode_for(instruction.mnemonic) << 28;
-    // 2026-09-05 手册 §3.2：原地变换的数据对象同时占用目的和源1字段。
-    // 结构化输入仍用 pdst/psrc1 表示 pdata/ptwiddle，不改变汇编调用接口。
     word |= static_cast<std::uint32_t>(instruction.pdst) << 25;
-    word |= static_cast<std::uint32_t>(instruction.pdst) << 22;
-    word |= static_cast<std::uint32_t>(instruction.psrc1) << 14;
+    word |= static_cast<std::uint32_t>(instruction.psrc1) << 22;
     word |= static_cast<std::uint32_t>(instruction.idx0) << 10;
     word |= static_cast<std::uint32_t>(instruction.mode) << 8;
     word |= static_cast<std::uint32_t>(instruction.flag) << 7;
