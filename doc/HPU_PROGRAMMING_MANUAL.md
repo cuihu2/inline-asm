@@ -4,6 +4,11 @@
 适用实现：`inline-asm` 当前软件实现
 日期：2026-08-23
 
+STG 编码修订：2026-09-07，按用户指定的 2026-09-05 版
+`HPU_PROGRAMMING_MANUAL.pdf` 第 3.2 节位段图和公式对齐。本次同步范围为
+STG 格式及其编码示例，不表示本文其他章节已全部同步到该 PDF。
+PDF 后文的旧 STG 示例与第 3.2 节公式冲突时，以该公式为准重新计算。
+
 ## 前言
 
 本手册描述当前 `inline-asm` 仓库实际支持的 HPU 汇编语言、32-bit 指令编码和软件可见编程约定。章节组织参考 RISC-V 指令集手册：先定义编程模型和公共指令格式，再逐条说明指令的语法、操作、约束和编码示例。
@@ -197,16 +202,23 @@ word = (OPC4 << 28) | (PDST << 25) | (PSRC1 << 22)
 ```text
  31      28 27    25 24    22 21             14 13       10 9    8 7 6       0
 +----------+--------+--------+-----------------+-------------+------+--+---------+
-|   OPC4   | PDATA  | PTWID  |  reserved=0     |   STAGE4    | MODE2| F| 0001011 |
+|   OPC4   | PDATA  | PDATA  |  zero-ext PTWID |   STAGE4    | MODE2| F| 0001011 |
 +----------+--------+--------+-----------------+-------------+------+--+---------+
 ```
 
 编码公式：
 
 ```text
-word = (OPC4 << 28) | (PDATA << 25) | (PTWID << 22)
-     | (STAGE4 << 10) | (MODE2 << 8) | (FLAG1 << 7) | 0x0B
+word = (OPC4 << 28) | (PDATA << 25) | (PDATA << 22)
+     | (PTWID << 14) | (STAGE4 << 10)
+     | (MODE2 << 8) | (FLAG1 << 7) | 0x0B
 ```
+
+`PDATA` 同时写入 `PDST=inst[27:25]` 和 `PSRC1=inst[24:22]`，表示
+同一逻辑数据对象的读写。`PTWID` 写入 `OP2_8[2:0]=inst[16:14]`，
+`inst[21:17]` 必须为 0。经过 custom0 precode 后，两处 `PDATA` 分别位于
+`cmd26[20:18]` 和 `cmd26[17:15]`，`PTWID` 位于 `cmd26[9:7]`。
+旧编码把 `PTWID` 放在 `inst[24:22]`，不能与本格式混用。
 
 `stage`、`mode` 和 `flag` 均由汇编显式给出；当前生成器使用 `mode=0, flag=0`。
 
@@ -438,7 +450,8 @@ NTT 发出 `log2(N)` 条指令，stage 从 0 递增到 `log2(N)-1`。
 **示例**
 
 ```asm
-pntt p0, p3, 15, 0, 0    # 0x40C03C0B
+pntt p0, p3, 15, 0, 0    # 0x4000FC0B
+pntt p2, p3, 15, 0, 0    # 0x4480FC0B，p2 同时写入 PDST 和 PSRC1
 ```
 
 软件通常在每个 stage 前加载 twiddle，并在该 stage 后释放：
@@ -510,7 +523,8 @@ runtime 按 `twiddle_map.csv` 绑定 pre-twist、各 stage twiddle 和 post fact
 **示例**
 
 ```asm
-pintt p0, p3, 15, 0, 0   # 0x50C03C0B
+pintt p0, p3, 15, 0, 0   # 0x5000FC0B
+pintt p2, p3, 15, 0, 0   # 0x5480FC0B，p2 同时写入 PDST 和 PSRC1
 ```
 
 ## 6. 配置与生命周期指令
@@ -963,8 +977,10 @@ ctest --test-dir build --output-on-failure
 | `pmul p2, p0, 255` | `0x243FC10B` | `0x0487F82` |
 | `pmac p2, p0, p1` | `0x3400400B` | `0x0680080` |
 | `pmac p2, p0, 255` | `0x343FC10B` | `0x0687F82` |
-| `pntt p0, p3, 15, 0, 0` | `0x40C03C0B` | `0x0818078` |
-| `pintt p0, p3, 15, 0, 0` | `0x50C03C0B` | `0x0A18078` |
+| `pntt p0, p3, 15, 0, 0` | `0x4000FC0B` | `0x08001F8` |
+| `pntt p2, p3, 15, 0, 0` | `0x4480FC0B` | `0x08901F8` |
+| `pintt p0, p3, 15, 0, 0` | `0x5000FC0B` | `0x0A001F8` |
+| `pintt p2, p3, 15, 0, 0` | `0x5480FC0B` | `0x0A901F8` |
 | `pmodld 0` | `0x6000000B` | `0x0C00000` |
 | `pmodld 255` | `0x603FC00B` | `0x0C07F80` |
 | `psync` | `0x7000000B` | `0x0E00000` |
