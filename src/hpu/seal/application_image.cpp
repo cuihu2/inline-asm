@@ -1,6 +1,7 @@
 #include "hpu/seal/application_image.hpp"
 
 #include "hpu/model/hardware_ntt.hpp"
+#include "scheme/ckks/galois.hpp"
 #include "hpu/seal/ntt_bridge.hpp"
 
 #include <seal/util/ntt.h>
@@ -352,7 +353,41 @@ PreparedEvaluationKey CkksApplicationImageBuilder::add_galois_key(
     const CkksLevelDescriptor& authoritative = require_level(level.parms_id);
     return add_evaluation_key(
         std::move(id), galois_key_to_hpu(
-            keys, galois_element, context_, authoritative), authoritative);
+        keys, galois_element, context_, authoritative), authoritative);
+}
+
+PreparedEvaluationKey CkksApplicationImageBuilder::add_rotation_key(
+    std::string id,
+    const ::seal::GaloisKeys& keys,
+    int steps,
+    const CkksLevelDescriptor& level)
+{
+    const auto data = context_.get_context_data(level.parms_id);
+    if (!data) {
+        throw std::invalid_argument("rotation-key level is absent from SEALContext");
+    }
+    return add_galois_key(
+        std::move(id), keys,
+        hpu::scheme::ckks::rotation_galois_element(
+            data->parms().poly_modulus_degree(), steps),
+        level);
+}
+
+PreparedEvaluationKey CkksApplicationImageBuilder::add_conjugation_key(
+    std::string id,
+    const ::seal::GaloisKeys& keys,
+    const CkksLevelDescriptor& level)
+{
+    const auto data = context_.get_context_data(level.parms_id);
+    if (!data) {
+        throw std::invalid_argument(
+            "conjugation-key level is absent from SEALContext");
+    }
+    return add_galois_key(
+        std::move(id), keys,
+        hpu::scheme::ckks::conjugation_galois_element(
+            data->parms().poly_modulus_degree()),
+        level);
 }
 
 std::vector<PreparedFusedAutomorphismTwiddles>
@@ -390,6 +425,41 @@ CkksApplicationImageBuilder::add_fused_automorphism_twiddles(
         result.push_back(std::move(prepared));
     }
     return result;
+}
+
+std::vector<PreparedFusedAutomorphismTwiddles>
+CkksApplicationImageBuilder::add_rotation_twiddles(
+    std::string id,
+    int steps,
+    const CkksLevelDescriptor& level)
+{
+    const auto data = context_.get_context_data(level.parms_id);
+    if (!data) {
+        throw std::invalid_argument(
+            "rotation-twiddle level is absent from SEALContext");
+    }
+    return add_fused_automorphism_twiddles(
+        std::move(id),
+        hpu::scheme::ckks::rotation_galois_element(
+            data->parms().poly_modulus_degree(), steps),
+        level);
+}
+
+std::vector<PreparedFusedAutomorphismTwiddles>
+CkksApplicationImageBuilder::add_conjugation_twiddles(
+    std::string id,
+    const CkksLevelDescriptor& level)
+{
+    const auto data = context_.get_context_data(level.parms_id);
+    if (!data) {
+        throw std::invalid_argument(
+            "conjugation-twiddle level is absent from SEALContext");
+    }
+    return add_fused_automorphism_twiddles(
+        std::move(id),
+        hpu::scheme::ckks::conjugation_galois_element(
+            data->parms().poly_modulus_degree()),
+        level);
 }
 
 PreparedRnsObject CkksApplicationImageBuilder::reserve_ciphertext(

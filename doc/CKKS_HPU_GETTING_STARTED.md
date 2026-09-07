@@ -8,13 +8,14 @@
 1. 由 `SEALContext` 决定 `N`、当前 level 的 Q、特殊模数 P 和评估密钥 digit；
 2. 将 SEAL 的 NTT 对象转换为 HPU 的 canonical physical NTT 顺序；
 3. 在应用启动前生成 HPU 可访问的 DDR window（HPU_MEM）；
-4. 为 Multiply、Relinearize、Rescale、Rotate 和点运算生成 HPU 扩展指令流；
+4. 为 Multiply、Relinearize、Rescale、raw/slot Rotate、Conjugate 和点运算生成
+   HPU 扩展指令流；
 5. 用软件模型和 SEAL 语义结果验证各层边界。
 
 目前已经具备“准备真实 CKKS 对象并生成 HPU 程序”的前端路径，以及直接消费
 HPU_MEM span 的软件执行器。该执行器已覆盖 canonical HPU NTT 域中的 Add、
-Subtract、MultiplyPlain、AddPlain、SubtractPlain、通用密文 Multiply、Square、
-KeySwitch、Relinearize、Rescale、Rotate，以及由 HPU_MEM twiddle 驱动的 canonical
+Subtract、MultiplyPlain、AddPlain、SubtractPlain、Negate、通用密文 Multiply、Square、
+KeySwitch、Relinearize、Rescale、raw/slot Rotate、Conjugate，以及由 HPU_MEM twiddle 驱动的 canonical
 NTT/INTT，并与 SEAL NTT words 逐字比较。Linux driver/userspace backend 尚未完成。
 因此本文 `x²+1` 示例中：
 
@@ -196,11 +197,14 @@ Ciphertext * Ciphertext -> (t0,t1,t2)
 Ciphertext * Plaintext
 Ciphertext + Plaintext
 Ciphertext - Plaintext
+Negate(Ciphertext)
 Square(Ciphertext) -> (t0,t1,t2)
 KeySwitch(base, switching_component, evk) -> (base0+ks0, base1+ks1)
 Relinearize(t0,t1,t2,rlk) -> (t0+ks0,t1+ks1)
 Rescale(Qk) -> Q(k-1)
 Rotate_k(Ciphertext) -> Ciphertext
+RotateSlots_steps(Ciphertext) -> Ciphertext
+Conjugate(Ciphertext) -> Ciphertext
 coefficient <-> canonical HPU NTT
 ```
 
@@ -235,6 +239,12 @@ Rotate 使用 modified-root fused INTT，将两个 canonical HPU NTT 分量直�
 这两个系数 workspace 及其 key-domain 元数据；不需要额外的 CPU coefficient
 permutation，也不会在两阶段之间插入一对多余 NTT/INTT。
 
+面向 CKKS slot 的接口把正 step 映射为左旋、负 step 映射为右旋，映射规则与
+SEAL generator-3 完全一致；Conjugate 固定映射到 `2N-1`。它们都复用上述 fused
+Rotate，差别只在应用初始化时选择的 Galois key 和 modified-root 表。零 step 应由
+host/lowering 当作 no-op，不生成 KeySwitch。Negate 则始终停留在 canonical HPU NTT
+域，通过 `(c-c)-c` 得到 `-c mod q`，不占用额外零多项式，也不产生 NTT/INTT。
+
 ## 8. 下一步
 
 当前示例已经同时运行：
@@ -247,6 +257,6 @@ permutation，也不会在两阶段之间插入一对多余 NTT/INTT。
 
 当前冻结的 SEAL 4.4.4 只产生单 special-prime KeySwitch，因此多 P 已移出近期主线，
 保留为未来脱离当前 SEAL 兼容范围后的独立扩展。多层软件执行验证已经覆盖
-Q4→Q3→Q2；近期顺序是：slot-step Rotate/Conjugate/Negate、ModSwitch 与自动
-level/scale 管理，随后接入
+Q4→Q3→Q2，slot-step Rotate/Conjugate/Negate 也已接入；近期顺序是：ModSwitch
+与自动 level/scale 管理，随后接入
 application lowering、DMA relocation 和 Linux runtime backend。

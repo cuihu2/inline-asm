@@ -1,6 +1,7 @@
 #include "hpu/seal/application_image.hpp"
 #include "hpu/seal/ckks_context.hpp"
 #include "hpu/seal/software_executor.hpp"
+#include "scheme/ckks/galois.hpp"
 
 #include <seal/seal.h>
 
@@ -65,8 +66,24 @@ int main()
         key_generator.create_relin_keys(relinearization_keys);
         ::seal::GaloisKeys galois_keys;
         constexpr std::uint32_t galois_element = 3;
+        constexpr int left_rotation_steps = 2;
+        constexpr int right_rotation_steps = -1;
+        const auto left_rotation_element =
+            hpu::scheme::ckks::rotation_galois_element(
+                spec.poly_modulus_degree, left_rotation_steps);
+        const auto right_rotation_element =
+            hpu::scheme::ckks::rotation_galois_element(
+                spec.poly_modulus_degree, right_rotation_steps);
+        const auto conjugation_element =
+            hpu::scheme::ckks::conjugation_galois_element(
+                spec.poly_modulus_degree);
         key_generator.create_galois_keys(
-            std::vector<std::uint32_t>{galois_element}, galois_keys);
+            std::vector<std::uint32_t>{
+                galois_element,
+                left_rotation_element,
+                right_rotation_element,
+                conjugation_element},
+            galois_keys);
         ::seal::CKKSEncoder encoder(*bundle.context);
         constexpr double scale = 262144.0;
         ::seal::Plaintext plain_a;
@@ -80,7 +97,7 @@ int main()
         encryptor.encrypt(plain_b, cipher_b);
 
         hpu::seal_adapter::CkksApplicationImageBuilder builder(
-            *bundle.context, 1536);
+            *bundle.context, 3072);
         builder.add_modulus_table();
         const auto canonical_twiddles = builder.add_canonical_twiddles();
         const auto prepared_relinearization_key =
@@ -107,6 +124,20 @@ int main()
             "constants/keyswitch/q3", next_level);
         const auto middle_rescale_constants = builder.add_rescale_constants(
             "constants/rescale/q3_to_q2", next_level);
+        const auto left_rotation_key = builder.add_rotation_key(
+            "key/rotate_left_2/q4", galois_keys,
+            left_rotation_steps, level);
+        const auto right_rotation_key = builder.add_rotation_key(
+            "key/rotate_right_1/q4", galois_keys,
+            right_rotation_steps, level);
+        const auto conjugation_key = builder.add_conjugation_key(
+            "key/conjugate/q4", galois_keys, level);
+        const auto left_rotation_tables = builder.add_rotation_twiddles(
+            "rotate_left_2/q4", left_rotation_steps, level);
+        const auto right_rotation_tables = builder.add_rotation_twiddles(
+            "rotate_right_1/q4", right_rotation_steps, level);
+        const auto conjugation_tables = builder.add_conjugation_twiddles(
+            "conjugate/q4", level);
         if (level.rns_layout.p_mod_ids
                 != std::vector<int>({4})
             || next_level.rns_layout.p_mod_ids
@@ -132,6 +163,8 @@ int main()
             "output/add_plain", level, 2, scale);
         const auto subtract_plain_output = builder.reserve_ciphertext(
             "output/subtract_plain", level, 2, scale);
+        const auto negate_output = builder.reserve_ciphertext(
+            "output/negate", level, 2, scale);
         const auto square_output = builder.reserve_ciphertext(
             "output/square_tensor", level, 3, scale * scale);
         const auto multiply_output = builder.reserve_ciphertext(
@@ -162,6 +195,24 @@ int main()
             hpu::runtime::PolynomialDomain::coefficient, galois_element);
         const auto rotate_output = builder.reserve_ciphertext(
             "output/rotate3", level, 2, scale);
+        const auto left_rotation_workspace = builder.reserve_ciphertext(
+            "scratch/rotate_left_2_coefficient", level, 2, scale,
+            hpu::runtime::PolynomialDomain::coefficient,
+            left_rotation_element);
+        const auto left_rotation_output = builder.reserve_ciphertext(
+            "output/rotate_left_2", level, 2, scale);
+        const auto right_rotation_workspace = builder.reserve_ciphertext(
+            "scratch/rotate_right_1_coefficient", level, 2, scale,
+            hpu::runtime::PolynomialDomain::coefficient,
+            right_rotation_element);
+        const auto right_rotation_output = builder.reserve_ciphertext(
+            "output/rotate_right_1", level, 2, scale);
+        const auto conjugation_workspace = builder.reserve_ciphertext(
+            "scratch/conjugate_coefficient", level, 2, scale,
+            hpu::runtime::PolynomialDomain::coefficient,
+            conjugation_element);
+        const auto conjugation_output = builder.reserve_ciphertext(
+            "output/conjugate", level, 2, scale);
         const auto middle_rotate_workspace = builder.reserve_ciphertext(
             "scratch/q3_rotate3_coefficient", next_level, 2, middle_scale,
             hpu::runtime::PolynomialDomain::coefficient, galois_element);
@@ -183,6 +234,7 @@ int main()
         executor.multiply_plain(input_a, plaintext, multiply_plain_output);
         executor.add_plain(input_a, plaintext, add_plain_output);
         executor.subtract_plain(input_a, plaintext, subtract_plain_output);
+        executor.negate(input_a, negate_output);
         executor.square(input_a, square_output);
         executor.multiply(input_a, input_b, multiply_output);
         executor.relinearize(
@@ -211,6 +263,18 @@ int main()
             input_a, galois_element, prepared_galois_key,
             keyswitch_constants, fused_rotate_tables, canonical_twiddles,
             rotate_workspace, rotate_output);
+        executor.rotate_slots(
+            input_a, left_rotation_steps, left_rotation_key,
+            keyswitch_constants, left_rotation_tables, canonical_twiddles,
+            left_rotation_workspace, left_rotation_output);
+        executor.rotate_slots(
+            input_a, right_rotation_steps, right_rotation_key,
+            keyswitch_constants, right_rotation_tables, canonical_twiddles,
+            right_rotation_workspace, right_rotation_output);
+        executor.conjugate(
+            input_a, conjugation_key, keyswitch_constants,
+            conjugation_tables, canonical_twiddles,
+            conjugation_workspace, conjugation_output);
         executor.rotate(
             multiply_rescaled_output, galois_element, middle_galois_key,
             middle_keyswitch_constants, middle_fused_rotate_tables,
@@ -249,6 +313,10 @@ int main()
         verify_exact(
             expected, subtract_plain_output, executor,
             *bundle.context, "SubtractPlain");
+        evaluator.negate(cipher_a, expected);
+        verify_exact(
+            expected, negate_output, executor,
+            *bundle.context, "Negate");
         evaluator.square(cipher_a, expected);
         verify_exact(
             expected, square_output, executor, *bundle.context, "Square");
@@ -306,12 +374,27 @@ int main()
         verify_exact(
             expected_rotate, rotate_output, executor,
             *bundle.context, "Rotate");
+        evaluator.rotate_vector(
+            cipher_a, left_rotation_steps, galois_keys, expected_rotate);
+        verify_exact(
+            expected_rotate, left_rotation_output, executor,
+            *bundle.context, "Rotate left 2 slots");
+        evaluator.rotate_vector(
+            cipher_a, right_rotation_steps, galois_keys, expected_rotate);
+        verify_exact(
+            expected_rotate, right_rotation_output, executor,
+            *bundle.context, "Rotate right 1 slot");
+        evaluator.complex_conjugate(
+            cipher_a, galois_keys, expected_rotate);
+        verify_exact(
+            expected_rotate, conjugation_output, executor,
+            *bundle.context, "Complex conjugate");
         verify_exact(
             cipher_a, restored_ntt, executor,
             *bundle.context, "HPU NTT/INTT round-trip");
 
         std::cout
-            << "CKKS HPU_MEM software executor Q4 -> Q3 -> Q2 pointwise/Multiply/Square/KeySwitch/Relinearize/Rescale/Rotate and table-driven NTT/INTT passed exact SEAL NTT comparison\n";
+            << "CKKS HPU_MEM software executor Q4 -> Q3 -> Q2 pointwise/Multiply/Square/KeySwitch/Relinearize/Rescale/raw+slot Rotate/Conjugate/Negate and table-driven NTT/INTT passed exact SEAL NTT comparison\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "CKKS software executor test failed: "

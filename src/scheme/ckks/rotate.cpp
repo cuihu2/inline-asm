@@ -1,5 +1,7 @@
 #include "scheme/ckks/rotate.hpp"
 
+#include "scheme/ckks/galois.hpp"
+
 #include "operator/keyswitch.hpp"
 #include "util/hpu_asm.hpp"
 #include "util/ntt.hpp"
@@ -24,6 +26,15 @@ bool valid_config(
     return hpu::is_valid_rns_decomposition_layout(N, layout)
         && galois_element < ring_order
         && std::gcd<std::uint64_t>(galois_element, ring_order) == 1;
+}
+
+std::string rotation_step_suffix(int steps)
+{
+    const std::uint64_t magnitude = steps < 0
+        ? 0U - static_cast<std::uint64_t>(steps)
+        : static_cast<std::uint64_t>(steps);
+    return std::string(steps < 0 ? "R" : "L")
+        + std::to_string(magnitude);
 }
 
 std::string generate_fused_inverse_body_asm(
@@ -112,6 +123,45 @@ std::string generate_rotate_body_asm(
     return asm_code.str();
 }
 
+std::string generate_rotate_steps_body_asm(
+    int N,
+    const hpu::RnsDecompositionLayout& layout,
+    int steps,
+    bool append_psync)
+{
+    try {
+        const auto element = rotation_galois_element(
+            static_cast<std::size_t>(N), steps);
+        std::ostringstream asm_code;
+        asm_code << "        /* CKKS ROTATE_SLOTS: steps=" << steps
+                 << ", Galois element=" << element << " */\n";
+        asm_code << generate_rotate_body_asm(
+            N, layout, element, append_psync);
+        return asm_code.str();
+    } catch (const std::invalid_argument&) {
+        return "        /* Invalid CKKS RotateSteps config */\n";
+    }
+}
+
+std::string generate_conjugate_body_asm(
+    int N,
+    const hpu::RnsDecompositionLayout& layout,
+    bool append_psync)
+{
+    try {
+        const auto element = conjugation_galois_element(
+            static_cast<std::size_t>(N));
+        std::ostringstream asm_code;
+        asm_code << "        /* CKKS CONJUGATE: Galois element="
+                 << element << " */\n";
+        asm_code << generate_rotate_body_asm(
+            N, layout, element, append_psync);
+        return asm_code.str();
+    } catch (const std::invalid_argument&) {
+        return "        /* Invalid CKKS Conjugate config */\n";
+    }
+}
+
 std::string generate_rotate_body_asm(
     int N,
     int num_q,
@@ -127,6 +177,35 @@ std::string generate_rotate_body_asm(
     }
     return generate_rotate_body_asm(
         N, layout, galois_element, append_psync);
+}
+
+std::string generate_rotate_steps_body_asm(
+    int N,
+    int num_q,
+    int num_p,
+    int dnum,
+    int steps,
+    bool append_psync)
+{
+    return generate_rotate_steps_body_asm(
+        N,
+        hpu::make_contiguous_rns_decomposition_layout(
+            num_q, num_p, dnum),
+        steps, append_psync);
+}
+
+std::string generate_conjugate_body_asm(
+    int N,
+    int num_q,
+    int num_p,
+    int dnum,
+    bool append_psync)
+{
+    return generate_conjugate_body_asm(
+        N,
+        hpu::make_contiguous_rns_decomposition_layout(
+            num_q, num_p, dnum),
+        append_psync);
 }
 
 std::string generate_rotate_asm(
@@ -153,6 +232,62 @@ std::string generate_rotate_asm(
         << "    __asm__ volatile(\n"
         << generate_rotate_body_asm(
             N, num_q, num_p, dnum, galois_element, append_psync)
+        << "        : \n"
+        << "        : \n"
+        << "        : \"memory\"\n"
+        << "    );\n"
+        << "}\n";
+    return asm_code.str();
+}
+
+std::string generate_rotate_steps_asm(
+    int N,
+    int num_q,
+    int num_p,
+    int dnum,
+    int steps,
+    bool append_psync)
+{
+    std::ostringstream asm_code;
+    asm_code << "void hpu_ckks_rotate_steps_N" << N << "_Q" << num_q
+             << "_P" << num_p << "_D" << dnum << "_"
+             << rotation_step_suffix(steps) << "(void) {\n";
+    const std::string body = generate_rotate_steps_body_asm(
+        N, num_q, num_p, dnum, steps, append_psync);
+    if (body.find("Invalid CKKS") != std::string::npos) {
+        asm_code << "    /* Invalid CKKS RotateSteps config */\n}\n";
+        return asm_code.str();
+    }
+    asm_code
+        << "    __asm__ volatile(\n"
+        << body
+        << "        : \n"
+        << "        : \n"
+        << "        : \"memory\"\n"
+        << "    );\n"
+        << "}\n";
+    return asm_code.str();
+}
+
+std::string generate_conjugate_asm(
+    int N,
+    int num_q,
+    int num_p,
+    int dnum,
+    bool append_psync)
+{
+    std::ostringstream asm_code;
+    asm_code << "void hpu_ckks_conjugate_N" << N << "_Q" << num_q
+             << "_P" << num_p << "_D" << dnum << "(void) {\n";
+    const std::string body = generate_conjugate_body_asm(
+        N, num_q, num_p, dnum, append_psync);
+    if (body.find("Invalid CKKS") != std::string::npos) {
+        asm_code << "    /* Invalid CKKS Conjugate config */\n}\n";
+        return asm_code.str();
+    }
+    asm_code
+        << "    __asm__ volatile(\n"
+        << body
         << "        : \n"
         << "        : \n"
         << "        : \"memory\"\n"

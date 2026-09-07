@@ -61,19 +61,30 @@ int main()
             hpu::scheme::ckks::generate_add_plain_body_asm(num_q, true);
         const auto subtract_plain =
             hpu::scheme::ckks::generate_subtract_plain_body_asm(num_q, true);
+        const auto negate =
+            hpu::scheme::ckks::generate_negate_body_asm(num_q, true);
 
         require_common_shape(add, 2 * num_q, "padd ");
         require_common_shape(subtract, 2 * num_q, "psub ");
         require_common_shape(multiply_plain, 2 * num_q, "pmul ");
         require_common_shape(add_plain, num_q, "padd ");
         require_common_shape(subtract_plain, num_q, "psub ");
+        require_common_shape(negate, 4 * num_q, "psub ");
 
         if (count(add, "dstore ") != 2 * num_q
             || count(subtract, "dstore ") != 2 * num_q
             || count(multiply_plain, "dstore ") != 2 * num_q
             || count(add_plain, "dstore ") != 2 * num_q
-            || count(subtract_plain, "dstore ") != 2 * num_q) {
+            || count(subtract_plain, "dstore ") != 2 * num_q
+            || count(negate, "dstore ") != 2 * num_q) {
             throw std::runtime_error("pointwise kernel did not materialize two components");
+        }
+        if (count(negate, hpu::psub(2, 0, 0)) != 2 * num_q
+            || count(negate, hpu::psub(2, 2, 0)) != 2 * num_q
+            || count(negate, hpu::dload(0, hpu::DataType::poly))
+                != 2 * num_q) {
+            throw std::runtime_error(
+                "Negate did not synthesize zero from its input in two live objects");
         }
 
         const std::string nested_programs[] {
@@ -84,6 +95,8 @@ int main()
             hpu::scheme::ckks::generate_add_plain_body_asm(
                 num_q, false, false),
             hpu::scheme::ckks::generate_subtract_plain_body_asm(
+                num_q, false, false),
+            hpu::scheme::ckks::generate_negate_body_asm(
                 num_q, false, false),
         };
         for (const auto& nested : nested_programs) {
@@ -104,7 +117,7 @@ int main()
             throw std::runtime_error("CKKS pointwise scale policy failed");
         }
 
-        std::cout << "CKKS pointwise Add/Sub/Plain codegen passed\n";
+        std::cout << "CKKS pointwise Add/Sub/Plain/Negate codegen passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "CKKS pointwise codegen test failed: " << error.what() << '\n';

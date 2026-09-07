@@ -1,6 +1,7 @@
 #include "hpu/seal/software_executor.hpp"
 
 #include "hpu/model/hardware_ntt.hpp"
+#include "scheme/ckks/galois.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -255,6 +256,41 @@ void CkksSoftwareExecutor::subtract_plain(
     plaintext_binary(
         ciphertext, plaintext, output,
         hpu::runtime::PointwiseOperation::subtract);
+}
+
+void CkksSoftwareExecutor::negate(
+    const PreparedRnsObject& ciphertext,
+    const PreparedRnsObject& output)
+{
+    validate_object(ciphertext, 2);
+    validate_object(output, 2);
+    require_same_level(ciphertext, ciphertext, output);
+    if (!compatible_scales(ciphertext.scale, output.scale)
+        || ciphertext.domain
+            != hpu::runtime::PolynomialDomain::canonical_ntt_physical
+        || output.domain
+            != hpu::runtime::PolynomialDomain::canonical_ntt_physical
+        || ciphertext.key_domain != 1 || output.key_domain != 1) {
+        throw std::invalid_argument(
+            "CKKS Negate has incompatible scale/representation metadata");
+    }
+    for (std::size_t component = 0; component < 2; ++component) {
+        const auto& source = ciphertext.components[component];
+        const auto& destination = output.components[component];
+        for (std::size_t basis = 0; basis < source.limbs.size(); ++basis) {
+            const std::uint32_t q = memory_.modulus(
+                source.modulus_ids[basis]);
+            auto words = memory_.read(source.limbs[basis], source.degree);
+            for (std::uint32_t& word : words) {
+                if (word >= q) {
+                    throw std::invalid_argument(
+                        "CKKS Negate input is not reduced modulo q");
+                }
+                word = word == 0 ? 0 : q - word;
+            }
+            memory_.write(destination.limbs[basis], words);
+        }
+    }
 }
 
 void CkksSoftwareExecutor::square(
@@ -782,6 +818,45 @@ void CkksSoftwareExecutor::rotate(
     key_switch_impl(
         output, switching, galois_key, constants, output,
         canonical_tables, true);
+}
+
+void CkksSoftwareExecutor::rotate_slots(
+    const PreparedRnsObject& input,
+    int steps,
+    const PreparedEvaluationKey& galois_key,
+    const PreparedKeySwitchConstants& constants,
+    const std::vector<PreparedFusedAutomorphismTwiddles>& fused_tables,
+    const std::vector<PreparedCanonicalTwiddles>& canonical_tables,
+    const PreparedRnsObject& coefficient_workspace,
+    const PreparedRnsObject& output)
+{
+    const std::size_t degree = input.components.empty()
+        ? 0
+        : input.components.front().degree;
+    rotate(
+        input,
+        hpu::scheme::ckks::rotation_galois_element(degree, steps),
+        galois_key, constants, fused_tables, canonical_tables,
+        coefficient_workspace, output);
+}
+
+void CkksSoftwareExecutor::conjugate(
+    const PreparedRnsObject& input,
+    const PreparedEvaluationKey& galois_key,
+    const PreparedKeySwitchConstants& constants,
+    const std::vector<PreparedFusedAutomorphismTwiddles>& fused_tables,
+    const std::vector<PreparedCanonicalTwiddles>& canonical_tables,
+    const PreparedRnsObject& coefficient_workspace,
+    const PreparedRnsObject& output)
+{
+    const std::size_t degree = input.components.empty()
+        ? 0
+        : input.components.front().degree;
+    rotate(
+        input,
+        hpu::scheme::ckks::conjugation_galois_element(degree),
+        galois_key, constants, fused_tables, canonical_tables,
+        coefficient_workspace, output);
 }
 
 void CkksSoftwareExecutor::transform(

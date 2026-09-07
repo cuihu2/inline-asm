@@ -178,8 +178,8 @@ same HPU_MEM image. It validates and loads the packed q/Barrett-mu records once,
 checks every DMA span, and implements exact uint32 modular pointwise
 instructions. `hpu::seal_adapter::CkksSoftwareExecutor` adds CKKS object/level/
 scale validation and executes Add, Subtract, MultiplyPlain, AddPlain,
-SubtractPlain, general two-input Multiply, Square, KeySwitch, Relinearize,
-Rescale, and Rotate without
+SubtractPlain, Negate, general two-input Multiply, Square, KeySwitch,
+Relinearize, Rescale, raw/slot-step Rotate, and Conjugate without
 calling `seal::Evaluator`. KeySwitch streams one active-Q singleton digit at a
 time, extends it to Q|P, accumulates against the HPU_MEM evaluation key, and
 performs SEAL-equivalent rounded ModDown. The current functional executor
@@ -204,6 +204,14 @@ only `{domain=coefficient,key_domain=k}` before entering Galois KeySwitch. No
 canonical forward/inverse pair is inserted between those phases. If a kernel
 boundary is required, this coefficient workspace and its key-domain tag are
 the complete cross-kernel state; registration now preserves both fields.
+
+The slot-facing API maps positive steps to left rotations and negative steps to
+right rotations using SEAL's generator-3 convention; conjugation selects
+Galois element `2N-1`. These are selectors over the same fused Rotate path, not
+separate transform implementations. A zero-step rotation remains a host no-op.
+Negate is transform-free: each limb synthesizes zero as `c-c`, then computes
+`0-c`, so no preloaded zero polynomial or third live regular-bank object is
+required.
 
 ## Linux build and tests
 

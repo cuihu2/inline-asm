@@ -490,7 +490,22 @@ void test_ckks_rotate_codegen()
 				g_auto_cfg.dnum,
 				galois_element,
 				true);
-		std::cout << "Saved CKKS fused Rotate ASM to output/ckks_rotate.cpp\n";
+		std::ofstream("output/ckks_rotate_left_1.cpp")
+			<< hpu::scheme::ckks::generate_rotate_steps_asm(
+				g_auto_cfg.N,
+				g_auto_cfg.num_q,
+				g_auto_cfg.num_p,
+				g_auto_cfg.dnum,
+				1,
+				true);
+		std::ofstream("output/ckks_conjugate.cpp")
+			<< hpu::scheme::ckks::generate_conjugate_asm(
+				g_auto_cfg.N,
+				g_auto_cfg.num_q,
+				g_auto_cfg.num_p,
+				g_auto_cfg.dnum,
+				true);
+		std::cout << "Saved CKKS raw/slot Rotate and Conjugate C++ ASM\n";
 	}
 	if (g_output_mode == OutputMode::ASM || g_output_mode == OutputMode::BOTH) {
 		std::ofstream("output/ckks_rotate.asm")
@@ -501,7 +516,22 @@ void test_ckks_rotate_codegen()
 				g_auto_cfg.dnum,
 				galois_element,
 				true);
-		std::cout << "Saved CKKS fused Rotate body to output/ckks_rotate.asm\n";
+		std::ofstream("output/ckks_rotate_left_1.asm")
+			<< hpu::scheme::ckks::generate_rotate_steps_body_asm(
+				g_auto_cfg.N,
+				g_auto_cfg.num_q,
+				g_auto_cfg.num_p,
+				g_auto_cfg.dnum,
+				1,
+				true);
+		std::ofstream("output/ckks_conjugate.asm")
+			<< hpu::scheme::ckks::generate_conjugate_body_asm(
+				g_auto_cfg.N,
+				g_auto_cfg.num_q,
+				g_auto_cfg.num_p,
+				g_auto_cfg.dnum,
+				true);
+		std::cout << "Saved CKKS raw/slot Rotate and Conjugate ASM bodies\n";
 	}
 }
 
@@ -558,6 +588,8 @@ void test_ckks_pointwise_codegen()
 		 hpu::scheme::ckks::generate_add_plain_body_asm},
 		{"ckks_subtract_plain", hpu::scheme::ckks::generate_subtract_plain_asm,
 		 hpu::scheme::ckks::generate_subtract_plain_body_asm},
+		{"ckks_negate", hpu::scheme::ckks::generate_negate_asm,
+		 hpu::scheme::ckks::generate_negate_body_asm},
 	};
 	for (const auto& pointwise : cases) {
 		if (g_output_mode == OutputMode::CPP || g_output_mode == OutputMode::BOTH) {
@@ -572,7 +604,7 @@ void test_ckks_pointwise_codegen()
 					true);
 		}
 	}
-	std::cout << "Saved zero-transform CKKS Add/Sub/Plain kernels\n";
+	std::cout << "Saved zero-transform CKKS Add/Sub/Plain/Negate kernels\n";
 }
 
 void test_moddown_codegen()

@@ -200,6 +200,47 @@ std::string generate_subtract_plain_body_asm(
         num_q, true, append_psync, manage_modulus_table);
 }
 
+std::string generate_negate_body_asm(
+    int num_q,
+    bool append_psync,
+    bool manage_modulus_table)
+{
+    std::ostringstream asm_code;
+    if (!valid_config(num_q)) {
+        asm_code << "        /* Invalid CKKS Negate config */\n";
+        return asm_code.str();
+    }
+    asm_code
+        << "        /* CKKS NEGATE: out=(c-c)-c in canonical HPU NTT/Q */\n";
+    if (manage_modulus_table) {
+        asm_code << hpu::dload(
+            kModulusTableObject,
+            hpu::DataType::mod_ctx,
+            hpu::DloadFlag::small_bank);
+    }
+    for (int component = 0; component < 2; ++component) {
+        for (int basis = 0; basis < num_q; ++basis) {
+            asm_code << "        /* component_" << component
+                     << ", q_" << basis << ": synthesize zero, then 0-c */\n";
+            asm_code << hpu::pmodld(basis);
+            asm_code << hpu::dload(kLeftObject, hpu::DataType::poly);
+            asm_code << hpu::psub(
+                kOutputObject, kLeftObject, kLeftObject);
+            asm_code << hpu::psub(
+                kOutputObject, kOutputObject, kLeftObject);
+            asm_code << hpu::pfree(kLeftObject);
+            asm_code << hpu::dstore(kOutputObject, 1);
+        }
+    }
+    if (manage_modulus_table) {
+        asm_code << hpu::pfree(kModulusTableObject);
+    }
+    if (append_psync) {
+        asm_code << hpu::psync();
+    }
+    return asm_code.str();
+}
+
 std::string generate_add_asm(int num_q, bool append_psync)
 {
     return wrap("hpu_ckks_add", num_q,
@@ -229,6 +270,13 @@ std::string generate_subtract_plain_asm(int num_q, bool append_psync)
 {
     return wrap("hpu_ckks_subtract_plain", num_q,
                 generate_subtract_plain_body_asm(num_q, append_psync),
+                valid_config(num_q));
+}
+
+std::string generate_negate_asm(int num_q, bool append_psync)
+{
+    return wrap("hpu_ckks_negate", num_q,
+                generate_negate_body_asm(num_q, append_psync),
                 valid_config(num_q));
 }
 

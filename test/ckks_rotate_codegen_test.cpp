@@ -1,4 +1,5 @@
 #include "scheme/ckks/rotate.hpp"
+#include "scheme/ckks/galois.hpp"
 
 #include "util/hpu_asm.hpp"
 
@@ -38,6 +39,15 @@ int main()
         constexpr int dnum = 4;
         constexpr std::uint32_t galois_element = 3;
         constexpr std::size_t log_degree = 7;
+
+        require(
+            hpu::scheme::ckks::rotation_galois_element(degree, 1) == 3
+                && hpu::scheme::ckks::rotation_galois_element(degree, 2) == 9
+                && hpu::scheme::ckks::rotation_galois_element(degree, -1)
+                    == 171
+                && hpu::scheme::ckks::conjugation_galois_element(degree)
+                    == 255,
+            "slot-step to Galois-element mapping differs from SEAL");
 
         const std::string program = hpu::scheme::ckks::generate_rotate_body_asm(
             degree, num_q, num_p, dnum, galois_element, true);
@@ -80,7 +90,34 @@ int main()
                     && key_switch < output_ntt,
                 "Rotate phase order is not fused INTT -> KeySwitch -> output NTT");
 
-        std::cout << "CKKS fused Rotate codegen tests passed\n";
+        const auto rotate_left_two =
+            hpu::scheme::ckks::generate_rotate_steps_body_asm(
+                degree, num_q, num_p, dnum, 2, true);
+        const auto rotate_right_one =
+            hpu::scheme::ckks::generate_rotate_steps_body_asm(
+                degree, num_q, num_p, dnum, -1, true);
+        const auto conjugate =
+            hpu::scheme::ckks::generate_conjugate_body_asm(
+                degree, num_q, num_p, dnum, true);
+        require(rotate_left_two.find("steps=2, Galois element=9")
+                    != std::string::npos
+                    && rotate_right_one.find("steps=-1, Galois element=171")
+                        != std::string::npos
+                    && conjugate.find("CKKS CONJUGATE: Galois element=255")
+                        != std::string::npos,
+                "high-level Rotate/Conjugate did not select the expected element");
+        require(count(rotate_left_two, "FUSED AUTO") == 1
+                    && count(rotate_right_one, "FUSED AUTO") == 1
+                    && count(conjugate, "FUSED AUTO") == 1,
+                "high-level Galois operations did not reuse fused Rotate");
+        require(
+            hpu::scheme::ckks::generate_rotate_steps_body_asm(
+                degree, num_q, num_p, dnum, 0, true)
+                    .find("Invalid CKKS") != std::string::npos,
+            "zero-step Rotate should remain a host no-op");
+
+        std::cout
+            << "CKKS fused raw/slot-step Rotate and Conjugate codegen tests passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "CKKS Rotate codegen test failed: " << error.what() << '\n';

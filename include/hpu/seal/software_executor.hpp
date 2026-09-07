@@ -39,6 +39,9 @@ public:
         const PreparedRnsObject& ciphertext,
         const PreparedRnsObject& plaintext,
         const PreparedRnsObject& output);
+    void negate(
+        const PreparedRnsObject& ciphertext,
+        const PreparedRnsObject& output);
     void square(
         const PreparedRnsObject& ciphertext,
         const PreparedRnsObject& tensor_output);
@@ -67,6 +70,23 @@ public:
     void rotate(
         const PreparedRnsObject& input,
         std::uint32_t galois_element,
+        const PreparedEvaluationKey& galois_key,
+        const PreparedKeySwitchConstants& constants,
+        const std::vector<PreparedFusedAutomorphismTwiddles>& fused_tables,
+        const std::vector<PreparedCanonicalTwiddles>& canonical_tables,
+        const PreparedRnsObject& coefficient_workspace,
+        const PreparedRnsObject& output);
+    void rotate_slots(
+        const PreparedRnsObject& input,
+        int steps,
+        const PreparedEvaluationKey& galois_key,
+        const PreparedKeySwitchConstants& constants,
+        const std::vector<PreparedFusedAutomorphismTwiddles>& fused_tables,
+        const std::vector<PreparedCanonicalTwiddles>& canonical_tables,
+        const PreparedRnsObject& coefficient_workspace,
+        const PreparedRnsObject& output);
+    void conjugate(
+        const PreparedRnsObject& input,
         const PreparedEvaluationKey& galois_key,
         const PreparedKeySwitchConstants& constants,
         const std::vector<PreparedFusedAutomorphismTwiddles>& fused_tables,

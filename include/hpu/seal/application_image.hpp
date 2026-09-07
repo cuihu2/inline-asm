@@ -106,10 +106,28 @@ public:
         const ::seal::GaloisKeys& keys,
         std::uint32_t galois_element,
         const CkksLevelDescriptor& level);
+    PreparedEvaluationKey add_rotation_key(
+        std::string id,
+        const ::seal::GaloisKeys& keys,
+        int steps,
+        const CkksLevelDescriptor& level);
+    PreparedEvaluationKey add_conjugation_key(
+        std::string id,
+        const ::seal::GaloisKeys& keys,
+        const CkksLevelDescriptor& level);
     std::vector<PreparedFusedAutomorphismTwiddles>
     add_fused_automorphism_twiddles(
         std::string id,
         std::uint32_t galois_element,
+        const CkksLevelDescriptor& level);
+    std::vector<PreparedFusedAutomorphismTwiddles>
+    add_rotation_twiddles(
+        std::string id,
+        int steps,
+        const CkksLevelDescriptor& level);
+    std::vector<PreparedFusedAutomorphismTwiddles>
+    add_conjugation_twiddles(
+        std::string id,
         const CkksLevelDescriptor& level);
     PreparedRnsObject reserve_ciphertext(
         std::string id,
