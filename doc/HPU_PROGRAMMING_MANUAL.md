@@ -163,15 +163,15 @@ custom1 的原始 payload 和直通后的命令字段均为：
 
 ```text
 cmd26[25]    = 1
-cmd26[24:20] = RS2
-cmd26[19:15] = RS1
-cmd26[14]    = 0
-cmd26[13:10] = {3'b000, flag[0]}
-cmd26[9:6]   = 0
-cmd26[5:3]   = OBJ_ID
-cmd26[2:1]   = dload: TYPE
+cmd26[24:21] = 4'b0000
+cmd26[20:18] = OBJ_ID
+cmd26[17:13] = RS2
+cmd26[12:8]  = RS1
+cmd26[7:6]   = dload: TYPE
                  dstore: {REL, 1'b0}
-cmd26[0]     = DIR
+cmd26[5]     = DIR
+cmd26[4:1]   = 4'b0000
+cmd26[0]     = flag[0]
 ```
 
 项目为每个可编码算子同时生成 `.inst32` 和 `.cmd26`。`outputs/rv_interface_smoke/test_data/expected_cmd26.csv` 提供逐条 32→26-bit 对拍数据。
@@ -273,24 +273,26 @@ word = (0b0111 << 28) | 0x0B
 ### 3.6 DMA 格式
 
 ```text
- 31    27 26    22 21       18 17 16       13 12     10 9      8 7 6       0
-+--------+--------+-----------+--+-----------+----------+--------+-+---------+
-|  RS2   |  RS1   |reserved=0 |SB|reserved=0 |  OBJ_ID  |  OP2   |D| 0101011 |
-+--------+--------+-----------+--+-----------+----------+--------+-+---------+
+ 31        28 27    25 24      20 19      15 14    13 12 11      8 7 6       0
++------------+--------+----------+----------+---------+--+----------+-+---------+
+|   0000     | OBJ_ID |   RS2    |   RS1    |   OP2   |D |   0000   |F| 0101011 |
++------------+--------+----------+----------+---------+--+----------+-+---------+
 ```
 
 编码公式：
 
 ```text
 OP2 = dload ? TYPE : {REL, 1'b0}
-word = (RS2 << 27) | (RS1 << 22)
-     | (SMALL_BANK << 17) | (OBJ_ID << 10)
-     | (OP2 << 8) | (DIR << 7) | 0x2B
+word = (OBJ_ID << 25) | (RS2 << 20) | (RS1 << 15)
+     | (OP2 << 13) | (DIR << 12)
+     | (SMALL_BANK << 7) | 0x2B
 ```
 
 `SMALL_BANK` 是 dload 的 `flag[0]`；1 表示请求 allocator 将小对象放入 `SMALL_BANK_ID=5`。dstore 中该位必须为 0。`OP2` 对 dload 直接编码 2-bit `TYPE`；对 dstore 编码 `{REL, 1'b0}`。
 
-32-bit custom1 的 `inst[31:7]` 已经等于 `cmd26[24:0]`，precode 不再重排字段。`RS2` 位于高位、`RS1` 位于低位，二者之间不交换；生成 C 在发射该 word 前按固定 `x10/x11` ABI 提供 line offset/count。
+32-bit custom1 的 `inst[31:7]` 已经等于 `cmd26[24:0]`，precode 不再重排字段。
+在 32-bit 指令中，`OBJ_ID` 位于两个寄存器编号之上，`RS2` 位于 `RS1` 之上；
+生成 C 在发射该 word 前按固定 `x10/x11` ABI 提供 line offset/count。
 
 ## 4. 算术指令
 
@@ -649,8 +651,8 @@ relocation 接口，生成的 `hpu_program_*` 仍为 DSTORE 装入非零
 **示例**
 
 ```asm
-dload x10, x11, p0, 0, 0  # 0x5A80002B
-dload x10, x11, p4, 2, 1  # 0x5A82122B
+dload x10, x11, p0, 0, 0  # 0x00B5002B
+dload x10, x11, p4, 2, 1  # 0x08B540AB
 ```
 
 ### 7.2 DSTORE - 外部存储器写回
@@ -682,7 +684,7 @@ on completion:
 **示例**
 
 ```asm
-dstore x10, x11, p2, 1    # 0x5A800AAB
+dstore x10, x11, p2, 1    # 0x04B5502B
 ```
 
 <!-- ### 7.3 HPU_MEM CSR
@@ -969,9 +971,9 @@ ctest --test-dir build --output-on-failure
 | `pmodld 255` | `0x603FC00B` | `0x0C07F80` |
 | `psync` | `0x7000000B` | `0x0E00000` |
 | `pfree p4` | `0x8100000B` | `0x1020000` |
-| `dload x10, x11, p0, 0, 0` | `0x5A80002B` | `0x2B50000` |
-| `dload x10, x11, p4, 2, 1` | `0x5A82122B` | `0x2B50424` |
-| `dstore x10, x11, p2, 1` | `0x5A800AAB` | `0x2B50015` |
+| `dload x10, x11, p0, 0, 0` | `0x00B5002B` | `0x2016A00` |
+| `dload x10, x11, p4, 2, 1` | `0x08B540AB` | `0x2116A81` |
+| `dstore x10, x11, p2, 1` | `0x04B5502B` | `0x2096AA0` |
 
 ## 附录 B：当前实现边界
 

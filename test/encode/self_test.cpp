@@ -110,11 +110,11 @@ int main()
         expect_encoded("psync", 0x7000000BU);
         expect_precoded("padd p2, p0, p1", 0x0400400BU, 0x0080080U);
         expect_precoded("pmodld 255", 0x603FC00BU, 0x0C07F80U);
-        expect_precoded("dload x10, x11, p0, 0, 0", 0x5A80002BU, 0x2B50000U);
-        expect_precoded("dload x1, x2, p0, 0, 0", 0x1040002BU, 0x2208000U);
-        expect_precoded("dload x10, x11, p4, 2, 1", 0x5A82122BU, 0x2B50424U);
-        expect_precoded("dstore x10, x11, p2, 1", 0x5A800AABU, 0x2B50015U);
-        expect_encoded("dstore x10, x11, p2, 1", 0x5A800AABU);
+        expect_precoded("dload x10, x11, p0, 0, 0", 0x00B5002BU, 0x2016A00U);
+        expect_precoded("dload x1, x2, p0, 0, 0", 0x0020802BU, 0x2004100U);
+        expect_precoded("dload x10, x11, p4, 2, 1", 0x08B540ABU, 0x2116A81U);
+        expect_precoded("dstore x10, x11, p2, 1", 0x04B5502BU, 0x2096AA0U);
+        expect_encoded("dstore x10, x11, p2, 1", 0x04B5502BU);
         expect_encoded("pmul p2, p0, 255", 0x243FC10BU);
         expect_encoded("pmac p2, p0, 255", 0x343FC10BU);
 
@@ -159,7 +159,7 @@ int main()
         if (executable.find("register uintptr_t hpu_rs2 __asm__(\"x11\")")
             == std::string::npos)
             throw std::runtime_error("executable x11 binding mismatch");
-        if (executable.find(".word 0x5A82122B") == std::string::npos)
+        if (executable.find(".word 0x08B540AB") == std::string::npos)
             throw std::runtime_error("executable fixed word mismatch");
         if (executable.find("spans[3].line_offset") == std::string::npos)
             throw std::runtime_error("executable DSTORE relocation mismatch");
@@ -175,7 +175,7 @@ int main()
             throw std::runtime_error("executable contains zero-length DMA sideband");
         if (header.find("HPU_PROGRAM_SMOKE_DMA_COUNT = 4") == std::string::npos)
             throw std::runtime_error("executable header mismatch");
-        if (manifest.find("7,3,dstore,2,1,0,x10,x11,0x5A800AAB")
+        if (manifest.find("7,3,dstore,2,1,0,x10,x11,0x04B5502B")
             == std::string::npos)
             throw std::runtime_error("DMA manifest mismatch");
 

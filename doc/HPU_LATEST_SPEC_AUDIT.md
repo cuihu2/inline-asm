@@ -46,7 +46,7 @@ cmd26[24:0] = control payload
 1. STG 在 `[27:25]`、`[24:22]` 重复编码 `PDATA`，在 `[16:14]` 编码 3-bit `PTWID`；stage、mode、flag 分别使用 `[13:10]`、`[9:8]`、`[7]`。
 2. 将 AR3 立即数模式移动到 2-bit MODE 的 `[9:8]`。
 3. 增加 `precode_command26()`，所有可编码算子同时输出 `.inst32` 和 `.cmd26`。
-4. custom1 的原始 32-bit payload 已按 `RS2/RS1/flag/OBJ_ID/TYPE/DIR` 控制字段排布，precode 直接使用 `cmd26={1'b1,inst[31:7]}`；`cmd26[24:20]=RS2`、`cmd26[19:15]=RS1`。
+4. custom1 的原始 32-bit payload 已按 `reserved/OBJ_ID/RS2/RS1/TYPE_OR_REL/DIR/reserved/flag` 控制字段排布，precode 直接使用 `cmd26={1'b1,inst[31:7]}`；`cmd26[20:18]=OBJ_ID`、`cmd26[17:13]=RS2`、`cmd26[12:8]=RS1`。
 5. 生成 `expected_cmd26.csv`，逐条记录源 payload、控制 payload、custom kind 和最终命令。
 
 ## 3. 项目与最新文档的差异
@@ -223,7 +223,7 @@ type 3，并将其加入 parser/encoder 和 delivery 负例。原始 TYPE2 位�
 | C2 | custom1 是 rs1/rs2 line sideband，还是 VA 经 DTLB 后形成 `{paddr,len,dir,flags}` descriptor | 集成手册与较旧《RISC-V核内接口设计》custom1 HpuUnit 章节相反；最新修订稿进一步区分 DLOAD/DSTORE | DLOAD 使用 `rs1=offset,rs2=count`；DSTORE 使用 `rs1=offset,OBJ.len=count`，当前 RTL 忽略其 `rs2` 值 |
 | C3 | 模上下文记录是 `mu64+reserved32` 还是 `mu48+reserved48` | 较旧《HPU 控制逻辑设计文档》写 `{reserved[31:0],mu[63:0],q[31:0]}`；较新的《HPU 集成与编程手册》3.5.4 写 `{reserved[47:0],mu[47:0],q[31:0]}`，PE 端口也是 48-bit mu | 以较新的集成手册为准，项目已统一为 `q32+mu48+reserved48` |
 | C4 | NTT/INTT 物理 in-place 或 out-of-place | 较新的《HPU 集成与编程手册》3.4.6 与控制文档均为 out-of-place；较旧《HPU_PE_反串讲》13.6 只是未决记录 | 以较新的集成手册为准：每 stage 物理 out-of-place，完成后向同一 logical object id 提交新 base |
-| C5 | 32-bit 原始指令与 26-bit 内部命令映射 | 项目负责人根据硬件组最新说明确认两类 custom 指令均原样保留 `inst[31:7]`，并补充 custom1 高位寄存器顺序 | `cmd26={custom_kind,inst[31:7]}`；`cmd26[24:20]=RS2`、`cmd26[19:15]=RS1`、`cmd26[14]=0`，其后为 flag/OBJ_ID/TYPE/DIR |
+| C5 | 32-bit 原始指令与 26-bit 内部命令映射 | 项目负责人根据硬件组最新说明确认两类 custom 指令均原样保留 `inst[31:7]`，并于 2026-09-07 补充最新 DMA 位域 | `cmd26={custom_kind,inst[31:7]}`；custom1 为 `{1,4'b0,OBJ_ID,RS2,RS1,TYPE_OR_REL,DIR,4'b0,flag}` |
 | C6 | NTT 使用 P/P^-1 network 物理排列或 group-major DIT 自然排列 | 2026-09-07 硬件修订稿覆盖此前 autotest 模型口径 | 使用自然系数/NTT 镜像；每 stage 的 `N/2` 个 twiddle 按 group-major DIT 重复排列 |
 | C7 | 8-bit `MOD_ID` 是否允许软件使用 256 项 | 修订稿第 6.1 节增加应用 ABI 上限 | 编码器仍接受 0..255；生成器只使用 0..63，`MOD_ID[7:6]=0` |
 | C8 | DSTORE `rel=0` 是否保留对象 | 修订稿第 7.2 节记录当前 RTL 无条件清 V/ALLOC/busy | `rel` 位仍编码，但静态和 runtime 生命周期对 0/1 都视为释放 |

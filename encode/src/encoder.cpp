@@ -148,12 +148,12 @@ std::uint32_t encode_dma(const Instruction& instruction) {
         : static_cast<std::uint32_t>(instruction.type);
 
     std::uint32_t word = 0;
-    word |= static_cast<std::uint32_t>(instruction.rs2) << 27;
-    word |= static_cast<std::uint32_t>(instruction.rs1) << 22;
-    word |= static_cast<std::uint32_t>(instruction.dma_flag) << 17;
-    word |= static_cast<std::uint32_t>(instruction.obj_id) << 10;
-    word |= operation << 8;
-    word |= dir << 7;
+    word |= static_cast<std::uint32_t>(instruction.obj_id) << 25;
+    word |= static_cast<std::uint32_t>(instruction.rs2) << 20;
+    word |= static_cast<std::uint32_t>(instruction.rs1) << 15;
+    word |= operation << 13;
+    word |= dir << 12;
+    word |= static_cast<std::uint32_t>(instruction.dma_flag) << 7;
     word |= kCustom1Opcode;
     return word;
 }
