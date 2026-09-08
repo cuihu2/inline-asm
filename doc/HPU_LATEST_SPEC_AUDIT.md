@@ -2,8 +2,8 @@
 
 > 2026-08-21 注：本文是修复前审计，其中 `x0/x0` DMA 结论已失效。
 > 当前生成入口固定使用 `x10/x11`，并由类型化 span 与 Nexus-AM resolved
-> manifest 绑定具体 line offset/count；DLOAD 和 DSTORE 均从 span 装载非零
-> line count，不再使用旧的 DSTORE `x11=0` 约定。
+> manifest 绑定具体 line offset/count。DLOAD 使用 `rs2` 的 count；DSTORE
+> 的当前 RTL 实际使用 `OBJ.len`，span count 仅用于软件一致性和边界检查。
 
 审计日期：2026-08-18
 
@@ -46,7 +46,7 @@ cmd26[24:0] = control payload
 1. 将 STG 的 stage 移到原始指令 `[13:10]`，mode/flag 分别使用 `[9:8]`、`[7]`。
 2. 将 AR3 立即数模式移动到 2-bit MODE 的 `[9:8]`。
 3. 增加 `precode_command26()`，所有可编码算子同时输出 `.inst32` 和 `.cmd26`。
-4. custom1 precode 将原始指令的 `flag/OBJ_ID/TYPE/DIR` 重排到控制 payload，`rs1/rs2` 作为 line offset/count sideband。
+4. custom1 原始 32-bit payload 按 `reserved/OBJ_ID/RS2/RS1/TYPE_OR_REL/DIR/reserved/flag` 排布，precode 直接使用 `cmd26={1'b1,inst[31:7]}`；`cmd26[20:18]=OBJ_ID`、`cmd26[17:13]=RS2`、`cmd26[12:8]=RS1`。
 5. 生成 `expected_cmd26.csv`，逐条记录源 payload、控制 payload、custom kind 和最终命令。
 
 ## 3. 项目与最新文档的差异
@@ -60,7 +60,7 @@ cmd26[24:0] = control payload
 1. 汇编语法改为 `pmodld mod_id`，范围 0..255；旧 `psrc/idx1/cfg15` 语法作为负例拒绝。
 2. 原始 32-bit 指令的 `MOD_ID` 编码在 `[21:14]`，经过 custom0 precode 后对应 `cmd26[14:7]`。
 3. 所有算子生成器均改为 `pmodld(i)`，不再把 `p4` 编入 `pmodld`。
-4. `MOD_ID` 编码仍为 8-bit；Bank 5 为 32 line、物理可放 512 个 context，但生成器受编码限制最多生成 256 个。对象槽位仍独立保持 8 个。
+4. `MOD_ID` 编码仍为 8-bit；Bank 5 为 32 line、物理可放 512 个 context，但当前应用软件 ABI 要求 `MOD_ID[7:6]=0`，生成器最多使用 64 个。对象槽位仍独立保持 8 个。
 
 `dload type=2, flag[0]=1` 现在显式请求 allocator 将模表对象分配到 small Bank 5。模表对象是具有 `ALLOC/V/busy/base/len` 的真实逻辑对象，不再描述为“仅 DMA 句柄”。DMA 与首条 `pmodld` 的一致性由硬件维护，生成器不再在两者之间插入 `psync`。`MOD_TABLE_BASE_LINE` 已按最新集成手册冻结为 `0x1400`。
 
@@ -70,13 +70,15 @@ cmd26[24:0] = control payload
 
 ### A4. DMA line sideband 与 relocation（已修复，2026-08-21）
 
-文档来源：《HPU 集成与编程手册》3.3、5.2.2、9.1。`rs1/rs2` sideband 给出
-256B line offset 和非零 line count；长度为 0 或越界会触发 fault。
+文档来源：《HPU 集成与编程手册》3.3、5.2.2、9.1。DLOAD 的 `rs1/rs2`
+sideband 给出 256B line offset 和非零 line count；DSTORE 使用 `rs1` offset，
+实际长度取对象表 `OBJ.len`，当前 RTL 忽略其 `rs2` 值。
 
 当前 custom1 固定编码 `x10/x11`。生成的可执行 C 入口在每条 DMA 前从类型化
-`hpu_dma_span_t[]` 装载实际 offset/count，Nexus-AM 再由 `line_map.csv` 生成逐条
-resolved relocation manifest。交付门禁拒绝 `x0/x0`、零 line count、未解析记录和
-HPU_MEM 越界，因此旧的“只有占位 `.inst32`”问题已经关闭。
+`hpu_dma_span_t[]` 装载实际 offset/count；对 DSTORE，软件在发射前检查 span count
+等于跟踪的 `OBJ.len`。Nexus-AM 再由 `line_map.csv` 生成逐条 resolved relocation
+manifest。交付门禁拒绝 `x0/x0`、零 line count、未解析记录和 HPU_MEM 越界，
+因此旧的“只有占位 `.inst32`”问题已经关闭。
 
 ### A5. stage twiddle 物理布局与硬件执行模型不一致（已修复，2026-08-23）
 
@@ -138,7 +140,7 @@ q 范围、`mu_bits=48` 和 `reserved_bits=48`。
 当前共享目标约束已定义 64 word/line、普通 Bank 1024 line，并在 NTT、INTT、
 KeySwitch、Auto 和完整密文乘法入口统一检查 `ceil(N/64) <= 1024`。因此 radix-2
 多项式上限被冻结为 `N <= 65536`；reference 对相同条件执行编译期断言。
-context 数也已按 8-bit `MOD_ID` 限制为 256。
+context 数也已按应用软件 ABI 限制为 64；编码器仍保留完整 8-bit `MOD_ID` 字段。
 
 文档来源：《HPU 集成与编程手册》3.1.2、3.4；《HPU 控制逻辑设计文档》allocator 章节。
 
@@ -190,9 +192,9 @@ NTT/INTT out-of-place 提供 base 管理；5 月《HPU 控制逻辑设计文档�
 为 32 line，固定有效范围 `0x1400..0x141F`，默认保留为模上下文表。
 
 当前目标常量和 `abi.json` 已改为 32-line Bank 5、
-`MOD_TABLE_BASE_LINE=0x1400`、物理容量 512 context。由于 PMODLD 的
-`MOD_ID` 仍是 8 bit，软件寻址上限取 `min(512, 2^8)=256`，对应前 16 line；
-不能因 SRAM 剩余空间而越过指令编码范围。
+`MOD_TABLE_BASE_LINE=0x1400`、物理容量 512 context。PMODLD 的 `MOD_ID` 编码
+仍是 8 bit，但当前应用软件 ABI 要求 `MOD_ID[7:6]=0`，最多使用 64 个 context，
+对应前 4 line；Bank 5 剩余空间与保留编码不扩展当前软件上限。
 
 ### A13. negacyclic pre/post factor 被错误假设为硬件隐式行为（已修复，2026-07-24）
 
@@ -225,10 +227,12 @@ type 3，并将其加入 parser/encoder 和 delivery 负例。原始 TYPE2 位�
 | ID | 矛盾 | 来源文档 | 建议冻结口径 |
 | --- | --- | --- | --- |
 | C1 | `psync` 是否等待 custom1/DMA | 旧版《HPU 控制逻辑设计文档》曾引出统一 inflight 屏障解释；硬件负责人于 2026-08-18 进一步确认 DMA 一致性由硬件维护 | `psync` 仅在完整程序末尾通知 CPU；模表 dload 后不插入 `psync`，内部算子阶段也不使用它 |
-| C2 | custom1 是 rs1/rs2 line sideband，还是 VA 经 DTLB 后形成 `{paddr,len,dir,flags}` descriptor | 较新的《HPU 集成与编程手册》5.2.2/9.1 与较旧《RISC-V核内接口设计》custom1 HpuUnit 章节相反 | 以较新的集成手册为准：`GPR[rs1]=line_offset`、`GPR[rs2]=line_count`，单位 256B；旧 DTLB descriptor 方案不再是项目 ABI |
+| C2 | custom1 是 rs1/rs2 line sideband，还是 VA 经 DTLB 后形成 `{paddr,len,dir,flags}` descriptor | 集成手册与较旧《RISC-V核内接口设计》custom1 HpuUnit 章节相反；最新修订稿进一步区分 DLOAD/DSTORE | DLOAD 使用 `rs1=offset,rs2=count`；DSTORE 使用 `rs1=offset,OBJ.len=count`，当前 RTL 忽略其 `rs2` 值 |
 | C3 | 模上下文记录是 `mu64+reserved32` 还是 `mu48+reserved48` | 较旧《HPU 控制逻辑设计文档》写 `{reserved[31:0],mu[63:0],q[31:0]}`；较新的《HPU 集成与编程手册》3.5.4 写 `{reserved[47:0],mu[47:0],q[31:0]}`，PE 端口也是 48-bit mu | 以较新的集成手册为准，项目已统一为 `q32+mu48+reserved48` |
 | C4 | NTT/INTT 物理 in-place 或 out-of-place | 较新的《HPU 集成与编程手册》3.4.6 与控制文档均为 out-of-place；较旧《HPU_PE_反串讲》13.6 只是未决记录 | 以较新的集成手册为准：每 stage 物理 out-of-place，完成后向同一 logical object id 提交新 base |
-| C5 | 32-bit 原始指令与 26-bit 内部命令映射 | 《HPU 控制逻辑设计文档》v0.4 规定 `cmd[25]=cmd_kind`；《RISC-V核内接口设计》只确认核侧可提取 custom0 的 `inst[31:7]`，其中后续 custom1 descriptor 方案与控制逻辑的统一命令入口不同 | 按项目负责人最新确认，以《HPU 控制逻辑设计文档》为准：kind 位于最高位，custom1 由 precode 重排语义字段并携带独立 sideband |
+| C5 | 32-bit 原始指令与 26-bit 内部命令映射 | 项目负责人根据硬件组最新说明确认两类 custom 指令均原样保留 `inst[31:7]`，并于 2026-09-07 补充最新 DMA 位域 | `cmd26={custom_kind,inst[31:7]}`；custom1 为 `{1,4'b0,OBJ_ID,RS2,RS1,TYPE_OR_REL,DIR,4'b0,flag}` |
+| C7 | 8-bit `MOD_ID` 是否允许软件使用 256 项 | 修订稿第 6.1 节增加应用 ABI 上限 | 编码器仍接受 0..255；生成器只使用 0..63，`MOD_ID[7:6]=0` |
+| C8 | DSTORE `rel=0` 是否保留对象 | 修订稿第 7.2 节记录当前 RTL 无条件清 V/ALLOC/busy | `rel` 位仍编码，但静态和 runtime 生命周期对 0/1 都视为释放 |
 
 ## 5. 建议实施顺序
 

@@ -90,6 +90,10 @@ int main()
             if (expected_kind == 0U && item.command26 != (item.word >> 7U)) {
                 throw std::runtime_error("custom0 payload precode mismatch");
             }
+            if (expected_kind == 1U
+                && item.command26 != ((1U << 25U) | (item.word >> 7U))) {
+                throw std::runtime_error("custom1 payload precode mismatch");
+            }
         }
 
         expect_encoded("padd p2, p0, p1", 0x0400400BU);
@@ -105,10 +109,11 @@ int main()
         expect_encoded("psync", 0x7000000BU);
         expect_precoded("padd p2, p0, p1", 0x0400400BU, 0x0080080U);
         expect_precoded("pmodld 255", 0x603FC00BU, 0x0C07F80U);
-        expect_precoded("dload x10, x11, p0, 0, 0", 0x00B5002BU, 0x2000000U);
-        expect_precoded("dload x10, x11, p4, 2, 1", 0x00B5292BU, 0x2000424U);
-        expect_precoded("dstore x10, x11, p2, 1", 0x00B5542BU, 0x2000015U);
-        expect_encoded("dstore x10, x11, p2, 1", 0x00B5542BU);
+        expect_precoded("dload x10, x11, p0, 0, 0", 0x00B5002BU, 0x2016A00U);
+        expect_precoded("dload x1, x2, p0, 0, 0", 0x0020802BU, 0x2004100U);
+        expect_precoded("dload x10, x11, p4, 2, 1", 0x08B540ABU, 0x2116A81U);
+        expect_precoded("dstore x10, x11, p2, 1", 0x04B5502BU, 0x2096AA0U);
+        expect_encoded("dstore x10, x11, p2, 1", 0x04B5502BU);
         expect_encoded("pmul p2, p0, 255", 0x243FC10BU);
         expect_encoded("pmac p2, p0, 255", 0x343FC10BU);
 
@@ -132,6 +137,11 @@ int main()
             "dload x10, x11, p0, 1, 0\n"
             "psync\n"
             "pfree p0\n");
+        expect_program_rejected(
+            "dload x10, x11, p0, 1, 0\n"
+            "dstore x10, x11, p0, 0\n"
+            "pfree p0\n"
+            "psync\n");
         const std::string executable =
             hpu::render_executable_source("smoke", executable_encoded, 65536);
         const std::string header = hpu::render_executable_header(
@@ -148,7 +158,7 @@ int main()
         if (executable.find("register uintptr_t hpu_rs2 __asm__(\"x11\")")
             == std::string::npos)
             throw std::runtime_error("executable x11 binding mismatch");
-        if (executable.find(".word 0x00B5292B") == std::string::npos)
+        if (executable.find(".word 0x08B540AB") == std::string::npos)
             throw std::runtime_error("executable fixed word mismatch");
         if (executable.find("spans[3].line_offset") == std::string::npos)
             throw std::runtime_error("executable DSTORE relocation mismatch");
@@ -156,12 +166,15 @@ int main()
                 "hpu_rs2 __asm__(\"x11\") = (uintptr_t)spans[3].line_count;")
             == std::string::npos)
             throw std::runtime_error("executable DSTORE x11/count ABI mismatch");
+        if (executable.find(
+                "spans[3].line_count != hpu_obj_len[2]") == std::string::npos)
+            throw std::runtime_error("executable DSTORE OBJ.len guard mismatch");
         if (executable.find("hpu_rs2 __asm__(\"x11\") = 0;")
             != std::string::npos)
             throw std::runtime_error("executable contains zero-length DMA sideband");
         if (header.find("HPU_PROGRAM_SMOKE_DMA_COUNT = 4") == std::string::npos)
             throw std::runtime_error("executable header mismatch");
-        if (manifest.find("7,3,dstore,2,1,0,x10,x11,0x00B5542B")
+        if (manifest.find("7,3,dstore,2,1,0,x10,x11,0x04B5502B")
             == std::string::npos)
             throw std::runtime_error("DMA manifest mismatch");
 

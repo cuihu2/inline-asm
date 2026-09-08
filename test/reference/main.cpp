@@ -22,6 +22,7 @@
 #include "scheme/bgv/encode.hpp"
 #include "scheme/bfv/encode.hpp"
 #include "scheme/ckks/encode.hpp"
+#include "util/hpu_asm.hpp"
 
 namespace {
 
@@ -68,8 +69,10 @@ constexpr std::size_t kModContextsPerLine =
 constexpr std::size_t kPhysicalModContexts =
     kSmallBankLines * kModContextsPerLine;
 constexpr std::size_t kModIdBits = 8;
-constexpr std::size_t kMaxModContexts =
-    std::min(kPhysicalModContexts, std::size_t{1} << kModIdBits);
+constexpr std::size_t kMaxModContexts = hpu::kMaxModContexts;
+
+static_assert(kPhysicalModContexts == hpu::kPhysicalModContexts);
+static_assert(kModIdBits == hpu::kModIdBits);
 
 enum class HardwareDomain {
     kCoefficient,
@@ -2644,7 +2647,8 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
             "hardware package requires one root entry per modulus; zero marks no NTT tables");
     }
     if (moduli.size() > kMaxModContexts) {
-        throw std::runtime_error("mod contexts exceed the 8-bit MOD_ID address space");
+        throw std::runtime_error(
+            "mod contexts exceed the 64-entry software MOD_ID ABI");
     }
     const bool includes_twiddles = std::any_of(
         roots.begin(), roots.end(), [](U64 root) { return root != 0; });
@@ -2919,10 +2923,12 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
         << "  \"line_offset_origin\": \"HPU_MEM base address\",\n"
         << "  \"custom1_sideband\": {\n"
         << "    \"rs1_value\": \"HPU_MEM line offset\",\n"
-        << "    \"rs2_value\": \"line count\",\n"
+        << "    \"rs2_value\": \"DLOAD line count; encoded but ignored by current RTL for DSTORE\",\n"
+        << "    \"dstore_transfer_length\": \"OBJ.len captured by the object table\",\n"
+        << "    \"dstore_completion\": \"always clears V, ALLOC, and busy; rel=0 and rel=1 both release\",\n"
         << "    \"unit_bytes\": " << kHpuLineBytes << ",\n"
-        << "    \"line_count_must_be_nonzero\": true,\n"
-        << "    \"bounds_rule\": \"offset + count <= HPU_MEM_SIZE_LINES\"\n"
+        << "    \"host_span_line_count_must_be_nonzero\": true,\n"
+        << "    \"bounds_rule\": \"DLOAD: offset + rs2 <= window; DSTORE: offset + OBJ.len <= window\"\n"
         << "  },\n"
         << "  \"local_sram\": {\n"
         << "    \"regular_bank_count\": " << kRegularBankCount << ",\n"
@@ -2943,6 +2949,7 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
         << "    \"contexts_per_line\": " << kModContextsPerLine << ",\n"
         << "    \"physical_context_capacity\": " << kPhysicalModContexts << ",\n"
         << "    \"mod_id_bits\": " << kModIdBits << ",\n"
+        << "    \"encoded_context_capacity\": " << hpu::kEncodedModContexts << ",\n"
         << "    \"mod_id_addressable_lines\": "
         << kMaxModContexts / kModContextsPerLine << ",\n"
         << "    \"max_contexts\": " << kMaxModContexts << ",\n"
@@ -2990,7 +2997,7 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
                << "  \"hardware_image\": \"hardware/hpu_mem_image.u32.bin\",\n"
                << "  \"line_map\": \"hardware/line_map.csv\",\n"
                << "  \"hpu_mem_config\": \"hardware/hpu_mem_config.json\",\n"
-               << "  \"custom1_sideband\": \"GPR[rs1]=line_offset, GPR[rs2]=line_count, both in 256-byte line units\",\n"
+               << "  \"custom1_sideband\": \"GPR[rs1]=line_offset; GPR[rs2] supplies DLOAD line_count, while DSTORE uses OBJ.len\",\n"
                << "  \"runtime_binding\": \"pass the resolved DMA span array to the generated hpu_program_* entry; Nexus-AM materializes auditable resolved manifests\",\n"
                << "  \"qualification_pending\": [\"target RTL execution evidence\"]\n}\n";
     write_text(test_data_root / "memory_map.json", memory_map.str());

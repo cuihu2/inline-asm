@@ -142,14 +142,17 @@ std::uint32_t encode_dma(const Instruction& instruction) {
                  "dma_flag");
 
     const std::uint32_t dir = instruction.mnemonic == Mnemonic::kDstore ? 1U : 0U;
+    const std::uint32_t operation = dir != 0U
+        ? static_cast<std::uint32_t>(instruction.type) << 1U
+        : static_cast<std::uint32_t>(instruction.type);
 
     std::uint32_t word = 0;
+    word |= static_cast<std::uint32_t>(instruction.obj_id) << 25;
     word |= static_cast<std::uint32_t>(instruction.rs2) << 20;
     word |= static_cast<std::uint32_t>(instruction.rs1) << 15;
-    word |= dir << 14;
-    word |= static_cast<std::uint32_t>(instruction.type) << 12;
-    word |= static_cast<std::uint32_t>(instruction.obj_id) << 9;
-    word |= static_cast<std::uint32_t>(instruction.dma_flag) << 8;
+    word |= operation << 13;
+    word |= dir << 12;
+    word |= static_cast<std::uint32_t>(instruction.dma_flag) << 7;
     word |= kCustom1Opcode;
     return word;
 }
@@ -181,17 +184,7 @@ std::uint32_t precode_command26(std::uint32_t instruction_word) {
         return instruction_word >> 7U;
     }
     if (opcode == kCustom1Opcode) {
-        const std::uint32_t dir = (instruction_word >> 14U) & 0x1U;
-        const std::uint32_t raw_type = (instruction_word >> 12U) & 0x3U;
-        const std::uint32_t type = dir != 0U ? (raw_type << 1U) : raw_type;
-        const std::uint32_t obj_id = (instruction_word >> 9U) & 0x7U;
-        const std::uint32_t flag0 = (instruction_word >> 8U) & 0x1U;
-
-        return (1U << 25U)
-            | (flag0 << 10U)
-            | (obj_id << 3U)
-            | (type << 1U)
-            | dir;
+        return (1U << 25U) | (instruction_word >> 7U);
     }
 
     throw std::runtime_error("instruction is not custom0/custom1");

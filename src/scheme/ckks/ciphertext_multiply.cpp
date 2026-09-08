@@ -65,7 +65,7 @@ std::string generate_ciphertext_multiply_body_asm(
     }
     if (!hpu::is_valid_rns_decomposition_layout(N, layout)
         || layout.q_mod_ids.size() < 2 || !prefix_q) {
-        asm_code << "        // Invalid CKKS multiply config: require N fitting one bank, num_q >= 2, divisible digits, and <= 256 contexts\n";
+        asm_code << "        // Invalid CKKS multiply config: require N fitting one bank, num_q >= 2, valid active digits, and <= 64 contexts\n";
         return asm_code.str();
     }
 
@@ -129,7 +129,7 @@ std::string generate_ciphertext_multiply_body_asm(
     bool manage_modulus_table)
 {
     if (!valid_config(N, num_q, num_p, dnum)) {
-        return "        // Invalid CKKS multiply config: require N fitting one bank, num_q >= 2, divisible digits, and <= 256 contexts\n";
+        return "        // Invalid CKKS multiply config: require N fitting one bank, num_q >= 2, divisible digits, and <= 64 contexts\n";
     }
     return generate_ciphertext_multiply_body_asm(
         N,

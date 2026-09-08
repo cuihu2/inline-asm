@@ -83,7 +83,8 @@ static_assert(!is_power_of_two(4095));
 static_assert(is_valid_ntt_size(128));
 static_assert(!is_valid_ntt_size(64));
 static_assert(has_mod_context_capacity(4, 3, 1));
-static_assert(!has_mod_context_capacity(252, 4, 1));
+static_assert(has_mod_context_capacity(60, 3, 1));
+static_assert(!has_mod_context_capacity(61, 3, 1));
 static_assert(is_prime(65537));
 static_assert(!is_prime(81921));
 

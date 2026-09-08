@@ -84,7 +84,7 @@ std::string generate_hpu_moddown_body_asm(
     std::ostringstream asm_code;
 
     if (!valid_moddown_config(num_q, num_p)) {
-        asm_code << "        // Invalid config: require positive bases within the 8-bit MOD_ID capacity\n";
+        asm_code << "        // Invalid config: require positive bases within the 64-entry software MOD_ID ABI\n";
         return asm_code.str();
     }
 
@@ -109,7 +109,7 @@ std::string generate_hpu_moddown_asm(
     asm_code << "void hpu_moddown_Q" << num_q << "_P" << num_p << "(void) {\n";
 
     if (!valid_moddown_config(num_q, num_p)) {
-        asm_code << "    // Invalid config: require positive bases within the 8-bit MOD_ID capacity\n";
+        asm_code << "    // Invalid config: require positive bases within the 64-entry software MOD_ID ABI\n";
         asm_code << "}\n";
         return asm_code.str();
     }

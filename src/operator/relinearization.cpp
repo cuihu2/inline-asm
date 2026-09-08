@@ -81,7 +81,7 @@ std::string generate_hpu_relinearization_body_asm(
     bool manage_modulus_table)
 {
     if (!hpu::is_valid_rns_decomposition_config(N, num_q, num_p, dnum)) {
-        return "        // Invalid config: require power-of-two N fitting 1024 lines, divisible digits, and at most 256 mod contexts\n";
+        return "        // Invalid config: require power-of-two N fitting 1024 lines, divisible digits, and at most 64 mod contexts\n";
     }
     return generate_hpu_relinearization_body_asm(
         N,
@@ -102,7 +102,7 @@ std::string generate_hpu_relinearization_asm(
              << "_P" << num_p << "_D" << dnum << "(void) {\n";
 
     if (!hpu::is_valid_rns_decomposition_config(N, num_q, num_p, dnum)) {
-        asm_code << "    // Invalid config: require power-of-two N fitting 1024 lines, divisible digits, and at most 256 mod contexts\n";
+        asm_code << "    // Invalid config: require power-of-two N fitting 1024 lines, divisible digits, and at most 64 mod contexts\n";
         asm_code << "}\n";
         return asm_code.str();
     }

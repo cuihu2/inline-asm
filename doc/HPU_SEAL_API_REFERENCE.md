@@ -21,7 +21,7 @@
 | 指令 | 类型 | 语义 |
 | --- | --- | --- |
 | `dload` | custom1 | 从 HPU_MEM 搬运到对象槽位；`flag[0]=1` 分配到 small Bank 5 |
-| `dstore` | custom1 | 对象槽位写回 HPU_MEM；`rel=1` 表示 DMA 完成后释放对象 |
+| `dstore` | custom1 | 对象槽位写回 HPU_MEM；当前 RTL 对 `rel=0/1` 都在 DMA 完成后释放对象，传输长度取 `OBJ.len` |
 | `padd` | custom0 | 对象级逐点模加 |
 | `psub` | custom0 | 对象级逐点模减 |
 | `pmul` | custom0 | 对象级逐点模乘（或 `pmul imm` 整数乘） |

@@ -101,11 +101,9 @@ void validate_executable_program(
             break;
         case Mnemonic::kDstore:
             require_live(instruction.obj_id, index, "dstore source");
-            if (instruction.type == 1) {
-                live[instruction.obj_id] = false;
-                if (modulus_table_object == instruction.obj_id)
-                    modulus_table_object = -1;
-            }
+            live[instruction.obj_id] = false;
+            if (modulus_table_object == instruction.obj_id)
+                modulus_table_object = -1;
             break;
         case Mnemonic::kPadd:
         case Mnemonic::kPsub:
@@ -212,6 +210,7 @@ std::string render_executable_source(
         output << static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
     }
     output << "_DMA_COUNT || (span_count != 0 && spans == NULL)) return -1;\n"
+           << "    uint32_t hpu_obj_len[8] = {0};\n"
            << "    for (size_t i = 0; i < span_count; ++i) {\n"
            << "        if (spans[i].line_count == 0 ||\n"
            << "            spans[i].line_offset >= HPU_MEM_LINE_COUNT ||\n"
@@ -232,6 +231,17 @@ std::string render_executable_source(
                 output << "    if (spans[" << dma_index
                        << "].line_count > HPU_SMALL_BANK_LINE_COUNT) return -3;\n";
             }
+            if (instruction.mnemonic == Mnemonic::kDload) {
+                output << "    hpu_obj_len[" << static_cast<unsigned>(instruction.obj_id)
+                       << "] = spans[" << dma_index << "].line_count;\n";
+            } else {
+                output << "    if (hpu_obj_len["
+                       << static_cast<unsigned>(instruction.obj_id)
+                       << "] == 0 || spans[" << dma_index
+                       << "].line_count != hpu_obj_len["
+                       << static_cast<unsigned>(instruction.obj_id)
+                       << "]) return -5;\n";
+            }
             output << "#if defined(__riscv)\n"
                    << "    {\n"
                    << "        register uintptr_t hpu_rs1 __asm__(\"x10\") = "
@@ -242,8 +252,25 @@ std::string render_executable_source(
                    << "\" : : \"r\"(hpu_rs1), \"r\"(hpu_rs2) : \"memory\");\n"
                    << "    }\n"
                    << "#endif\n";
+            if (instruction.mnemonic == Mnemonic::kDstore) {
+                output << "    hpu_obj_len["
+                       << static_cast<unsigned>(instruction.obj_id)
+                       << "] = 0;\n";
+            }
             ++dma_index;
         } else {
+            if (instruction.mnemonic == Mnemonic::kPadd
+                || instruction.mnemonic == Mnemonic::kPsub
+                || instruction.mnemonic == Mnemonic::kPmul
+                || instruction.mnemonic == Mnemonic::kPmac) {
+                output << "    hpu_obj_len["
+                       << static_cast<unsigned>(instruction.pdst)
+                       << "] = hpu_obj_len["
+                       << static_cast<unsigned>(instruction.psrc1) << "];\n";
+            } else if (instruction.mnemonic == Mnemonic::kPfree) {
+                output << "    hpu_obj_len["
+                       << static_cast<unsigned>(instruction.idx0) << "] = 0;\n";
+            }
             output << "#if defined(__riscv)\n"
                    << "    __asm__ volatile(\".word " << hex_word(item.word)
                    << "\" : : : \"memory\");\n"
