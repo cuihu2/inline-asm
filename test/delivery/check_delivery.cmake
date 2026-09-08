@@ -561,9 +561,10 @@ foreach(SOURCE_TEXT MODUP_SOURCE KEYSWITCH_SOURCE AUTO_SOURCE)
 endforeach()
 foreach(SOURCE_TEXT KEYSWITCH_SOURCE)
     string(FIND "${${SOURCE_TEXT}}"
-        "generate_hpu_modup_body_asm" UNIFIED_MODUP_POSITION)
+        "generate_hpu_modup_contexts_body_asm" UNIFIED_MODUP_POSITION)
     if(UNIFIED_MODUP_POSITION EQUAL -1)
-        message(FATAL_ERROR "${SOURCE_TEXT} does not call the unified full-basis ModUp generator")
+        message(FATAL_ERROR
+            "${SOURCE_TEXT} does not call the explicit-layout full-basis ModUp generator")
     endif()
 endforeach()
 string(FIND "${AUTO_SOURCE}"
