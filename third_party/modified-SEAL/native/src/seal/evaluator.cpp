@@ -422,13 +422,19 @@ namespace seal
 
         auto rns_tool = context_data.rns_tool();
         size_t base_Bsk_size = rns_tool->base_Bsk()->size();
+#ifndef SEAL_EXPERIMENTAL_BFV_NO_SMRQ
         size_t base_Bsk_m_tilde_size = rns_tool->base_Bsk_m_tilde()->size();
+#endif
 
         // Determine destination.size()
         size_t dest_size = sub_safe(add_safe(encrypted1_size, encrypted2_size), size_t(1));
 
         // Size check
+#ifdef SEAL_EXPERIMENTAL_BFV_NO_SMRQ
+        if (!product_fits_in(dest_size, coeff_count, base_Bsk_size))
+#else
         if (!product_fits_in(dest_size, coeff_count, base_Bsk_m_tilde_size))
+#endif
         {
             throw logic_error("invalid parameters");
         }
@@ -471,6 +477,11 @@ namespace seal
             set_poly(get<0>(I), coeff_count, base_q_size, get<1>(I));
             ntt_negacyclic_harvey_lazy(get<1>(I), base_q_size, base_q_ntt_tables);
 
+#ifdef SEAL_EXPERIMENTAL_BFV_NO_SMRQ
+            // Convert directly from q to Bsk. The approximate CRT conversion retains up to base_q_size - 1 extra
+            // multiples of q; RNSTool reserves additional auxiliary-base capacity for their product growth.
+            rns_tool->fastbconv_q_to_Bsk_unreduced(get<0>(I), get<2>(I), pool);
+#else
             // Allocate temporary space for a polynomial in the Bsk U {m_tilde} base
             SEAL_ALLOCATE_GET_RNS_ITER(temp, coeff_count, base_Bsk_m_tilde_size, pool);
 
@@ -479,6 +490,7 @@ namespace seal
 
             // (2) Reduce q-overflows in with Montgomery reduction, switching base to Bsk
             rns_tool->sm_mrq(temp, get<2>(I), pool);
+#endif
 
             // Transform to NTT form in base Bsk
             // Lazy reduction
@@ -904,7 +916,9 @@ namespace seal
 
         auto rns_tool = context_data.rns_tool();
         size_t base_Bsk_size = rns_tool->base_Bsk()->size();
+#ifndef SEAL_EXPERIMENTAL_BFV_NO_SMRQ
         size_t base_Bsk_m_tilde_size = rns_tool->base_Bsk_m_tilde()->size();
+#endif
 
         // Optimization implemented currently only for size 2 ciphertexts
         if (encrypted_size != 2)
@@ -917,7 +931,11 @@ namespace seal
         size_t dest_size = sub_safe(add_safe(encrypted_size, encrypted_size), size_t(1));
 
         // Size check
+#ifdef SEAL_EXPERIMENTAL_BFV_NO_SMRQ
+        if (!product_fits_in(dest_size, coeff_count, base_Bsk_size))
+#else
         if (!product_fits_in(dest_size, coeff_count, base_Bsk_m_tilde_size))
+#endif
         {
             throw logic_error("invalid parameters");
         }
@@ -951,6 +969,11 @@ namespace seal
             set_poly(get<0>(I), coeff_count, base_q_size, get<1>(I));
             ntt_negacyclic_harvey_lazy(get<1>(I), base_q_size, base_q_ntt_tables);
 
+#ifdef SEAL_EXPERIMENTAL_BFV_NO_SMRQ
+            // Convert directly from q to Bsk. The approximate CRT conversion retains up to base_q_size - 1 extra
+            // multiples of q; RNSTool reserves additional auxiliary-base capacity for their product growth.
+            rns_tool->fastbconv_q_to_Bsk_unreduced(get<0>(I), get<2>(I), pool);
+#else
             // Allocate temporary space for a polynomial in the Bsk U {m_tilde} base
             SEAL_ALLOCATE_GET_RNS_ITER(temp, coeff_count, base_Bsk_m_tilde_size, pool);
 
@@ -959,6 +982,7 @@ namespace seal
 
             // (2) Reduce q-overflows in with Montgomery reduction, switching base to Bsk
             rns_tool->sm_mrq(temp, get<2>(I), pool);
+#endif
 
             // Transform to NTT form in base Bsk
             // Lazy reduction

@@ -227,6 +227,15 @@ namespace seal
             */
             void fastbconv_m_tilde(ConstRNSIter input, RNSIter destination, MemoryPoolHandle pool) const;
 
+#ifdef SEAL_EXPERIMENTAL_BFV_NO_SMRQ
+            /**
+            Fast base conversion from q directly to Bsk without multiplying by m_tilde or reducing the q-overflow.
+            The output represents input + alpha * prod(q), where alpha is introduced by the approximate CRT conversion.
+            */
+            void fastbconv_q_to_Bsk_unreduced(
+                ConstRNSIter input, RNSIter destination, MemoryPoolHandle pool) const;
+#endif
+
             /**
             Compute round(t/q * |input|_q) mod t exactly
             */

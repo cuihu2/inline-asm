@@ -322,6 +322,43 @@ option(SEAL_AVOID_BRANCHING ${SEAL_AVOID_BRANCHING_STR} OFF)
 message(STATUS "SEAL_AVOID_BRANCHING: ${SEAL_AVOID_BRANCHING}")
 mark_as_advanced(FORCE SEAL_AVOID_BRANCHING)
 
+# [option] SEAL_EXPERIMENTAL_BFV_NO_SMRQ (default: OFF)
+# Use an unreduced q-to-Bsk base conversion in BFV multiplication and omit the
+# small Montgomery reduction. This is an experimental architecture exploration
+# option; the default BEHZ path remains unchanged.
+set(SEAL_EXPERIMENTAL_BFV_NO_SMRQ_STR
+    "Omit the small Montgomery reduction in BFV multiplication (experimental)")
+option(SEAL_EXPERIMENTAL_BFV_NO_SMRQ ${SEAL_EXPERIMENTAL_BFV_NO_SMRQ_STR} OFF)
+message(STATUS "SEAL_EXPERIMENTAL_BFV_NO_SMRQ: ${SEAL_EXPERIMENTAL_BFV_NO_SMRQ}")
+mark_as_advanced(FORCE SEAL_EXPERIMENTAL_BFV_NO_SMRQ)
+if(SEAL_EXPERIMENTAL_BFV_NO_SMRQ)
+    message(WARNING
+        "SEAL_EXPERIMENTAL_BFV_NO_SMRQ changes the BFV BEHZ multiplication path. "
+        "It is intended for correctness and performance evaluation only.")
+endif()
+
+# [option] SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK (default: OFF)
+# Grow the BFV auxiliary base B until it alone covers the signed fast-floor
+# output, and use a comparison-free Shenoy-Kumaresan correction. This option
+# is independent of NO_SMRQ so all four baseline/experimental combinations can
+# be built and tested. Auxiliary-prime width remains unchanged; a 32-bit HPU
+# can provide the same total B width with more primes.
+set(SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK_STR
+    "Use an enlarged auxiliary base and branchless BFV SK conversion (experimental)")
+option(SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK ${SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK_STR} OFF)
+message(STATUS "SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK: ${SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK}")
+mark_as_advanced(FORCE SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK)
+if(SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK)
+    message(WARNING
+        "SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK changes the BFV auxiliary-base size and final base conversion. "
+        "It is intended for correctness and performance evaluation only.")
+    if(NOT SEAL_EXPERIMENTAL_BFV_NO_SMRQ)
+        message(STATUS
+            "BRANCHLESS_SK is enabled without NO_SMRQ: the final SK conversion is comparison-free, "
+            "but the earlier SmMRq step remains in the BFV multiplication path.")
+    endif()
+endif()
+
 # [option] SEAL_USE_INTRIN (default: ON)
 set(SEAL_USE_INTRIN_OPTION_STR "Use intrinsics")
 option(SEAL_USE_INTRIN ${SEAL_USE_INTRIN_OPTION_STR} ON)
@@ -669,6 +706,16 @@ endif()
 set(SEAL_BUILD_TESTS_OPTION_STR "Build C++ tests for Microsoft SEAL")
 option(SEAL_BUILD_TESTS ${SEAL_BUILD_TESTS_OPTION_STR} OFF)
 message(STATUS "SEAL_BUILD_TESTS: ${SEAL_BUILD_TESTS}")
+
+# [option] SEAL_BUILD_BFV_NO_SMRQ_DIAGNOSTICS
+set(SEAL_BUILD_BFV_NO_SMRQ_DIAGNOSTICS_OPTION_STR
+    "Build deterministic BFV multiplication diagnostics for experimental-path comparison")
+option(SEAL_BUILD_BFV_NO_SMRQ_DIAGNOSTICS ${SEAL_BUILD_BFV_NO_SMRQ_DIAGNOSTICS_OPTION_STR} OFF)
+message(STATUS "SEAL_BUILD_BFV_NO_SMRQ_DIAGNOSTICS: ${SEAL_BUILD_BFV_NO_SMRQ_DIAGNOSTICS}")
+mark_as_advanced(FORCE SEAL_BUILD_BFV_NO_SMRQ_DIAGNOSTICS)
+if(SEAL_BUILD_BFV_NO_SMRQ_DIAGNOSTICS AND NOT SEAL_BUILD_TESTS)
+    message(WARNING "SEAL_BUILD_BFV_NO_SMRQ_DIAGNOSTICS requires SEAL_BUILD_TESTS=ON; diagnostics will not be built")
+endif()
 
 if(SEAL_BUILD_TESTS)
     add_subdirectory(native/tests)

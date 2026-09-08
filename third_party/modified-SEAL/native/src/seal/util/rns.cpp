@@ -597,7 +597,7 @@ namespace seal
             // Allocate memory for the bases q, B, Bsk, Bsk U m_tilde, t_gamma
             size_t base_q_size = q.size();
 
-            // In some cases we might need to increase the size of the base B by one, namely we require
+            // In some cases we need to increase the size of the base B, namely the ordinary path requires
             // K * n * t * q^2 < q * prod(B) * m_sk, where K takes into account cross terms when larger size ciphertexts
             // are used, and n is the "delta factor" for the ring. We reserve 32 bits for K * n. Here the coeff modulus
             // primes q_i are bounded to be SEAL_USER_MOD_BIT_COUNT_MAX (60) bits, and all primes in B and m_sk are
@@ -605,11 +605,51 @@ namespace seal
             int total_coeff_bit_count = get_significant_bit_count_uint(q.base_prod(), q.size());
 
             size_t base_B_size = base_q_size;
+#if defined(SEAL_EXPERIMENTAL_BFV_NO_SMRQ) || defined(SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK)
+            int no_smrq_extra_bit_count = 0;
+#ifdef SEAL_EXPERIMENTAL_BFV_NO_SMRQ
+            // A fast q-to-Bsk conversion is a sum of base_q_size CRT terms, each strictly smaller than q. Thus its
+            // unreduced representative is strictly smaller than base_q_size * q, and a product of two such
+            // representatives is strictly smaller than base_q_size^2 * q^2. Reserve ceil(log2(base_q_size^2))
+            // additional bits for this growth when BFV omits the small Montgomery reduction.
+            if (!t_.is_zero())
+            {
+                size_t fastbconv_product_growth = mul_safe(base_q_size, base_q_size);
+                no_smrq_extra_bit_count = get_significant_bit_count(
+                    safe_cast<uint64_t>(fastbconv_product_growth - size_t(1)));
+            }
+#endif
+
+            int required_base_bit_count =
+                add_safe(32, t_.bit_count(), total_coeff_bit_count, no_smrq_extra_bit_count);
+#ifdef SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK
+            // The ordinary SK conversion uses B * m_sk as its signed dynamic range and centers alpha modulo m_sk.
+            // To make the correction comparison-free, require B alone to cover twice the fast-floor output bound.
+            // Then the true CRT overflow alpha is non-negative and at most base_B_size, so its residue modulo m_sk
+            // is always in the lower half. The extra bit accounts for the signed half-range requirement |x| < B/2.
+            int required_signed_base_bit_count = add_safe(required_base_bit_count, 1);
+            // Every generated auxiliary prime is strictly larger than 2^(bit_count-1). Use this lower bound rather
+            // than the nominal prime bit count so the signed-range guarantee does not depend on the exact primes.
+            constexpr int guaranteed_auxiliary_prime_bit_count = SEAL_INTERNAL_MOD_BIT_COUNT - 1;
+            while (required_signed_base_bit_count >=
+                   guaranteed_auxiliary_prime_bit_count * safe_cast<int>(base_B_size))
+            {
+                base_B_size++;
+            }
+#else
+            while (required_base_bit_count >=
+                   SEAL_INTERNAL_MOD_BIT_COUNT * safe_cast<int>(base_B_size) + SEAL_INTERNAL_MOD_BIT_COUNT)
+            {
+                base_B_size++;
+            }
+#endif
+#else
             if (32 + t_.bit_count() + total_coeff_bit_count >=
                 SEAL_INTERNAL_MOD_BIT_COUNT * safe_cast<int>(base_q_size) + SEAL_INTERNAL_MOD_BIT_COUNT)
             {
                 base_B_size++;
             }
+#endif
 
             size_t base_Bsk_size = add_safe(base_B_size, size_t(1));
             size_t base_Bsk_m_tilde_size = add_safe(base_Bsk_size, size_t(1));
@@ -948,8 +988,32 @@ namespace seal
                 get<0>(I) = multiply_uint_mod(get<1>(I) + (m_sk_.value() - get<2>(I)), inv_prod_B_mod_m_sk_, m_sk_);
             });
 
-            // alpha_sk is now ready for the Shenoy-Kumaresan conversion; however, note that our
-            // alpha_sk here is not a centered reduction, so we need to apply a correction below.
+            // alpha_sk is now ready for the Shenoy-Kumaresan conversion.
+#ifdef SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK
+            // The enlarged base B guarantees that the represented signed input lies in (-B/2, B/2). Since the
+            // unreduced CRT sum lies in [0, base_B_size * B), its overflow is a non-negative integer no greater
+            // than base_B_size. In debug builds, verify the range used by the comparison-free correction.
+#ifdef SEAL_DEBUG
+            SEAL_ITERATE(alpha_sk, coeff_count_, [&](auto alpha) {
+                if (alpha > safe_cast<uint64_t>(base_B_size) || alpha > (m_sk_.value() >> 1))
+                {
+                    throw logic_error("branchless SK overflow is outside the proven lower-half range");
+                }
+            });
+#endif
+            SEAL_ITERATE(iter(prod_B_mod_q_, base_q_->base(), destination), base_q_size, [&](auto I) {
+                MultiplyUIntModOperand neg_prod_B_mod_q_elt;
+                neg_prod_B_mod_q_elt.set(get<1>(I).value() - get<0>(I), get<1>(I));
+
+                SEAL_ITERATE(iter(alpha_sk, get<2>(I)), coeff_count_, [&](auto J) {
+                    // Exact correction: destination = destination - alpha * B mod q_i. The range proof above
+                    // makes alpha non-negative, so no centered comparison or conditional selection is needed.
+                    get<1>(J) = multiply_add_uint_mod(
+                        get<0>(J), neg_prod_B_mod_q_elt, get<1>(J), get<1>(I));
+                });
+            });
+#else
+            // The ordinary SK path centers alpha modulo m_sk before applying the exact correction.
             const uint64_t m_sk_div_2 = m_sk_.value() >> 1;
             SEAL_ITERATE(iter(prod_B_mod_q_, base_q_->base(), destination), base_q_size, [&](auto I) {
                 // Set up the multiplication helpers
@@ -974,6 +1038,7 @@ namespace seal
                     }
                 });
             });
+#endif
         }
 
         void RNSTool::sm_mrq(ConstRNSIter input, RNSIter destination, MemoryPoolHandle pool) const
@@ -1129,6 +1194,41 @@ namespace seal
             // Finally convert to {m_tilde}
             base_q_to_m_tilde_conv_->fast_convert_array(temp, destination + base_Bsk_size, pool);
         }
+
+#ifdef SEAL_EXPERIMENTAL_BFV_NO_SMRQ
+        void RNSTool::fastbconv_q_to_Bsk_unreduced(
+            ConstRNSIter input, RNSIter destination, MemoryPoolHandle pool) const
+        {
+#ifdef SEAL_DEBUG
+            if (input == nullptr)
+            {
+                throw invalid_argument("input cannot be null");
+            }
+            if (input.poly_modulus_degree() != coeff_count_)
+            {
+                throw invalid_argument("input is not valid for encryption parameters");
+            }
+            if (!destination)
+            {
+                throw invalid_argument("destination cannot be null");
+            }
+            if (destination.poly_modulus_degree() != coeff_count_)
+            {
+                throw invalid_argument("destination is not valid for encryption parameters");
+            }
+            if (!pool)
+            {
+                throw invalid_argument("pool is uninitialized");
+            }
+#endif
+            /*
+            Require: Input in base q
+            Ensure: Output in base Bsk, retaining the q-overflow introduced by fast conversion
+            */
+
+            base_q_to_Bsk_conv_->fast_convert_array(input, destination, pool);
+        }
+#endif
 
         void RNSTool::decrypt_scale_and_round(ConstRNSIter input, CoeffIter destination, MemoryPoolHandle pool) const
         {

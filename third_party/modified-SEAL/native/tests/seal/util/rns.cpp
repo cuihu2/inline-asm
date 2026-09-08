@@ -536,6 +536,149 @@ namespace sealtest
             }
         }
 
+#ifdef SEAL_EXPERIMENTAL_BFV_NO_SMRQ
+        TEST(RNSToolTest, FastBConvQToBskUnreduced)
+        {
+            Modulus plain_t = 0;
+            auto pool = MemoryManager::GetPool();
+            size_t poly_modulus_degree = 2;
+            Pointer<RNSTool> rns_tool;
+            ASSERT_NO_THROW(
+                rns_tool = allocate<RNSTool>(
+                    pool, poly_modulus_degree, RNSBase({ 3, 5 }, pool), plain_t, pool));
+
+            // Both coefficients represent 7 in base { 3, 5 }. Fast conversion forms the unreduced CRT sum
+            // 2 * 5 + 4 * 3 = 22 = 7 + prod(q), rather than the canonical representative 7.
+            vector<uint64_t> in{ 1, 1, 2, 2 };
+            vector<uint64_t> out(poly_modulus_degree * rns_tool->base_Bsk()->size());
+            ConstRNSIter in_iter(in.data(), poly_modulus_degree);
+            RNSIter out_iter(out.data(), poly_modulus_degree);
+
+            rns_tool->fastbconv_q_to_Bsk_unreduced(in_iter, out_iter, pool);
+
+            constexpr uint64_t unreduced_crt_sum = 22;
+            for (size_t i = 0; i < rns_tool->base_Bsk()->size(); i++)
+            {
+                uint64_t expected = unreduced_crt_sum % (*rns_tool->base_Bsk())[i].value();
+                ASSERT_EQ(expected, out[i * poly_modulus_degree]);
+                ASSERT_EQ(expected, out[i * poly_modulus_degree + 1]);
+            }
+        }
+
+#ifndef SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK
+        TEST(RNSToolTest, NoSmrqAuxiliaryBaseGrowth)
+        {
+            auto pool = MemoryManager::GetPool();
+            size_t poly_modulus_degree = 32;
+            size_t coeff_base_count = 4;
+            RNSBase coeff_base(
+                get_primes(poly_modulus_degree * 2, 60, coeff_base_count), pool);
+
+            // Four 60-bit coefficient primes and a 32-bit plaintext modulus fit in four B primes under the default
+            // bound. The extra ceil(log2(4^2)) bits required by unreduced conversion products force a fifth B prime.
+            Modulus plain_t(0xFFFFFFFBULL);
+            RNSTool rns_tool(poly_modulus_degree, coeff_base, plain_t, pool);
+            ASSERT_EQ(coeff_base_count + size_t(1), rns_tool.base_B()->size());
+        }
+#endif
+#endif
+
+#ifdef SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK
+        TEST(RNSToolTest, BranchlessSKExactSignedConversion)
+        {
+            auto pool = MemoryManager::GetPool();
+            size_t poly_modulus_degree = 32;
+            RNSBase coeff_base(get_primes(poly_modulus_degree * 2, 30, 1), pool);
+            RNSTool rns_tool(poly_modulus_degree, coeff_base, Modulus(0), pool);
+
+            // Use two coefficients representing +100 and -100 in the enlarged signed range (-B/2, B/2).
+            // The branchless SK path must convert both exactly to the coefficient base q.
+            vector<uint64_t> in(poly_modulus_degree * rns_tool.base_Bsk()->size());
+            for (size_t i = 0; i < rns_tool.base_Bsk()->size(); i++)
+            {
+                uint64_t modulus = (*rns_tool.base_Bsk())[i].value();
+                in[i * poly_modulus_degree] = 100;
+                in[i * poly_modulus_degree + 1] = modulus - 100;
+            }
+
+            vector<uint64_t> out(poly_modulus_degree * coeff_base.size());
+            rns_tool.fastbconv_sk(
+                ConstRNSIter(in.data(), poly_modulus_degree), RNSIter(out.data(), poly_modulus_degree), pool);
+
+            ASSERT_EQ(uint64_t(100), out[0]);
+            ASSERT_EQ(coeff_base[0].value() - uint64_t(100), out[1]);
+        }
+
+        TEST(RNSToolTest, BranchlessSKAuxiliaryBaseGrowth)
+        {
+            auto pool = MemoryManager::GetPool();
+            size_t poly_modulus_degree = 32;
+            size_t coeff_base_count = 4;
+            RNSBase coeff_base(
+                get_primes(poly_modulus_degree * 2, 60, coeff_base_count), pool);
+            Modulus plain_t = get_prime(poly_modulus_degree * 2, 17);
+            RNSTool rns_tool(poly_modulus_degree, coeff_base, plain_t, pool);
+
+            int no_smrq_extra_bit_count = 0;
+#ifdef SEAL_EXPERIMENTAL_BFV_NO_SMRQ
+            size_t fastbconv_product_growth = mul_safe(coeff_base_count, coeff_base_count);
+            no_smrq_extra_bit_count = get_significant_bit_count(
+                safe_cast<uint64_t>(fastbconv_product_growth - size_t(1)));
+#endif
+            int required_signed_base_bit_count = add_safe(
+                33, plain_t.bit_count(),
+                get_significant_bit_count_uint(coeff_base.base_prod(), coeff_base.size()),
+                no_smrq_extra_bit_count);
+            constexpr int guaranteed_auxiliary_prime_bit_count = SEAL_INTERNAL_MOD_BIT_COUNT - 1;
+            size_t expected_base_B_size = coeff_base_count;
+            while (required_signed_base_bit_count >=
+                   guaranteed_auxiliary_prime_bit_count * safe_cast<int>(expected_base_B_size))
+            {
+                expected_base_B_size++;
+            }
+
+            ASSERT_EQ(expected_base_B_size, rns_tool.base_B()->size());
+            ASSERT_GT(rns_tool.base_B()->size(), coeff_base_count);
+        }
+#endif
+
+#if defined(SEAL_EXPERIMENTAL_BFV_NO_SMRQ) && defined(SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK)
+        TEST(RNSToolTest, CombinedNoSmrqBranchlessSKGrowth)
+        {
+            auto pool = MemoryManager::GetPool();
+            size_t poly_modulus_degree = 32;
+            size_t coeff_base_count = 6;
+            RNSBase coeff_base(
+                get_primes(poly_modulus_degree * 2, 51, coeff_base_count), pool);
+            Modulus plain_t = get_prime(poly_modulus_degree * 2, 17);
+            RNSTool rns_tool(poly_modulus_degree, coeff_base, plain_t, pool);
+
+            int total_coeff_bit_count =
+                get_significant_bit_count_uint(coeff_base.base_prod(), coeff_base.size());
+            size_t fastbconv_product_growth = mul_safe(coeff_base_count, coeff_base_count);
+            int no_smrq_extra_bit_count = get_significant_bit_count(
+                safe_cast<uint64_t>(fastbconv_product_growth - size_t(1)));
+            constexpr int guaranteed_auxiliary_prime_bit_count = SEAL_INTERNAL_MOD_BIT_COUNT - 1;
+
+            auto required_base_size = [&](int extra_bit_count) {
+                int required_signed_base_bit_count =
+                    add_safe(33, plain_t.bit_count(), total_coeff_bit_count, extra_bit_count);
+                size_t result = coeff_base_count;
+                while (required_signed_base_bit_count >=
+                       guaranteed_auxiliary_prime_bit_count * safe_cast<int>(result))
+                {
+                    result++;
+                }
+                return result;
+            };
+
+            size_t without_no_smrq_growth = required_base_size(0);
+            size_t combined_growth = required_base_size(no_smrq_extra_bit_count);
+            ASSERT_GT(combined_growth, without_no_smrq_growth);
+            ASSERT_EQ(combined_growth, rns_tool.base_B()->size());
+        }
+#endif
+
         TEST(RNSToolTest, MontgomeryReduction)
         {
             // This function assumes the input is in base Bsk U {m_tilde}. If the input is

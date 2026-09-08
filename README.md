@@ -131,6 +131,12 @@ SEAL v4.4.4 源码以普通目录 `third_party/modified-SEAL` 固定在本仓库
 submodule。HPU 对 SEAL 的后续修改直接由 Inline-asm 的提交历史维护，因此普通
 `git clone`/`git pull` 已包含完整依赖。
 
+该目录不是原版 SEAL 的简单镜像：它包含面向 BFV 的 comparison-free
+`NO_SMRQ + BRANCHLESS_SK` 改造。启用 `HPU_ENABLE_SEAL_INTEGRATION` 时，顶层
+CMake 会固定开启 `SEAL_EXPERIMENTAL_BFV_NO_SMRQ` 和
+`SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK`；具体改动清单、算法边界和独立验证命令见
+`third_party/modified-SEAL/HPU_MODIFICATIONS.md` 与其 `docs/` 目录。
+
 CKKS/HPU 集成层默认关闭。可单独验证 `N=65536` 和 32 位 q/P 的 SEALContext：
 
 ```bash

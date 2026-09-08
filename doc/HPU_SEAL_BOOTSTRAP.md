@@ -31,6 +31,13 @@ identifier. The directory has no nested Git repository: all HPU changes are
 reviewed and versioned directly in Inline-asm. This project does not plan
 compatibility work for later SEAL versions.
 
+This is the `hpu-bfv-comparison-free-v1` local variant, not an unmodified SEAL
+snapshot. `HPU_MODIFICATIONS.md` lists every HPU-specific implementation and
+validation entry point. The parent build forces
+`SEAL_EXPERIMENTAL_BFV_NO_SMRQ=ON` and
+`SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK=ON`; direct standalone SEAL builds retain
+the upstream-compatible OFF defaults unless these options are requested.
+
 ## Hardware NTT authority
 
 `hpu::model::HardwareNttModel` is the C++ port of
@@ -220,6 +227,7 @@ Verify the vendored dependency provenance:
 
 ```bash
 grep 'Upstream commit' third_party/modified-SEAL/HPU_BASELINE.md
+grep 'Local variant' third_party/modified-SEAL/HPU_BASELINE.md
 ```
 
 Build and run the hardware model/runtime tests without SEAL:

@@ -25,4 +25,8 @@ target_sources(sealtest
         ${CMAKE_CURRENT_LIST_DIR}/testrunner.cpp
 )
 
+if(SEAL_BUILD_BFV_NO_SMRQ_DIAGNOSTICS)
+    target_sources(sealtest PRIVATE ${CMAKE_CURRENT_LIST_DIR}/bfv_no_smrq_diagnostics.cpp)
+endif()
+
 add_subdirectory(util)
