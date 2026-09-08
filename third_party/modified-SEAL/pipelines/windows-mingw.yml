@@ -1,0 +1,40 @@
+steps:
+# The hosted Windows images ship MinGW-w64 GCC on PATH (C:\mingw64\bin) along with Ninja,
+# so no toolchain installation is required. That toolchain links msvcrt.dll rather than the
+# UCRT; building against the UCRT would require a separate MSYS2 UCRT64 toolchain.
+- script: |
+    gcc --version || exit /b 1
+    g++ --version || exit /b 1
+    ar --version || exit /b 1
+    ninja --version || exit /b 1
+  displayName: 'Report MinGW toolchain'
+
+- task: CMake@1
+  displayName: 'Configure SEAL (MinGW)'
+  inputs:
+    workingDirectory: '$(Build.SourcesDirectory)'
+    cmakeArgs: >
+      -S .
+      -B build-mingw
+      -G Ninja
+      -DCMAKE_C_COMPILER=gcc
+      -DCMAKE_CXX_COMPILER=g++
+      -DCMAKE_BUILD_TYPE=${{ parameters.configuration }}
+      -DSEAL_BUILD_DEPS=ON
+      -DSEAL_BUILD_TESTS=ON
+      -DSEAL_BUILD_SEAL_C=ON
+      -DSEAL_BUILD_EXAMPLES=ON
+
+- script: |
+    cmake --build build-mingw
+  displayName: 'Build SEAL (MinGW)'
+  workingDirectory: '$(Build.SourcesDirectory)'
+
+# Each binary is followed by `exit /b 1` on failure: a Windows script step reports only the
+# exit code of its last command, so without this a sealtest failure would be masked by a
+# passing sealctest.
+- script: |
+    build-mingw\bin\sealtest.exe || exit /b 1
+    build-mingw\bin\sealctest.exe || exit /b 1
+  displayName: 'Run unit tests (MinGW)'
+  workingDirectory: '$(Build.SourcesDirectory)'

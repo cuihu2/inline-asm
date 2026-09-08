@@ -1,0 +1,67 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Microsoft.Research.SEALNet</PackageId>
+    <Version>@SEAL_VERSION@</Version>
+    <Title>Microsoft SEAL</Title>
+    <Description>Microsoft SEAL is an easy-to-use and powerful open-source homomorphic encryption library developed by researchers in the Cryptography Research Group at Microsoft Research. It is licensed under the MIT license.</Description>
+    <PackageReleaseNotes>https://GitHub.com/Microsoft/SEAL</PackageReleaseNotes>
+    <Authors>Microsoft Research</Authors>
+    <Company>Microsoft Corporation</Company>
+    <Copyright>© Microsoft Corporation. All rights reserved.</Copyright>
+    <PackageProjectUrl>https://GitHub.com/Microsoft/SEAL</PackageProjectUrl>
+    <PackageTags>c#;crypto;cryptography;homomorphic;encryption</PackageTags>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <_PackageTags>$([System.String]::Copy($(PackageTags)).Replace(';', ' '))</_PackageTags>
+    <NuspecFile>../nuget/SEALNet.nuspec</NuspecFile>
+    <NuspecProperties>id=$(PackageId)</NuspecProperties>
+    <NuspecProperties>$(NuspecProperties);version=$(Version)</NuspecProperties>
+    <NuspecProperties>$(NuspecProperties);title=$(Title)</NuspecProperties>
+    <NuspecProperties>$(NuspecProperties);authors=$(Authors)</NuspecProperties>
+    <NuspecProperties>$(NuspecProperties);description=$(Description)</NuspecProperties>
+    <NuspecProperties>$(NuspecProperties);releaseNotes=$(PackageReleaseNotes)</NuspecProperties>
+    <NuspecProperties>$(NuspecProperties);copyright=$(Copyright)</NuspecProperties>
+    <NuspecProperties>$(NuspecProperties);projectUrl=$(PackageProjectUrl)</NuspecProperties>
+    <NuspecProperties>$(NuspecProperties);tags=$(_PackageTags)</NuspecProperties>
+    <NuspecProperties>$(NuspecProperties);packageLicenseFile=$(PackageLicenseFile)</NuspecProperties>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(PackConfig)' != ''">
+    <NuspecProperties>$(NuspecProperties);packconfig=$(PackConfig)</NuspecProperties>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+
+  <!-- Override original target -->
+  <PropertyGroup Condition="'$(BuildIOS)' != ''">
+    <TargetFramework>net10.0-ios</TargetFramework>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <OutputPath>@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/dotnet/$(Configuration)</OutputPath>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <DebugType>pdbonly</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'">
+    <DefineConstants>$(DefineConstants);DEBUG;TRACE</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="@CMAKE_CURRENT_SOURCE_DIR@/dotnet/src/**/*.cs" />
+  </ItemGroup>
+</Project>

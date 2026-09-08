@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<!-- Copyright (c) Microsoft Corporation. All rights reserved.
+     Licensed under the MIT license. -->
+
+<package xmlns="http://schemas.microsoft.com/packaging/2010/07/nuspec.xsd">
+  <metadata>
+    <id>Microsoft.Research.SEALNet</id>
+    <version>@SEAL_VERSION@</version>
+    <title>Microsoft SEAL</title>
+    <authors>Microsoft Research</authors>
+    <description>Microsoft SEAL is an easy-to-use and powerful open source homomorphic encryption library, developed by researchers in the Cryptography Research Group at Microsoft Research. Microsoft SEAL is licensed under the MIT license.</description>
+    <releaseNotes>https://GitHub.com/Microsoft/SEAL</releaseNotes>
+    <copyright>© Microsoft Corporation. All rights reserved.</copyright>
+    <projectUrl>https://GitHub.com/Microsoft/SEAL</projectUrl>
+    <tags>c# crypto cryptography homomorphic encryption</tags>
+    <license type="file">LICENSE</license>
+    <requireLicenseAcceptance>true</requireLicenseAcceptance>
+    <dependencies>
+      <group targetFramework="net10.0" />
+      <group targetFramework="net10.0-ios18.0" />
+    </dependencies>
+  </metadata>
+  <files>
+    <file src="SEALNet.targets" target="buildTransitive/Microsoft.Research.SEALNet.targets" />
+    <file src="$NUGET_WINDOWS_SEAL_C_PATH$" target="runtimes/win-x64/native/" />
+    <file src="$NUGET_LINUX_SEAL_C_PATH$" target="runtimes/linux-x64/native/" />
+    <file src="$NUGET_MACOS_SEAL_C_PATH$" target="runtimes/osx/native/" />
+    <file src="$NUGET_ANDROID_X64_SEAL_C_PATH$" target="runtimes/android-x64/native/" />
+    <file src="$NUGET_ANDROID_ARM64_SEAL_C_PATH$" target="runtimes/android-arm64/native/" />
+    <file src="$NUGET_IOSSIMULATOR_SEAL_C_PATH$" target="runtimes/iossimulator/native/" />
+    <file src="$NUGET_IOSSIMULATOR_SEAL_PATH$" target="runtimes/iossimulator/native/" />
+    <file src="$NUGET_IOS_ARM64_SEAL_C_PATH$" target="runtimes/ios-arm64/native/" />
+    <file src="$NUGET_IOS_ARM64_SEAL_PATH$" target="runtimes/ios-arm64/native/" />
+    <file src="../../build/bin/dotnet/$Configuration$/net10.0/SEALNet.dll" target="lib/net10.0/" />
+    <file src="../../build/bin/dotnet/$Configuration$/net10.0/SEALNet.xml" target="lib/net10.0/" />
+    <file src="../../build/bin/dotnet/$Configuration$/net10.0-ios/SEALNet.dll" target="lib/net10.0-ios18.0/" />
+    <file src="../../build/bin/dotnet/$Configuration$/net10.0-ios/SEALNet.xml" target="lib/net10.0-ios18.0/" />
+    <file src="../../LICENSE" target="LICENSE" />
+    <file src="../../NOTICE" target="/ThirdPartyNotices" />
+  </files>
+</package>

@@ -1,0 +1,67 @@
+plugins {
+    alias(libs.plugins.android.application)
+}
+
+def sealVersion = {
+    def m = file('../../CMakeLists.txt').text =~ /project\(SEAL VERSION (\d+\.\d+\.\d+)/
+    if (!m.find()) throw new GradleException("Could not parse SEAL version from CMakeLists.txt")
+    return m.group(1)
+}()
+
+android {
+    namespace 'com.microsoft.research.SEAL'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.microsoft.research.SEAL"
+        minSdk 35
+        targetSdk 35
+        versionCode 2
+        versionName sealVersion
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        externalNativeBuild {
+            cmake {
+                cppFlags '-std=c++17',
+                         '-Wno-gnu-statement-expression-from-macro-expansion'
+                arguments '-DSEAL_BUILD_SEAL_C=1',
+                          '-DSEAL_SECURE_COMPILE_OPTIONS=ON',
+                          '-C ../../cmake/functions.android.cmake'
+            }
+        }
+        ndk {
+            abiFilters 'x86_64'
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+    externalNativeBuild {
+        cmake {
+            path file('../../CMakeLists.txt')
+            version '3.22.1'
+        }
+    }
+    buildFeatures {
+        viewBinding true
+    }
+}
+
+dependencies {
+
+    implementation libs.appcompat
+    implementation libs.material
+    implementation libs.constraintlayout
+    testImplementation libs.junit
+    androidTestImplementation libs.ext.junit
+    androidTestImplementation libs.espresso.core
+}

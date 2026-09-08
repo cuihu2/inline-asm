@@ -1,0 +1,49 @@
+steps:
+- task: CMake@1
+  displayName: 'Configure SEAL (CMake)'
+  inputs:
+    workingDirectory: '$(Build.SourcesDirectory)'
+    cmakeArgs: >
+      -S .
+      -B build
+      -DCMAKE_BUILD_TYPE=${{ parameters.configuration }}
+      -DSEAL_BUILD_TESTS=ON
+      -DSEAL_BUILD_SEAL_C=ON
+      -DSEAL_BUILD_EXAMPLES=ON
+      -DSEAL_SECURE_COMPILE_OPTIONS=ON
+
+- script: |
+    cd $BUILD_SOURCESDIRECTORY
+    cmake --build build --config ${{ parameters.configuration }} -- -j`nproc`
+  displayName: 'Build SEAL'
+
+- script: |
+      set -e
+      cd $BUILD_SOURCESDIRECTORY
+      ./build/bin/sealtest
+      ./build/bin/sealctest
+  displayName: 'Run unit tests'
+
+- task: UseDotNet@2
+  displayName: 'Get .NET 10.0 SDK'
+  inputs:
+    packageType: 'sdk'
+    version: '10.0.x'
+
+- task: DotNetCoreCLI@2
+  displayName: 'Run dotnet unit tests'
+  inputs:
+    command: test
+    projects: '**/SEALNetTest.csproj'
+    arguments: '--configuration ${{ parameters.configuration }} --verbosity detailed'
+
+- script: |
+      mkdir -p $(Build.ArtifactStagingDirectory)/lib
+      cp -L $(Build.SourcesDirectory)/build/lib/libsealc.so $(Build.ArtifactStagingDirectory)/lib/libsealc.so
+  displayName: 'Copy libsealc.so to: $(Build.ArtifactStagingDirectory)'
+
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish Artifact: drop'
+  inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+      artifactName: ${{ parameters.artifactName }}

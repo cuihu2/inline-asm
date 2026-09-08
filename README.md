@@ -127,11 +127,9 @@ ctest --test-dir build -L legacy-fixed-profile --output-on-failure
 集成测试仍保持默认启用。测试源码中用于覆盖 shape 的固定数字只是局部测试向量，
 不构成应用 profile。
 
-SEAL 以 `third_party/SEAL` 子模块固定在 `v4.4.4`；首次构建前执行：
-
-```bash
-git submodule update --init --recursive
-```
+SEAL v4.4.4 源码以普通目录 `third_party/modified-SEAL` 固定在本仓库中，不再使用
+submodule。HPU 对 SEAL 的后续修改直接由 Inline-asm 的提交历史维护，因此普通
+`git clone`/`git pull` 已包含完整依赖。
 
 CKKS/HPU 集成层默认关闭。可单独验证 `N=65536` 和 32 位 q/P 的 SEALContext：
 
@@ -183,7 +181,7 @@ ModSwitch/Rescale 和旋转：
 
 ```bash
 cmake -S . -B build-seal -DHPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE=ON \
-  -DHPU_SEAL_SOURCE_DIR="$PWD/third_party/SEAL"
+  -DHPU_SEAL_SOURCE_DIR="$PWD/third_party/modified-SEAL"
 cmake --build build-seal -j --target hpu_delivery_with_seal
 ctest --test-dir build-seal -R hpu_seal --output-on-failure
 ```

@@ -24,15 +24,15 @@ option(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE
         "Build the optional BFV/BGV/CKKS differential oracle against SEAL"
         OFF)
 option(HPU_ENABLE_SEAL_INTEGRATION
-        "Build the pinned SEAL CKKS integration layer"
+        "Build the vendored modified-SEAL CKKS integration layer"
         OFF)
 option(HPU_ENABLE_SEAL_BFV_ORACLE
         "Deprecated alias for HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE"
         OFF)
 set(HPU_SEAL_SOURCE_DIR
-        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/SEAL"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/modified-SEAL"
         CACHE PATH
-        "Pinned SEAL source tree used by optional HPU integration targets")
+        "Vendored modified-SEAL source tree used by HPU integration targets")
 
 # GCC 8 implements C++17 std::filesystem in a separate runtime library.
 # Keep that historical detail behind one transitive compatibility target so
@@ -235,9 +235,27 @@ endif()
 if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
     if(NOT EXISTS "${HPU_SEAL_SOURCE_DIR}/CMakeLists.txt")
         message(FATAL_ERROR
-            "SEAL integration requires a source tree at ${HPU_SEAL_SOURCE_DIR}; "
-            "run git submodule update --init --recursive")
+            "SEAL integration requires the vendored source tree at "
+            "${HPU_SEAL_SOURCE_DIR}")
     endif()
+    set(HPU_SEAL_BASELINE_FILE "${HPU_SEAL_SOURCE_DIR}/HPU_BASELINE.md")
+    if(NOT EXISTS "${HPU_SEAL_BASELINE_FILE}")
+        message(FATAL_ERROR
+            "modified-SEAL is missing its HPU_BASELINE.md provenance record")
+    endif()
+    file(READ "${HPU_SEAL_BASELINE_FILE}" HPU_SEAL_BASELINE_TEXT)
+    set(HPU_SEAL_UPSTREAM_COMMIT
+        "96ae20db6649bc7c24e9a34994bedd70f4951f60")
+    string(FIND
+        "${HPU_SEAL_BASELINE_TEXT}"
+        "${HPU_SEAL_UPSTREAM_COMMIT}"
+        HPU_SEAL_BASELINE_COMMIT_OFFSET)
+    if(HPU_SEAL_BASELINE_COMMIT_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "modified-SEAL provenance does not identify the frozen v4.4.4 base")
+    endif()
+    set(HPU_SEAL_GIT_COMMIT "${HPU_SEAL_UPSTREAM_COMMIT}")
+    set(HPU_SEAL_WORKTREE_STATE "VENDORED_IN_PARENT")
     set(SEAL_EXPERIMENTAL_BFV_NO_SMRQ ON CACHE BOOL "" FORCE)
     set(SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK ON CACHE BOOL "" FORCE)
     set(SEAL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -249,22 +267,6 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
         "${HPU_SEAL_SOURCE_DIR}"
         "${CMAKE_CURRENT_BINARY_DIR}/seal"
         EXCLUDE_FROM_ALL)
-
-    execute_process(
-        COMMAND git -C "${HPU_SEAL_SOURCE_DIR}" rev-parse HEAD
-        OUTPUT_VARIABLE HPU_SEAL_GIT_COMMIT
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET
-        RESULT_VARIABLE HPU_SEAL_GIT_RESULT)
-    if(NOT HPU_SEAL_GIT_RESULT EQUAL 0)
-        set(HPU_SEAL_GIT_COMMIT "unknown")
-    endif()
-    set(HPU_SEAL_EXPECTED_COMMIT "96ae20db6649bc7c24e9a34994bedd70f4951f60")
-    if(NOT HPU_SEAL_GIT_COMMIT STREQUAL HPU_SEAL_EXPECTED_COMMIT)
-        message(FATAL_ERROR
-            "SEAL must remain pinned to v4.4.4 (${HPU_SEAL_EXPECTED_COMMIT}); "
-            "found ${HPU_SEAL_GIT_COMMIT}")
-    endif()
 
     add_library(hpu_seal_ckks STATIC
             src/hpu/seal/application_image.cpp
@@ -330,16 +332,6 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
     endif()
 
     if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE)
-    execute_process(
-        COMMAND git -C "${HPU_SEAL_SOURCE_DIR}" status --porcelain
-        OUTPUT_VARIABLE HPU_SEAL_GIT_STATUS
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET)
-    if(HPU_SEAL_GIT_STATUS STREQUAL "")
-        set(HPU_SEAL_WORKTREE_STATE "CLEAN")
-    else()
-        set(HPU_SEAL_WORKTREE_STATE "DIRTY")
-    endif()
     file(SHA256 "${HPU_SEAL_SOURCE_DIR}/CMakeLists.txt" HPU_SEAL_CMAKE_SHA256)
     file(SHA256 "${HPU_SEAL_SOURCE_DIR}/native/src/seal/evaluator.cpp"
         HPU_SEAL_EVALUATOR_SHA256)

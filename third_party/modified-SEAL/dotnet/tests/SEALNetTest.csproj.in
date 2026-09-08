@@ -1,0 +1,69 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <Authors>Microsoft Research</Authors>
+    <Company>Microsoft Corporation</Company>
+    <Copyright>© Microsoft Corporation. All rights reserved.</Copyright>
+    <Description>.NET wrapper unit tests for Microsoft SEAL</Description>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <OutputPath>@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/dotnet/$(Configuration)</OutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="MSTest.TestAdapter" Version="3.9.2" />
+    <PackageReference Include="MSTest.TestFramework" Version="3.9.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(ProjectDir)../src/SEALNet.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup Condition="$([MSBuild]::IsOsPlatform(Windows))">
+    <SealcOutDir Condition="'$(Configuration)'=='Release'">@CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE@</SealcOutDir>
+    <SealcOutDir Condition="'$(Configuration)'=='Debug'">@CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG@</SealcOutDir>
+    <SealcOutDir Condition="'$(SealcOutDir)'==''">@CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE@</SealcOutDir>
+    <SealcPattern>sealc.dll</SealcPattern>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$([MSBuild]::IsOsPlatform(Linux))">
+    <SealcOutDir Condition="'$(Configuration)'=='Release'">@CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE@</SealcOutDir>
+    <SealcOutDir Condition="'$(Configuration)'=='Debug'">@CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG@</SealcOutDir>
+    <SealcOutDir Condition="'$(SealcOutDir)'==''">@CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE@</SealcOutDir>
+    <SealcPattern>libsealc.so*</SealcPattern>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$([MSBuild]::IsOsPlatform(OSX))">
+    <SealcOutDir Condition="'$(Configuration)'=='Release'">@CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE@</SealcOutDir>
+    <SealcOutDir Condition="'$(Configuration)'=='Debug'">@CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG@</SealcOutDir>
+    <SealcOutDir Condition="'$(SealcOutDir)'==''">@CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE@</SealcOutDir>
+    <SealcPattern>libsealc*.dylib</SealcPattern>
+  </PropertyGroup>
+
+  <!-- Portable separator for subdirectories -->
+  <PropertyGroup>
+    <DS>$([System.IO.Path]::DirectorySeparatorChar)</DS>
+  </PropertyGroup>
+
+  <!-- Include the native library -->
+  <ItemGroup>
+    <SEALCBinaryFiles Include="$(SealcOutDir)$(DS)$(SealcPattern)" />
+  </ItemGroup>
+
+
+  <Target Name="PostBuild" AfterTargets="PostBuildEvent">
+    <Copy SourceFiles="@(SEALCBinaryFiles)" DestinationFolder="$(TargetDir)" />
+  </Target>
+
+  <ItemGroup>
+    <Compile Include="@CMAKE_CURRENT_SOURCE_DIR@/dotnet/tests/**/*.cs" />
+  </ItemGroup>
+</Project>

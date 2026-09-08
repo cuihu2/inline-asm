@@ -1,0 +1,39 @@
+# This defines a pipeline to build on Windows in Debug mode, with MSVC and with MinGW.
+
+trigger:
+  batch: true
+  branches:
+    include:
+    - main
+  paths:
+    exclude:
+    - 'tools/*'
+    - LICENSE
+    - NOTICE
+    - CHANGES.md
+    - CODE_OF_CONDUCT.md
+    - CONTRIBUTING.md
+    - ISSUES.md
+    - README.md
+    - SECURITY.md
+
+stages:
+  - stage: build
+    displayName: Build
+    jobs:
+    - template: jobs.yml
+      parameters:
+        debug: true
+        name: Windows
+    - template: jobs.yml
+      parameters:
+        debug: true
+        name: WindowsMinGW
+    - template: jobs.yml
+      parameters:
+        debug: true
+        name: WindowsCxx14
+    - template: jobs.yml
+      parameters:
+        debug: true
+        name: WindowsMinGWCxx14

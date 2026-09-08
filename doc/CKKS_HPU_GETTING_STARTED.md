@@ -61,11 +61,8 @@ secret key 只留在 host，HPU_MEM builder 没有接收它的接口。
 
 ## 3. 构建
 
-SEAL 固定为仓库子模块中的 v4.4.4。首次使用先初始化子模块：
-
-```bash
-git submodule update --init --recursive
-```
+SEAL v4.4.4 已作为普通源码固定在 `third_party/modified-SEAL`，不再需要初始化
+submodule；普通 `git clone` 或 `git pull` 会同时取得依赖源码。
 
 配置并构建 CKKS 集成与示例：
 

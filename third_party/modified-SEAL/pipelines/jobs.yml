@@ -1,0 +1,140 @@
+# This file selects the correct job definition based on system and buildType.
+
+parameters:
+  debug: 'false'
+
+jobs:
+
+- ${{ if eq(parameters.name, 'Windows') }}:
+  - job: ${{ parameters.name }}
+    displayName: ${{ parameters.name }}
+    ${{ if eq(parameters.debug, 'false') }}:
+      timeoutInMinutes: 0
+    pool:
+      vmImage: 'windows-latest'
+    steps:
+    - template: windows.yml
+      parameters:
+        ${{ if eq(parameters.debug, 'true') }}:
+          configuration: 'Debug'
+        ${{ if eq(parameters.debug, 'false') }}:
+          configuration: 'Release'
+
+- ${{ if eq(parameters.name, 'WindowsMinGW') }}:
+  - job: WindowsMinGW
+    displayName: Windows MinGW
+    pool:
+      vmImage: 'windows-latest'
+    steps:
+    - template: windows-mingw.yml
+      parameters:
+        ${{ if eq(parameters.debug, 'true') }}:
+          configuration: 'Debug'
+        ${{ if eq(parameters.debug, 'false') }}:
+          configuration: 'Release'
+
+- ${{ if eq(parameters.name, 'WindowsCxx14') }}:
+  - job: WindowsCxx14
+    displayName: Windows C++14
+    pool:
+      vmImage: 'windows-latest'
+    steps:
+    - template: windows-cxx14.yml
+      parameters:
+        ${{ if eq(parameters.debug, 'true') }}:
+          configuration: 'Debug'
+        ${{ if eq(parameters.debug, 'false') }}:
+          configuration: 'Release'
+
+- ${{ if eq(parameters.name, 'WindowsMinGWCxx14') }}:
+  - job: WindowsMinGWCxx14
+    displayName: Windows MinGW C++14
+    pool:
+      vmImage: 'windows-latest'
+    steps:
+    - template: windows-mingw-cxx14.yml
+      parameters:
+        ${{ if eq(parameters.debug, 'true') }}:
+          configuration: 'Debug'
+        ${{ if eq(parameters.debug, 'false') }}:
+          configuration: 'Release'
+
+- ${{ if eq(parameters.name, 'LinuxCxx14') }}:
+  - job: LinuxCxx14
+    displayName: Linux C++14
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - template: linux-cxx14.yml
+      parameters:
+        ${{ if eq(parameters.debug, 'true') }}:
+          configuration: 'Debug'
+        ${{ if eq(parameters.debug, 'false') }}:
+          configuration: 'Release'
+
+- ${{ if eq(parameters.name, 'Linux') }}:
+  - job: ${{ parameters.name }}
+    displayName: ${{ parameters.name }}
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - template: linux.yml
+      parameters:
+        artifactName: linux-drop
+        ${{ if eq(parameters.debug, 'true') }}:
+          configuration: 'Debug'
+        ${{ if eq(parameters.debug, 'false') }}:
+          configuration: 'Release'
+
+- ${{ if eq(parameters.name, 'macOS') }}:
+  - job: ${{ parameters.name }}
+    displayName: ${{ parameters.name }}
+    pool:
+      vmImage: 'macos-latest'
+    steps:
+    - template: macos.yml
+      parameters:
+        artifactName: macos-drop
+        ${{ if eq(parameters.debug, 'true') }}:
+          configuration: 'Debug'
+        ${{ if eq(parameters.debug, 'false') }}:
+          configuration: 'Release'
+
+- ${{ if eq(parameters.name, 'iOS') }}:
+  - job: ${{ parameters.name }}
+    displayName: ${{ parameters.name }}
+    pool:
+      vmImage: 'macos-latest'
+    steps:
+    - template: ios.yml
+      parameters:
+        artifactName: ios-drop
+        ${{ if eq(parameters.debug, 'true') }}:
+          configuration: 'Debug'
+        ${{ if eq(parameters.debug, 'false') }}:
+          configuration: 'Release'
+
+- ${{ if eq(parameters.name, 'Android') }}:
+  - job: ${{ parameters.name }}
+    displayName: ${{ parameters.name }}
+    pool:
+      vmImage: 'windows-latest'
+    steps:
+    - template: android.yml
+      parameters:
+        artifactName: android-drop
+        ${{ if eq(parameters.debug, 'true') }}:
+          configuration: 'Debug'
+        ${{ if eq(parameters.debug, 'false') }}:
+          configuration: 'Release'
+
+- ${{ if eq(parameters.name, 'NuGet') }}:
+  - job: ${{ parameters.name }}
+    displayName: ${{ parameters.name }}
+    dependsOn: [Windows, Linux, macOS, Android, iOS]
+    pool:
+      vmImage: 'windows-latest'
+    steps:
+    - template: nuget.yml
+      parameters:
+        nuget_version: '6.14.0'

@@ -1,0 +1,89 @@
+steps:
+- task: CMake@1
+  displayName: 'Configure SEAL for x64 (CMake)'
+  inputs:
+    workingDirectory: '$(Build.SourcesDirectory)'
+    cmakeArgs: >
+      -S .
+      -B build-x64
+      -GXcode
+      -DCMAKE_OSX_ARCHITECTURES=x86_64
+      -DCMAKE_BUILD_TYPE=${{ parameters.configuration }}
+      -DSEAL_BUILD_TESTS=ON
+      -DSEAL_BUILD_SEAL_C=ON
+      -DSEAL_BUILD_EXAMPLES=ON
+      -DSEAL_SECURE_COMPILE_OPTIONS=ON
+
+- script: |
+    cmake --build build-x64 \
+          --config ${{ parameters.configuration }} \
+          -- -arch x86_64
+    mkdir -p $BUILD_SOURCESDIRECTORY/lib/osx-x64
+    cp build-x64/lib/${{ parameters.configuration }}/libsealc.dylib $BUILD_SOURCESDIRECTORY/lib/osx-x64/
+  displayName: 'Build SEAL native (x86_64)'
+
+- task: CMake@1
+  displayName: 'Configure SEAL for arm64 (CMake)'
+  inputs:
+    workingDirectory: '$(Build.SourcesDirectory)'
+    cmakeArgs: >
+      -S .
+      -B build-arm64
+      -GXcode
+      -DCMAKE_OSX_ARCHITECTURES=arm64
+      -DCMAKE_BUILD_TYPE=${{ parameters.configuration }}
+      -DSEAL_BUILD_TESTS=ON
+      -DSEAL_BUILD_SEAL_C=ON
+      -DSEAL_BUILD_EXAMPLES=ON
+      -DSEAL_SECURE_COMPILE_OPTIONS=ON
+      -C cmake/functions.macos-arm64.cmake
+
+- script: |
+    cmake --build build-arm64 \
+          --config ${{ parameters.configuration }} \
+          -- -arch arm64
+    mkdir -p $BUILD_SOURCESDIRECTORY/lib/osx-arm64
+    cp build-arm64/lib/${{ parameters.configuration }}/libsealc.dylib $BUILD_SOURCESDIRECTORY/lib/osx-arm64
+  displayName: 'Build SEAL native (arm64)'
+
+- script: |
+    cd $BUILD_SOURCESDIRECTORY/lib
+    echo Creating fat library
+    lipo -create -output libsealc.dylib osx-x64/libsealc.dylib osx-arm64/libsealc.dylib
+
+    echo Architectures for libsealc.dylib
+    lipo -info libsealc.dylib
+  displayName: 'Create fat dylib'
+
+- script: |
+    set -e
+    cd $BUILD_SOURCESDIRECTORY
+    ./build-x64/bin/${{ parameters.configuration }}/sealtest
+    ./build-x64/bin/${{ parameters.configuration }}/sealctest
+  displayName: 'Run unit tests'
+
+- task: UseDotNet@2
+  displayName: 'Get .NET 10.0 SDK'
+  inputs:
+    packageType: 'sdk'
+    version: '10.0.x'
+
+- task: DotNetCoreCLI@2
+  displayName: 'Run dotnet unit tests'
+  inputs:
+    command: test
+    projects: 'build-x64/**/SEALNetTest.csproj'
+    arguments: '--configuration ${{ parameters.configuration }} --verbosity detailed'
+
+- task: CopyFiles@2
+  displayName: 'Copy Files to: $(Build.ArtifactStagingDirectory)'
+  inputs:
+    SourceFolder: '$(Build.SourcesDirectory)/lib'
+    Contents: 'libsealc.*'
+    TargetFolder: '$(Build.ArtifactStagingDirectory)/lib'
+
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish Artifact: drop'
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+    artifactName: ${{ parameters.artifactName }}

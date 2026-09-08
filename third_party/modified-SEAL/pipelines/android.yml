@@ -1,0 +1,78 @@
+steps:
+- task: JavaToolInstaller@0
+  displayName: Use Java 17
+  inputs:
+    versionSpec: '17'
+    jdkArchitectureOption: 'x64'
+    jdkSourceOption: 'PreInstalled'
+
+- task: CMake@1
+  displayName: Verify CMake version
+  inputs:
+    workingDirectory: '$(Build.SourcesDirectory)'
+    cmakeArgs: '--version'
+
+- task: PowerShell@2
+  displayName: Verify Gradle wrapper JAR
+  inputs:
+    targetType: 'inline'
+    script: |
+      $ExpectedHash = '2db75c40782f5e8ba1fc278a5574bab070adccb2d21ca5a6e5ed840888448046'
+      $WrapperPath = Join-Path -Path $Env:BUILD_SOURCESDIRECTORY -ChildPath 'android/gradle/wrapper/gradle-wrapper.jar'
+      $ActualHash = (Get-FileHash -Path $WrapperPath -Algorithm SHA256).Hash.ToLowerInvariant()
+      if ($ActualHash -ne $ExpectedHash) {
+          throw "Gradle wrapper JAR checksum mismatch: expected $ExpectedHash, got $ActualHash"
+      }
+
+- task: Gradle@4
+  displayName: Compile Android Native Libraries
+  inputs:
+    workingDirectory: '$(Build.SourcesDirectory)/android'
+    gradleWrapperFile: '$(Build.SourcesDirectory)/android/gradlew'
+    gradleOptions: ''
+    options: '--stacktrace --no-parallel'
+    publishJUnitResults: false
+    testResultsFiles: '**/TEST-*.xml'
+    # Build only the variant this job was asked for. Lint is wired to the debug variant,
+    # so it runs in the Debug pipeline that gates pull requests.
+    ${{ if eq(parameters.configuration, 'Debug') }}:
+      tasks: 'assembleDebug lintDebug'
+    ${{ if eq(parameters.configuration, 'Release') }}:
+      tasks: 'assembleRelease'
+
+- task: PowerShell@2
+  displayName: Copy binary files to staging directory
+  inputs:
+    targetType: 'inline'
+    script: |
+      $ErrorActionPreference = 'Stop'
+
+      # The Android Gradle plugin maps the debug variant to a CMake Debug build and the
+      # release variant to RelWithDebInfo.
+      $CMakeBuildType = '${{ parameters.configuration }}'
+      if ($CMakeBuildType -eq 'Release') {
+          $CMakeBuildType = 'RelWithDebInfo'
+      }
+
+      $SearchRoot = Join-Path -Path $Env:BUILD_SOURCESDIRECTORY -ChildPath "android\app\.cxx\$CMakeBuildType"
+      Write-Host "Collecting $CMakeBuildType binaries from $SearchRoot"
+
+      foreach ($Abi in 'arm64-v8a', 'x86_64') {
+          $TargetDirectory = Join-Path -Path $Env:BUILD_ARTIFACTSTAGINGDIRECTORY -ChildPath "lib\$Abi"
+          New-Item -ItemType Directory -Force -Path $TargetDirectory | Out-Null
+
+          $Binaries = @(Get-ChildItem -Path $SearchRoot -Recurse -Filter 'libsealc.so' |
+              Where-Object { $_.FullName -like "*\$Abi\lib\$Abi\libsealc.so" })
+          if ($Binaries.Count -ne 1) {
+              throw "Expected exactly one $Abi libsealc.so under $SearchRoot, found $($Binaries.Count)"
+          }
+
+          Write-Host "Copying $($Binaries[0].FullName) to $TargetDirectory"
+          Copy-Item -Path $Binaries[0].FullName -Destination $TargetDirectory
+      }
+
+- task: PublishBuildArtifacts@1
+  displayName: Publish build artifacts
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+    ArtifactName: ${{ parameters.artifactName }}

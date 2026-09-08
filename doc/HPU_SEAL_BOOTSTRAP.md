@@ -1,4 +1,4 @@
-# HPU + Microsoft SEAL CKKS Bootstrap
+# HPU + modified-SEAL CKKS Bootstrap
 
 ## Scope
 
@@ -19,16 +19,17 @@ not a security claim.
 
 ## Frozen dependency
 
-`third_party/SEAL` is pinned to Microsoft SEAL `v4.4.4`, commit:
+`third_party/modified-SEAL` is vendored as ordinary Inline-asm source. Its
+upstream baseline is Microsoft SEAL `v4.4.4`, commit:
 
 ```text
 96ae20db6649bc7c24e9a34994bedd70f4951f60
 ```
 
-CMake rejects any other submodule commit when SEAL integration is enabled. A
-future repository fork can replace the URL in `.gitmodules`, but it must start
-from this commit. This project does not plan compatibility work for later SEAL
-versions.
+`HPU_BASELINE.md` records this provenance and CMake verifies the frozen commit
+identifier. The directory has no nested Git repository: all HPU changes are
+reviewed and versioned directly in Inline-asm. This project does not plan
+compatibility work for later SEAL versions.
 
 ## Hardware NTT authority
 
@@ -215,11 +216,10 @@ required.
 
 ## Linux build and tests
 
-Initialize the frozen dependency:
+Verify the vendored dependency provenance:
 
 ```bash
-git submodule update --init --recursive
-git -C third_party/SEAL rev-parse HEAD
+grep 'Upstream commit' third_party/modified-SEAL/HPU_BASELINE.md
 ```
 
 Build and run the hardware model/runtime tests without SEAL:
@@ -234,7 +234,8 @@ ctest --test-dir build -R 'hpu_(hardware_ntt_model|runtime_application)_test' \
 The NTT test includes cyclic and negacyclic round trips, both fused
 automorphism forms, and an actual `N=65536` case.
 
-Build the pinned CKKS integration and its `N=65536`, uint32-modulus context test:
+Build the frozen modified-SEAL CKKS integration and its `N=65536`,
+uint32-modulus context test:
 
 ```bash
 cmake -S . -B build-seal \
