@@ -264,6 +264,31 @@ void register_rns_object(hpu::runtime::Application& application,
 - `register_rns_object` 把每个 limb 注册为独立对象，跨 kernel 驻留决策留给
   `hpu::runtime::Application`。
 
+#### 2.6.1 显式操作计划
+
+`include/hpu/seal/operation_plan.hpp`
+
+```cpp
+CkksOperationPlan plan(image_builder);
+auto tensor = plan.append_square("square", input, "intermediate/tensor");
+auto relin = plan.append_relinearize(
+    "relinearize", tensor, relinearization_key, keyswitch_constants,
+    "intermediate/relinearized");
+auto rescaled = plan.append_rescale(
+    "rescale", relin, rescale_constants, "intermediate/rescaled");
+auto output = plan.append_add_plain(
+    "add_one", rescaled, encoded_one, "output/x2_plus_one");
+```
+
+- 每一步都显式给出，plan 不会自动插入 Relinearize 或 Rescale。
+- 输出由前一步 metadata 推导后直接在同一个 `HpuMemImage` 中分配；输入对象的
+  allocation ID/span 也必须属于该 image。
+- Relinearize 会绑定并校验当前 level 的 evaluation key、KeySwitch 常量和
+  canonical twiddle 需求；Rescale 会绑定相邻 level 的常量和 twiddle 需求。
+- `steps()` 保留有序的输入/输出 metadata、组件数、表示域和资源 ID，供下一阶段
+  的 codegen/runtime lowering 使用。目前覆盖示例需要的 Square、Relinearize、
+  Rescale、AddPlain。
+
 ### 2.7 软件执行器：仿 `seal::Evaluator`
 
 `include/hpu/seal/software_executor.hpp`，实现 `src/hpu/seal/software_executor.cpp`。

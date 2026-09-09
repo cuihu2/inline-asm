@@ -1,5 +1,6 @@
 #include "hpu/seal/application_image.hpp"
 #include "hpu/seal/ckks_context.hpp"
+#include "hpu/seal/operation_plan.hpp"
 #include "hpu/seal/software_executor.hpp"
 #include "scheme/ckks/basic_arithmetic.hpp"
 #include "scheme/ckks/ciphertext_multiply.hpp"
@@ -118,26 +119,20 @@ int main(int argc, char** argv)
             "constants/rescale/top_to_next", top);
         const auto prepared_one = image_builder.add_plaintext(
             "constant/one/q3", encoded_one);
-        const auto tensor_metadata =
-            hpu::seal_adapter::infer_ckks_multiply_metadata(
-                level_chain, prepared_input.metadata(), prepared_input.metadata());
-        const auto relinearized_metadata =
-            hpu::seal_adapter::infer_ckks_preserving_metadata(
-                level_chain, tensor_metadata);
-        const auto rescaled_metadata =
-            hpu::seal_adapter::infer_ckks_rescale_metadata(
-                level_chain, relinearized_metadata);
-        const auto output_metadata =
-            hpu::seal_adapter::infer_ckks_add_sub_metadata(
-                level_chain, rescaled_metadata, prepared_one.metadata());
-        const auto tensor = image_builder.reserve_ciphertext(
-            "intermediate/x_squared_tensor/top", tensor_metadata, 3);
-        const auto relinearized = image_builder.reserve_ciphertext(
-            "intermediate/x_squared_relinearized/top", relinearized_metadata, 2);
-        const auto rescaled = image_builder.reserve_ciphertext(
-            "intermediate/x_squared/q3", rescaled_metadata, 2);
-        const auto hpu_output = image_builder.reserve_ciphertext(
-            "output/x_squared_plus_one/q3", output_metadata, 2);
+        hpu::seal_adapter::CkksOperationPlan operation_plan(image_builder);
+        const auto tensor = operation_plan.append_square(
+            "square", prepared_input,
+            "intermediate/x_squared_tensor/top");
+        const auto relinearized = operation_plan.append_relinearize(
+            "relinearize", tensor, prepared_relinearization_key,
+            keyswitch_constants,
+            "intermediate/x_squared_relinearized/top");
+        const auto rescaled = operation_plan.append_rescale(
+            "rescale", relinearized, rescale_constants,
+            "intermediate/x_squared/q3");
+        const auto hpu_output = operation_plan.append_add_plain(
+            "add_one", rescaled, prepared_one,
+            "output/x_squared_plus_one/q3");
 
         // Execute the same application from its HPU_MEM image. SEAL Evaluator
         // above is now only the independent oracle, not the implementation of

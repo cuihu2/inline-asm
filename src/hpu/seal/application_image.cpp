@@ -287,6 +287,7 @@ PreparedKeySwitchConstants CkksApplicationImageBuilder::add_keyswitch_constants(
         words.push_back(hpu::model::inverse_mod_prime(p % q, q));
     }
     PreparedKeySwitchConstants result;
+    result.id = id;
     result.data_parms_id = authoritative.parms_id;
     result.chain_index = authoritative.chain_index;
     result.values = image_.add(
@@ -332,6 +333,7 @@ PreparedRescaleConstants CkksApplicationImageBuilder::add_rescale_constants(
         words.push_back(hpu::model::inverse_mod_prime(q_last % q, q));
     }
     PreparedRescaleConstants result;
+    result.id = id;
     result.source_parms_id = source.parms_id;
     result.destination_parms_id = destination.parms_id;
     result.source_chain_index = source.chain_index;

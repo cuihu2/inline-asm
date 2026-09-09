@@ -165,6 +165,9 @@ Rescale 同样从 HPU_MEM 取得 `q_last/2` 与 `q_last^-1 mod q_i`，并迁移�
 `parms_id + chain_index + scale`：保持型操作不改元数据，Add/Sub 要求同层同
 scale，Multiply 计算 scale 乘积，Rescale 只走 `CkksLevelChain::next` 并除以
 `q_last`。image builder 与软件执行器消费同一套规则，但不会自动插入 Rescale。
+`CkksOperationPlan` 在同一个 application image 上显式串联 Square、Relinearize、
+Rescale 和 AddPlain，校验对象归属及 level 专属 key/constant，并记录后续
+codegen/runtime lowering 所需的有序 metadata 与资源清单。
 `x^2+1` 示例的 Square→Relinearize→Rescale→AddPlain 已由该执行器
 真正执行，SEAL Evaluator 只提供独立逐字 oracle。
 

@@ -47,12 +47,14 @@ struct PreparedEvaluationKey {
 };
 
 struct PreparedKeySwitchConstants {
+    std::string id;
     ::seal::parms_id_type data_parms_id{};
     std::size_t chain_index = 0;
     hpu::runtime::HpuMemSpan values;
 };
 
 struct PreparedRescaleConstants {
+    std::string id;
     ::seal::parms_id_type source_parms_id{};
     ::seal::parms_id_type destination_parms_id{};
     std::size_t source_chain_index = 0;

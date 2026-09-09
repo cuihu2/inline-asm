@@ -124,6 +124,11 @@ scale 重新编码。这样 AddPlain 的 level、RNS basis 和 scale 都匹配�
 - Q3 上编码的常数 `1`；
 - Q4 三分量 tensor、重线性化结果、Q3 `x²` 和 `x²+1` 输出的 DDR backing span。
 
+最后四类输出不是手工拼接 level/scale 后分配，而是通过 `CkksOperationPlan`
+依次追加 Square、Relinearize、Rescale 和 AddPlain。plan 会在分配时校验输入对象
+确实属于当前 image，并记录 evaluation key、KeySwitch/Rescale 常量以及 canonical
+twiddle 需求；它不会自动插入任何算子。
+
 每个 RNS limb 都是独立、256B 对齐的 allocation。对 N=65536，每个 limb 的
 `line_count` 必须恰好为 1024。allocation 名称和 span 构成未来 Linux backend
 执行 dload/dstore relocation 的依据。

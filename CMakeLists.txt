@@ -276,6 +276,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
             src/hpu/seal/automorphism.cpp
             src/hpu/seal/evaluation_key.cpp
             src/hpu/seal/ntt_bridge.cpp
+            src/hpu/seal/operation_plan.cpp
             src/hpu/seal/software_executor.cpp
     )
     target_include_directories(hpu_seal_ckks
@@ -330,6 +331,17 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
         add_test(
                 NAME hpu_seal_ckks_metadata_test
                 COMMAND hpu_seal_ckks_metadata_test)
+
+        add_executable(hpu_seal_ckks_operation_plan_test
+                test/seal_ckks_operation_plan_test.cpp
+        )
+        target_link_libraries(hpu_seal_ckks_operation_plan_test
+                PRIVATE
+                hpu_seal_ckks
+        )
+        add_test(
+                NAME hpu_seal_ckks_operation_plan_test
+                COMMAND hpu_seal_ckks_operation_plan_test)
 
         add_executable(hpu_seal_ckks_software_executor_test
                 test/seal_ckks_software_executor_test.cpp

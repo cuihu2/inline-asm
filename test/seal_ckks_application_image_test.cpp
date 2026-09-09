@@ -88,11 +88,17 @@ int main()
                     && prepared_relin.digits.front().front().modulus_ids
                         == std::vector<std::uint8_t>({0, 1, 3}),
                 "level-specific Q/P evaluation-key image is incorrect");
-        require(prepared_keyswitch_constants.data_parms_id == level.parms_id
+        require(prepared_keyswitch_constants.id
+                    == "constants/keyswitch/q2"
+                    && prepared_keyswitch_constants.data_parms_id
+                        == level.parms_id
                     && prepared_keyswitch_constants.chain_index == level.chain_index
                     && prepared_keyswitch_constants.values.line_count == 1,
                 "level-specific KeySwitch constant record is incorrect");
-        require(prepared_rescale_constants.source_parms_id == level.parms_id
+        require(prepared_rescale_constants.id
+                    == "constants/rescale/q2_to_q1"
+                    && prepared_rescale_constants.source_parms_id
+                        == level.parms_id
                     && prepared_rescale_constants.values.line_count == 1,
                 "level-specific Rescale constant record is incorrect");
         require(fused.size() == level.q_moduli.size()
