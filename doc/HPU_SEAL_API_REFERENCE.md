@@ -74,13 +74,39 @@ struct CkksLevelDescriptor {
     std::vector<std::size_t> evaluation_key_digit_indices;
     std::uint32_t q_last;
 };
+
 std::vector<CkksLevelDescriptor> create_ckks_level_descriptors(
     const ::seal::SEALContext& context);
+
+class CkksLevelChain {
+public:
+    explicit CkksLevelChain(const ::seal::SEALContext&);
+
+    std::size_t size() const noexcept;
+    const std::vector<CkksLevelDescriptor>& levels() const noexcept;
+    const CkksLevelDescriptor& top() const noexcept;
+    const CkksLevelDescriptor& bottom() const noexcept;
+    const CkksLevelDescriptor& at(std::size_t ordinal) const;
+    const CkksLevelDescriptor& require(const ::seal::parms_id_type&) const;
+    const CkksLevelDescriptor& require_chain_index(std::size_t) const;
+    std::size_t ordinal(const ::seal::parms_id_type&) const;
+    bool has_next(const ::seal::parms_id_type&) const;
+    bool has_previous(const ::seal::parms_id_type&) const;
+    const CkksLevelDescriptor& next(const ::seal::parms_id_type&) const;
+    const CkksLevelDescriptor& previous(const ::seal::parms_id_type&) const;
+    bool is_direct_successor(
+        const ::seal::parms_id_type& source,
+        const ::seal::parms_id_type& destination) const;
+};
 ```
 
 - 遍历从 `first_context_data()` 到单素数层的所有 data-context 节点。
 - P 的 MOD_ID 保持全局固定（初始 Q 为 `[0..Qmax)`，P 为 `[Qmax..Qmax+P)`），
   即使低层 Q 变短也不重新编号。
+- `CkksLevelChain` 的 ordinal 从 top level 的 0 开始递增；它不同于随着 Q
+  逐层移除而递减的 SEAL `chain_index`。业务代码应通过 `next/previous`
+  导航，不应依赖裸 `levels[i]`。
+- 未知 `parms_id`、未知 `chain_index` 和越过 top/bottom 的迁移都会被拒绝。
 
 ### 2.3 NTT 表示桥：仿 SEAL NTT 表示转换
 

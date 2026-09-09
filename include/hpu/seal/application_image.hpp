@@ -139,6 +139,7 @@ public:
         std::uint64_t key_domain = 1);
 
     const hpu::runtime::HpuMemImage& image() const noexcept;
+    const CkksLevelChain& level_chain() const noexcept;
     const std::vector<CkksLevelDescriptor>& levels() const noexcept;
 
 private:
@@ -155,7 +156,7 @@ private:
 
     const ::seal::SEALContext& context_;
     hpu::runtime::HpuMemImage image_;
-    std::vector<CkksLevelDescriptor> levels_;
+    CkksLevelChain level_chain_;
     bool modulus_table_added_ = false;
     bool canonical_twiddles_added_ = false;
 };

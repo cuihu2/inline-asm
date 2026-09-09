@@ -16,9 +16,25 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+namespace {
+
+template <typename Function>
+void require_invalid_argument(Function action, const char* message)
+{
+    try {
+        action();
+    } catch (const std::invalid_argument&) {
+        return;
+    }
+    throw std::runtime_error(message);
+}
+
+} // namespace
 
 int main()
 {
@@ -27,16 +43,18 @@ int main()
         spec.poly_modulus_degree = 65536;
         spec.coeff_modulus_bits = {32, 32, 32, 32, 32};
         const auto bundle = hpu::seal_adapter::create_ckks_context(spec);
-        const auto levels = hpu::seal_adapter::create_ckks_level_descriptors(
-            *bundle.context);
+        const hpu::seal_adapter::CkksLevelChain level_chain(*bundle.context);
+        const auto& levels = level_chain.levels();
 
         if (!bundle.context || bundle.data_moduli.size() != 4
-            || bundle.special_moduli.size() != 1 || levels.size() < 3) {
+            || bundle.special_moduli.size() != 1 || levels.size() != 4) {
             throw std::runtime_error("unexpected SEALContext Q/P split");
         }
-        for (std::size_t level_index = 0; level_index < 3; ++level_index) {
+        for (std::size_t level_index = 0;
+             level_index < levels.size(); ++level_index) {
             const auto& level = levels[level_index];
-            const std::size_t expected_q = 4 - level_index;
+            const std::size_t expected_q =
+                bundle.data_moduli.size() - level_index;
             if (level.q_moduli.size() != expected_q
                 || level.rns_layout.q_mod_ids.size() != expected_q
                 || level.rns_layout.key_digits.size() != expected_q
@@ -46,6 +64,47 @@ int main()
                     "SEAL level did not preserve the application-global P MOD_ID");
             }
         }
+        const auto& top = level_chain.top();
+        const auto& q3 = level_chain.next(top.parms_id);
+        const auto& bottom = level_chain.bottom();
+        if (&top != &levels.front() || &bottom != &levels.back()
+            || bottom.q_moduli.size() != 1
+            || level_chain.ordinal(q3.parms_id) != 1
+            || level_chain.at(1).parms_id != q3.parms_id
+            || level_chain.require(q3.parms_id).chain_index != q3.chain_index
+            || level_chain.require_chain_index(q3.chain_index).parms_id
+                != q3.parms_id
+            || level_chain.previous(q3.parms_id).parms_id != top.parms_id
+            || !level_chain.has_next(top.parms_id)
+            || level_chain.has_next(bottom.parms_id)
+            || level_chain.has_previous(top.parms_id)
+            || !level_chain.has_previous(bottom.parms_id)
+            || !level_chain.is_direct_successor(top.parms_id, q3.parms_id)
+            || level_chain.is_direct_successor(q3.parms_id, top.parms_id)) {
+            throw std::runtime_error("CKKS level-chain navigation is inconsistent");
+        }
+        require_invalid_argument(
+            [&] {
+                (void)level_chain.require(::seal::parms_id_type{});
+            },
+            "unknown CKKS parms_id was accepted");
+        require_invalid_argument(
+            [&] {
+                (void)level_chain.require_chain_index(
+                    std::numeric_limits<std::size_t>::max());
+            },
+            "unknown CKKS chain_index was accepted");
+        require_invalid_argument(
+            [&] {
+                (void)level_chain.next(bottom.parms_id);
+            },
+            "bottom CKKS level accepted a next transition");
+        require_invalid_argument(
+            [&] {
+                (void)level_chain.previous(top.parms_id);
+            },
+            "top CKKS level accepted a previous transition");
+
         std::vector<std::uint32_t> all_moduli = bundle.data_moduli;
         all_moduli.insert(
             all_moduli.end(), bundle.special_moduli.begin(), bundle.special_moduli.end());

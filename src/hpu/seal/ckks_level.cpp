@@ -1,5 +1,7 @@
 #include "hpu/seal/ckks_level.hpp"
 
+#include <algorithm>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -82,6 +84,108 @@ std::vector<CkksLevelDescriptor> create_ckks_level_descriptors(
         result.push_back(std::move(level));
     }
     return result;
+}
+
+CkksLevelChain::CkksLevelChain(const ::seal::SEALContext& context)
+    : levels_(create_ckks_level_descriptors(context))
+{}
+
+std::size_t CkksLevelChain::size() const noexcept
+{
+    return levels_.size();
+}
+
+const std::vector<CkksLevelDescriptor>& CkksLevelChain::levels() const noexcept
+{
+    return levels_;
+}
+
+const CkksLevelDescriptor& CkksLevelChain::top() const noexcept
+{
+    return levels_.front();
+}
+
+const CkksLevelDescriptor& CkksLevelChain::bottom() const noexcept
+{
+    return levels_.back();
+}
+
+const CkksLevelDescriptor& CkksLevelChain::at(std::size_t ordinal) const
+{
+    return levels_.at(ordinal);
+}
+
+std::size_t CkksLevelChain::ordinal(
+    const ::seal::parms_id_type& parms_id) const
+{
+    const auto found = std::find_if(
+        levels_.begin(), levels_.end(),
+        [&](const CkksLevelDescriptor& level) {
+            return level.parms_id == parms_id;
+        });
+    if (found == levels_.end()) {
+        throw std::invalid_argument("parms_id is not a CKKS data level");
+    }
+    return static_cast<std::size_t>(std::distance(levels_.begin(), found));
+}
+
+const CkksLevelDescriptor& CkksLevelChain::require(
+    const ::seal::parms_id_type& parms_id) const
+{
+    return levels_[ordinal(parms_id)];
+}
+
+const CkksLevelDescriptor& CkksLevelChain::require_chain_index(
+    std::size_t chain_index) const
+{
+    const auto found = std::find_if(
+        levels_.begin(), levels_.end(),
+        [&](const CkksLevelDescriptor& level) {
+            return level.chain_index == chain_index;
+        });
+    if (found == levels_.end()) {
+        throw std::invalid_argument("chain_index is not a CKKS data level");
+    }
+    return *found;
+}
+
+bool CkksLevelChain::has_next(
+    const ::seal::parms_id_type& parms_id) const
+{
+    return ordinal(parms_id) + 1 < levels_.size();
+}
+
+bool CkksLevelChain::has_previous(
+    const ::seal::parms_id_type& parms_id) const
+{
+    return ordinal(parms_id) != 0;
+}
+
+const CkksLevelDescriptor& CkksLevelChain::next(
+    const ::seal::parms_id_type& parms_id) const
+{
+    const std::size_t source = ordinal(parms_id);
+    if (source + 1 >= levels_.size()) {
+        throw std::invalid_argument("CKKS level has no next data level");
+    }
+    return levels_[source + 1];
+}
+
+const CkksLevelDescriptor& CkksLevelChain::previous(
+    const ::seal::parms_id_type& parms_id) const
+{
+    const std::size_t source = ordinal(parms_id);
+    if (source == 0) {
+        throw std::invalid_argument("CKKS level has no previous data level");
+    }
+    return levels_[source - 1];
+}
+
+bool CkksLevelChain::is_direct_successor(
+    const ::seal::parms_id_type& source,
+    const ::seal::parms_id_type& destination) const
+{
+    return ordinal(destination) == ordinal(source) + 1;
 }
 
 } // namespace hpu::seal_adapter

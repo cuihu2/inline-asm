@@ -45,13 +45,12 @@ int main(int argc, char** argv)
         spec.poly_modulus_degree = 65536;
         spec.coeff_modulus_bits = {32, 32, 32, 32, 32};
         const auto bundle = hpu::seal_adapter::create_ckks_context(spec);
-        const auto levels = hpu::seal_adapter::create_ckks_level_descriptors(
-            *bundle.context);
-        if (levels.size() < 2) {
+        const hpu::seal_adapter::CkksLevelChain level_chain(*bundle.context);
+        if (level_chain.size() < 2) {
             throw std::logic_error("x^2+1 needs one CKKS rescale level");
         }
-        const auto& top = levels[0];
-        const auto& after_rescale = levels[1];
+        const auto& top = level_chain.top();
+        const auto& after_rescale = level_chain.next(top.parms_id);
 
         ::seal::KeyGenerator key_generator(*bundle.context);
         ::seal::PublicKey public_key;

@@ -52,7 +52,7 @@ CkksApplicationImageBuilder::CkksApplicationImageBuilder(
     const ::seal::SEALContext& context,
     std::uint64_t capacity_lines)
     : context_(context), image_(capacity_lines),
-      levels_(create_ckks_level_descriptors(context))
+      level_chain_(context)
 {}
 
 hpu::runtime::HpuMemSpan CkksApplicationImageBuilder::add_modulus_table()
@@ -301,13 +301,11 @@ PreparedRescaleConstants CkksApplicationImageBuilder::add_rescale_constants(
 {
     constexpr std::uint32_t format_magic = 0x52534331U; // "RSC1"
     const CkksLevelDescriptor& source = require_level(source_level.parms_id);
-    const auto source_data = context_.get_context_data(source.parms_id);
-    const auto destination_data = source_data ? source_data->next_context_data() : nullptr;
-    if (!destination_data || source.q_moduli.size() < 2) {
+    if (source.q_moduli.size() < 2
+        || !level_chain_.has_next(source.parms_id)) {
         throw std::invalid_argument("CKKS Rescale source has no next data level");
     }
-    const CkksLevelDescriptor& destination = require_level(
-        destination_data->parms_id());
+    const CkksLevelDescriptor& destination = level_chain_.next(source.parms_id);
     if (destination.q_moduli.size() + 1 != source.q_moduli.size()
         || !std::equal(
             destination.q_moduli.begin(), destination.q_moduli.end(),
@@ -504,22 +502,21 @@ CkksApplicationImageBuilder::image() const noexcept
     return image_;
 }
 
+const CkksLevelChain& CkksApplicationImageBuilder::level_chain() const noexcept
+{
+    return level_chain_;
+}
+
 const std::vector<CkksLevelDescriptor>&
 CkksApplicationImageBuilder::levels() const noexcept
 {
-    return levels_;
+    return level_chain_.levels();
 }
 
 const CkksLevelDescriptor& CkksApplicationImageBuilder::require_level(
     ::seal::parms_id_type parms_id) const
 {
-    const auto found = std::find_if(
-        levels_.begin(), levels_.end(),
-        [&](const CkksLevelDescriptor& level) { return level.parms_id == parms_id; });
-    if (found == levels_.end()) {
-        throw std::invalid_argument("parms_id is not a CKKS data level");
-    }
-    return *found;
+    return level_chain_.require(parms_id);
 }
 
 void register_rns_object(

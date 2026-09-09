@@ -54,7 +54,9 @@ int main()
         const auto canonical = builder.add_canonical_twiddles();
         const auto prepared_ciphertext = builder.add_ciphertext("input", ciphertext);
         const auto prepared_plaintext = builder.add_plaintext("plain", plaintext);
-        const auto& level = builder.levels()[1];
+        const auto& level_chain = builder.level_chain();
+        const auto& level = level_chain.next(
+            level_chain.top().parms_id);
         const auto prepared_relin = builder.add_relinearization_key(
             "relin_q2", relin_keys, level);
         const auto prepared_keyswitch_constants =
