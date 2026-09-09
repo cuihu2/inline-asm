@@ -16,7 +16,7 @@
 - `include/util/hpu_asm.hpp`：算子生成器使用的汇编封装。
 - `src/`：算子级和完整密文乘法指令流。
 
-除特别说明外，本文中的“当前实现”均指上述软件实现。26-bit HPU 命令以 `cmd26[25]` 区分 custom0/custom1；两类指令的 `inst[31:7]` 都直接成为 `cmd26[24:0]`，不执行字段重排。`pmodld` 采用 8-bit `MOD_ID`；模表对象通过 `dload type=2, flag[0]=1` 分配到 small Bank 5。
+除特别说明外，本文中的“当前实现”均指上述软件实现。26-bit HPU 命令以 `cmd26[25]` 区分计算类 custom2 和 DMA 类 custom1；两类指令的 `inst[31:7]` 都直接成为 `cmd26[24:0]`，不执行字段重排。`pmodld` 采用 8-bit `MOD_ID`；模表对象通过 `dload type=2, flag[0]=1` 分配到 small Bank 5。
 
 ## 1. 编程模型
 
@@ -26,7 +26,7 @@ HPU 指令均为 32-bit 定长指令，使用两个 RISC-V custom opcode：
 
 | 类别 | 低 7-bit opcode | 用途 |
 | --- | --- | --- |
-| `custom0` | `0001011` (`0x0B`) | 模运算、NTT/INTT、配置、完成通知和对象释放 |
+| `custom2` | `1011011` (`0x5B`) | 模运算、NTT/INTT、配置、完成通知和对象释放 |
 | `custom1` | `0101011` (`0x2B`) | 外部存储器与 HPU 对象之间的数据搬运 |
 
 当前软件 ISA 包含 11 条指令：
@@ -118,8 +118,8 @@ DMA 与后续访问的一致性由硬件维护，软件可在模表
 | `x0`..`x31` | 0..31 | custom1 使用的 RISC-V 通用寄存器编号 |
 | `cimm8` | 0..255 | `pmul/pmac` 小立即数 |
 | `stage` | 0..15 | NTT/INTT stage |
-| `mode` | 0..3 | custom0 2-bit 模式 |
-| `flag` | 0..1 | custom0 1-bit 标志 |
+| `mode` | 0..3 | custom2 2-bit 模式 |
+| `flag` | 0..1 | custom2 1-bit 标志 |
 | `mod_id` | 编码 0..255，当前软件使用 0..63 | 模上下文表编号；软件要求高两位为 0 |
 | `small_bank` | 0..1 | `dload flag[0]`，1 请求 small Bank 5 |
 
@@ -143,14 +143,14 @@ DMA 与后续访问的一致性由硬件维护，软件可在模表
 控制逻辑命令固定把类别放在最高位：
 
 ```text
-cmd26[25]   = cmd_kind: 0=custom0, 1=custom1
+cmd26[25]   = command_kind: 0=custom2 compute, 1=custom1 DMA
 cmd26[24:0] = payload
 ```
 
 两类指令的 payload 都与原始指令去掉低 7-bit opcode 后完全相同：
 
 ```text
-custom0: cmd26 = {1'b0, inst[31:7]}
+custom2: cmd26 = {1'b0, inst[31:7]}
 custom1: cmd26 = {1'b1, inst[31:7]}
 ```
 
@@ -183,7 +183,7 @@ cmd26[0]     = flag[0]
 ```text
  31      28 27    25 24    22 21             14 13       10 9    8 7 6       0
 +----------+--------+--------+-----------------+-------------+------+--+---------+
-|   OPC4   |  PDST  | PSRC1  |      OP2_8      | STAGE4=0    | MODE2| F| 0001011 |
+|   OPC4   |  PDST  | PSRC1  |      OP2_8      | STAGE4=0    | MODE2| F| 1011011 |
 +----------+--------+--------+-----------------+-------------+------+--+---------+
 ```
 
@@ -191,7 +191,7 @@ cmd26[0]     = flag[0]
 
 ```text
 word = (OPC4 << 28) | (PDST << 25) | (PSRC1 << 22)
-     | (OP2_8 << 14) | (MODE2 << 8) | (FLAG1 << 7) | 0x0B
+     | (OP2_8 << 14) | (MODE2 << 8) | (FLAG1 << 7) | 0x5B
 ```
 
 - 对象模式：`OP2_8[2:0]=PSRC2`，高 5-bit 为 0，`MODE2=0`。
@@ -203,7 +203,7 @@ word = (OPC4 << 28) | (PDST << 25) | (PSRC1 << 22)
 ```text
  31      28 27    25 24    22 21             14 13       10 9    8 7 6       0
 +----------+--------+--------+-----------------+-------------+------+--+---------+
-|   OPC4   | PDATA  | PDATA  |     PTWID       |   STAGE4    | MODE2| F| 0001011 |
+|   OPC4   | PDATA  | PDATA  |     PTWID       |   STAGE4    | MODE2| F| 1011011 |
 +----------+--------+--------+-----------------+-------------+------+--+---------+
 ```
 
@@ -212,7 +212,7 @@ word = (OPC4 << 28) | (PDST << 25) | (PSRC1 << 22)
 ```text
 word = (OPC4 << 28) | (PDATA << 25) | (PDATA << 22)
      | (PTWID << 14)
-     | (STAGE4 << 10) | (MODE2 << 8) | (FLAG1 << 7) | 0x0B
+     | (STAGE4 << 10) | (MODE2 << 8) | (FLAG1 << 7) | 0x5B
 ```
 
 `PDATA` 在 `[27:25]` 和 `[24:22]` 重复编码；`PTWID` 是 3-bit 对象号，写入
@@ -224,48 +224,48 @@ word = (OPC4 << 28) | (PDATA << 25) | (PDATA << 22)
 ```text
  31      28 27             22 21             14 13              7 6       0
 +----------+-----------------+-----------------+------------------+---------+
-|   0110   |   reserved=0    |     MOD_ID8     |    reserved=0    | 0001011 |
+|   0110   |   reserved=0    |     MOD_ID8     |    reserved=0    | 1011011 |
 +----------+-----------------+-----------------+------------------+---------+
 ```
 
 编码公式：
 
 ```text
-word = (0b0110 << 28) | (MOD_ID8 << 14) | 0x0B
+word = (0b0110 << 28) | (MOD_ID8 << 14) | 0x5B
 ```
 
-经过 custom0 precode 后，`MOD_ID8` 位于 `cmd26[14:7]`。其余操作数字段必须为 0。
+经过 custom2 precode 后，`MOD_ID8` 位于 `cmd26[14:7]`。其余操作数字段必须为 0。
 
 ### 3.4 PFREE 格式
 
 ```text
  31      28 27    25 24    22 21                                  7 6       0
 +----------+--------+--------+--------------------------------------+---------+
-|   1000   | reserved| OBJ_ID |             reserved=0               | 0001011 |
+|   1000   | reserved| OBJ_ID |             reserved=0               | 1011011 |
 +----------+--------+--------+--------------------------------------+---------+
 ```
 
 编码公式：
 
 ```text
-word = (0b1000 << 28) | (OBJ_ID << 22) | 0x0B
+word = (0b1000 << 28) | (OBJ_ID << 22) | 0x5B
 ```
 
-`OBJ_ID` 使用 custom0 的 `PSRC` 位段，其他载荷位必须为 0。
+`OBJ_ID` 使用 custom2 的 `PSRC` 位段，其他载荷位必须为 0。
 
 ### 3.5 SYNC 格式
 
 ```text
  31      28 27                                                       7 6       0
 +----------+----------------------------------------------------------+---------+
-|   0111   |                       reserved=0                         | 0001011 |
+|   0111   |                       reserved=0                         | 1011011 |
 +----------+----------------------------------------------------------+---------+
 ```
 
 编码公式：
 
 ```text
-word = (0b0111 << 28) | 0x0B
+word = (0b0111 << 28) | 0x5B
 ```
 
 `psync` 不携带 tag/mode，所有载荷位必须为 0。
@@ -326,7 +326,7 @@ for i = 0 .. L-1:
 **示例**
 
 ```asm
-padd p2, p0, p1       # 0x0400400B
+padd p2, p0, p1       # 0x0400405B
 ```
 
 ### 4.2 PSUB - 多项式模减
@@ -351,7 +351,7 @@ for i = 0 .. L-1:
 **示例**
 
 ```asm
-psub p2, p0, p1       # 0x1400400B
+psub p2, p0, p1       # 0x1400405B
 ```
 
 ### 4.3 PMUL - 多项式逐点模乘
@@ -382,8 +382,8 @@ for i = 0 .. L-1:
 **示例**
 
 ```asm
-pmul p2, p0, p1       # 0x2400400B
-pmul p2, p0, 255      # 0x243FC10B
+pmul p2, p0, p1       # 0x2400405B
+pmul p2, p0, 255      # 0x243FC15B
 ```
 
 ### 4.4 PMAC - 多项式逐点模乘加
@@ -414,8 +414,8 @@ for i = 0 .. L-1:
 **示例**
 
 ```asm
-pmac p2, p0, p1       # 0x3400400B
-pmac p2, p0, 255      # 0x343FC10B
+pmac p2, p0, p1       # 0x3400405B
+pmac p2, p0, 255      # 0x343FC15B
 ```
 
 ## 5. 变换指令
@@ -450,7 +450,7 @@ NTT 发出 `log2(N)` 条指令，stage 从 0 递增到 `log2(N)-1`。
 **示例**
 
 ```asm
-pntt p0, p3, 15, 0, 0    # 0x4000FC0B
+pntt p0, p3, 15, 0, 0    # 0x4000FC5B
 ```
 
 软件通常在每个 stage 前加载 twiddle，并在该 stage 后释放：
@@ -516,7 +516,7 @@ runtime 按 `twiddle_map.csv` 绑定 pre-twist、各 stage twiddle 和 post fact
 **示例**
 
 ```asm
-pintt p0, p3, 15, 0, 0   # 0x5000FC0B
+pintt p0, p3, 15, 0, 0   # 0x5000FC5B
 ```
 
 ## 6. 配置与生命周期指令
@@ -552,9 +552,9 @@ active_mod_context = MOD_TABLE[line][slot]
 **示例**
 
 ```asm
-pmodld 0              # 0x6000000B
-pmodld 1              # 0x6000400B
-pmodld 255            # 0x603FC00B
+pmodld 0              # 0x6000005B
+pmodld 1              # 0x6000405B
+pmodld 255            # 0x603FC05B
 ```
 
 旧语法 `pmodld psrc, idx1, cfg` 已删除，汇编器必须拒绝。
@@ -574,12 +574,12 @@ require OBJ[psrc] is allocated and not busy
 release OBJ[psrc]
 ```
 
-`pfree` 的目标对象编码在 custom0 `PSRC/OBJ_ID` 位段，其他载荷位为 0。它必须排在对象最后一次读取之后。
+`pfree` 的目标对象编码在 custom2 `PSRC/OBJ_ID` 位段，其他载荷位为 0。它必须排在对象最后一次读取之后。
 
 **示例**
 
 ```asm
-pfree p4              # 0x8100000B
+pfree p4              # 0x8100005B
 ```
 
 对已经使用任意 `rel` 值执行成功的 `dstore` 对象再次执行 `pfree` 属于非法生命周期操作。
@@ -603,7 +603,7 @@ notify_cpu(program_complete)
 **示例**
 
 ```asm
-psync                  # 0x7000000B
+psync                  # 0x7000005B
 ```
 
 ## 7. 外部访存指令
@@ -959,18 +959,18 @@ ctest --test-dir build --output-on-failure
 
 | 指令示例 | 32-bit 机器码 | 26-bit 控制命令 |
 | --- | --- | --- |
-| `padd p2, p0, p1` | `0x0400400B` | `0x0080080` |
-| `psub p2, p0, p1` | `0x1400400B` | `0x0280080` |
-| `pmul p2, p0, p1` | `0x2400400B` | `0x0480080` |
-| `pmul p2, p0, 255` | `0x243FC10B` | `0x0487F82` |
-| `pmac p2, p0, p1` | `0x3400400B` | `0x0680080` |
-| `pmac p2, p0, 255` | `0x343FC10B` | `0x0687F82` |
-| `pntt p0, p3, 15, 0, 0` | `0x4000FC0B` | `0x08001F8` |
-| `pintt p0, p3, 15, 0, 0` | `0x5000FC0B` | `0x0A001F8` |
-| `pmodld 0` | `0x6000000B` | `0x0C00000` |
-| `pmodld 255` | `0x603FC00B` | `0x0C07F80` |
-| `psync` | `0x7000000B` | `0x0E00000` |
-| `pfree p4` | `0x8100000B` | `0x1020000` |
+| `padd p2, p0, p1` | `0x0400405B` | `0x0080080` |
+| `psub p2, p0, p1` | `0x1400405B` | `0x0280080` |
+| `pmul p2, p0, p1` | `0x2400405B` | `0x0480080` |
+| `pmul p2, p0, 255` | `0x243FC15B` | `0x0487F82` |
+| `pmac p2, p0, p1` | `0x3400405B` | `0x0680080` |
+| `pmac p2, p0, 255` | `0x343FC15B` | `0x0687F82` |
+| `pntt p0, p3, 15, 0, 0` | `0x4000FC5B` | `0x08001F8` |
+| `pintt p0, p3, 15, 0, 0` | `0x5000FC5B` | `0x0A001F8` |
+| `pmodld 0` | `0x6000005B` | `0x0C00000` |
+| `pmodld 255` | `0x603FC05B` | `0x0C07F80` |
+| `psync` | `0x7000005B` | `0x0E00000` |
+| `pfree p4` | `0x8100005B` | `0x1020000` |
 | `dload x10, x11, p0, 0, 0` | `0x00B5002B` | `0x2016A00` |
 | `dload x10, x11, p4, 2, 1` | `0x08B540AB` | `0x2116A81` |
 | `dstore x10, x11, p2, 1` | `0x04B5502B` | `0x2096AA0` |

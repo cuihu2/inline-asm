@@ -5,7 +5,7 @@
 namespace hpu {
 namespace {
 
-constexpr std::uint32_t kCustom0Opcode = 0b0001011;
+constexpr std::uint32_t kCustom2Opcode = 0b1011011;
 constexpr std::uint32_t kCustom1Opcode = 0b0101011;
 
 constexpr std::uint32_t kOpcPadd = 0b0000;
@@ -77,7 +77,7 @@ std::uint32_t encode_ar3(const Instruction& instruction) {
     word |= op2 << 14;
     word |= mode << 8;
     word |= static_cast<std::uint32_t>(instruction.flag) << 7;
-    word |= kCustom0Opcode;
+    word |= kCustom2Opcode;
     return word;
 }
 
@@ -96,7 +96,7 @@ std::uint32_t encode_stg(const Instruction& instruction) {
     word |= static_cast<std::uint32_t>(instruction.idx0) << 10;
     word |= static_cast<std::uint32_t>(instruction.mode) << 8;
     word |= static_cast<std::uint32_t>(instruction.flag) << 7;
-    word |= kCustom0Opcode;
+    word |= kCustom2Opcode;
     return word;
 }
 
@@ -106,7 +106,7 @@ std::uint32_t encode_mod(const Instruction& instruction) {
     std::uint32_t word = 0;
     word |= opcode_for(instruction.mnemonic) << 28;
     word |= static_cast<std::uint32_t>(instruction.mod_id) << 14;
-    word |= kCustom0Opcode;
+    word |= kCustom2Opcode;
     return word;
 }
 
@@ -119,7 +119,7 @@ std::uint32_t encode_cfg(const Instruction& instruction) {
     std::uint32_t word = 0;
     word |= opcode_for(instruction.mnemonic) << 28;
     word |= static_cast<std::uint32_t>(instruction.idx0) << 22;
-    word |= kCustom0Opcode;
+    word |= kCustom2Opcode;
     return word;
 }
 
@@ -130,7 +130,7 @@ std::uint32_t encode_sync(const Instruction& instruction) {
 
     std::uint32_t word = 0;
     word |= opcode_for(instruction.mnemonic) << 28;
-    word |= kCustom0Opcode;
+    word |= kCustom2Opcode;
     return word;
 }
 
@@ -181,14 +181,14 @@ std::uint32_t encode_instruction(const Instruction& instruction) {
 
 std::uint32_t precode_command26(std::uint32_t instruction_word) {
     const std::uint32_t opcode = instruction_word & 0x7FU;
-    if (opcode == kCustom0Opcode) {
+    if (opcode == kCustom2Opcode) {
         return instruction_word >> 7U;
     }
     if (opcode == kCustom1Opcode) {
         return (1U << 25U) | (instruction_word >> 7U);
     }
 
-    throw std::runtime_error("instruction is not custom0/custom1");
+    throw std::runtime_error("instruction is not custom2/custom1");
 }
 
 }  // namespace hpu
