@@ -91,7 +91,8 @@ std::uint32_t encode_stg(const Instruction& instruction) {
     std::uint32_t word = 0;
     word |= opcode_for(instruction.mnemonic) << 28;
     word |= static_cast<std::uint32_t>(instruction.pdst) << 25;
-    word |= static_cast<std::uint32_t>(instruction.psrc1) << 22;
+    word |= static_cast<std::uint32_t>(instruction.pdst) << 22;
+    word |= static_cast<std::uint32_t>(instruction.psrc1) << 14;
     word |= static_cast<std::uint32_t>(instruction.idx0) << 10;
     word |= static_cast<std::uint32_t>(instruction.mode) << 8;
     word |= static_cast<std::uint32_t>(instruction.flag) << 7;

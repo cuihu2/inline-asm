@@ -31,8 +31,9 @@ enum class Mnemonic {
 struct Instruction {
     Mnemonic mnemonic {};
 
-    // Physical object fields reused by AR3 and STG encodings.
-    // For pntt/pintt, these bit positions carry pdata/ptwiddle respectively.
+    // Semantic object operands reused by AR3 and STG encodings. For
+    // pntt/pintt, pdst is pdata and psrc1 is ptwiddle; encode_stg maps them
+    // to the STG-specific duplicated-pdata and OP2 fields.
     int pdst = -1;
     int psrc1 = -1;
     int psrc2 = -1;
