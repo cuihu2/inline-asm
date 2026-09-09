@@ -2,6 +2,7 @@
 
 #include "hpu/runtime/software_executor.hpp"
 #include "hpu/seal/application_image.hpp"
+#include "hpu/seal/ckks_metadata.hpp"
 #include "hpu/seal/ntt_bridge.hpp"
 
 #include <seal/seal.h>
@@ -124,10 +125,6 @@ private:
     void validate_object(
         const PreparedRnsObject& object,
         std::size_t component_count) const;
-    void require_same_level(
-        const PreparedRnsObject& left,
-        const PreparedRnsObject& right,
-        const PreparedRnsObject& output) const;
     void transform(
         const PreparedRnsObject& input,
         const PreparedRnsObject& output,
@@ -152,6 +149,7 @@ private:
         bool switching_is_coefficient);
 
     const ::seal::SEALContext& context_;
+    CkksLevelChain level_chain_;
     hpu::runtime::HpuSoftwareExecutor memory_;
 };
 

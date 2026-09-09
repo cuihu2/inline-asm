@@ -40,6 +40,17 @@ void verify_exact(
     }
 }
 
+template <typename Function>
+void require_invalid_argument(Function action, const char* message)
+{
+    try {
+        action();
+    } catch (const std::invalid_argument&) {
+        return;
+    }
+    throw std::runtime_error(message);
+}
+
 } // namespace
 
 int main()
@@ -229,6 +240,13 @@ int main()
 
         hpu::seal_adapter::CkksSoftwareExecutor executor(
             *bundle.context, builder.image());
+        auto inconsistent_output = add_output;
+        inconsistent_output.chain_index = next_level.chain_index;
+        require_invalid_argument(
+            [&] {
+                executor.add(input_a, input_b, inconsistent_output);
+            },
+            "executor accepted a chain_index inconsistent with parms_id");
         executor.add(input_a, input_b, add_output);
         executor.subtract(input_a, input_b, subtract_output);
         executor.multiply_plain(input_a, plaintext, multiply_plain_output);

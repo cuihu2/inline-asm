@@ -108,6 +108,37 @@ public:
   导航，不应依赖裸 `levels[i]`。
 - 未知 `parms_id`、未知 `chain_index` 和越过 top/bottom 的迁移都会被拒绝。
 
+#### 2.2.1 CKKS 操作元数据规则
+
+`include/hpu/seal/ckks_metadata.hpp`
+
+```cpp
+struct CkksValueMetadata {
+    ::seal::parms_id_type parms_id;
+    std::size_t chain_index;
+    double scale;
+};
+
+CkksValueMetadata infer_ckks_preserving_metadata(
+    const CkksLevelChain&, const CkksValueMetadata& input);
+CkksValueMetadata infer_ckks_add_sub_metadata(
+    const CkksLevelChain&, const CkksValueMetadata& left,
+    const CkksValueMetadata& right);
+CkksValueMetadata infer_ckks_multiply_metadata(
+    const CkksLevelChain&, const CkksValueMetadata& left,
+    const CkksValueMetadata& right);
+CkksValueMetadata infer_ckks_rescale_metadata(
+    const CkksLevelChain&, const CkksValueMetadata& input);
+```
+
+- 保持型操作（Negate、Relinearize、Rotate、NTT/INTT）保持 level 与 scale。
+- Add/Sub 要求两个输入位于同一 level 且 scale 在相对误差内匹配。
+- Multiply 保持 level，并把输出 scale 推导为两个输入 scale 的乘积。
+- Rescale 只能迁移到直接下一层，输出 scale 为 `input.scale / q_last`。
+- 每个输入都会同时校验 `parms_id`、`chain_index` 和有限正 scale；底层
+  Rescale、跨层运算、scale 不匹配及乘法 scale 溢出都会在分配或执行前拒绝。
+- 这里只管理元数据，不自动插入 Rescale，也不改变算子的数学/表示域路径。
+
 ### 2.3 NTT 表示桥：仿 SEAL NTT 表示转换
 
 `include/hpu/seal/ntt_bridge.hpp`
@@ -211,9 +242,14 @@ public:
         add_conjugation_twiddles(std::string id, const CkksLevelDescriptor&);
     PreparedRnsObject reserve_ciphertext(std::string id, const CkksLevelDescriptor&,
                                          std::size_t component_count, double scale,
-                                         hpu::runtime::PolynomialDomain domain = ..., 
+                                         hpu::runtime::PolynomialDomain domain = ...,
+                                         std::uint64_t key_domain = 1);
+    PreparedRnsObject reserve_ciphertext(std::string id, const CkksValueMetadata&,
+                                         std::size_t component_count,
+                                         hpu::runtime::PolynomialDomain domain = ...,
                                          std::uint64_t key_domain = 1);
     const hpu::runtime::HpuMemImage& image() const noexcept;
+    const CkksLevelChain& level_chain() const noexcept;
     const std::vector<CkksLevelDescriptor>& levels() const noexcept;
 };
 
@@ -223,6 +259,8 @@ void register_rns_object(hpu::runtime::Application& application,
 
 - 每个 RNS limb 是独立 256B 行对齐分配；`N=65536` 时每个 limb 恰好 1024 行，
   自然映射为一个 regular-bank 常驻对象。
+- 推荐把 `infer_ckks_*_metadata` 的结果直接交给 metadata overload，避免调用方
+  手工组合下一层 `parms_id` 和 scale；descriptor + scale overload 继续保留兼容。
 - `register_rns_object` 把每个 limb 注册为独立对象，跨 kernel 驻留决策留给
   `hpu::runtime::Application`。
 

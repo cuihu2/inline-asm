@@ -3,6 +3,7 @@
 #include "hpu/runtime/memory_image.hpp"
 #include "hpu/seal/automorphism.hpp"
 #include "hpu/seal/ckks_level.hpp"
+#include "hpu/seal/ckks_metadata.hpp"
 #include "hpu/seal/evaluation_key.hpp"
 
 #include <seal/seal.h>
@@ -30,6 +31,11 @@ struct PreparedRnsObject {
         hpu::runtime::PolynomialDomain::canonical_ntt_physical;
     std::uint64_t key_domain = 1;
     std::vector<PreparedPolynomial> components;
+
+    CkksValueMetadata metadata() const noexcept
+    {
+        return {parms_id, chain_index, scale};
+    }
 };
 
 struct PreparedEvaluationKey {
@@ -134,6 +140,13 @@ public:
         const CkksLevelDescriptor& level,
         std::size_t component_count,
         double scale,
+        hpu::runtime::PolynomialDomain domain =
+            hpu::runtime::PolynomialDomain::canonical_ntt_physical,
+        std::uint64_t key_domain = 1);
+    PreparedRnsObject reserve_ciphertext(
+        std::string id,
+        const CkksValueMetadata& metadata,
+        std::size_t component_count,
         hpu::runtime::PolynomialDomain domain =
             hpu::runtime::PolynomialDomain::canonical_ntt_physical,
         std::uint64_t key_domain = 1);

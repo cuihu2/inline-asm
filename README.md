@@ -161,7 +161,11 @@ raw/slot-step Rotate 和 Conjugate
 SEAL 4.4.4 兼容目标，保留为远期独立扩展。P、P/2 和各 `P^-1 mod q_i` 作为 level 专属常量在应用初始化时
 写入 HPU_MEM，执行阶段只读取并校验，不临时推导硬件常量。
 Rescale 同样从 HPU_MEM 取得 `q_last/2` 与 `q_last^-1 mod q_i`，并迁移到相邻
-`parms_id`。`x^2+1` 示例的 Square→Relinearize→Rescale→AddPlain 已由该执行器
+`parms_id`。host 侧通过 `CkksValueMetadata` 集中推导和校验操作的
+`parms_id + chain_index + scale`：保持型操作不改元数据，Add/Sub 要求同层同
+scale，Multiply 计算 scale 乘积，Rescale 只走 `CkksLevelChain::next` 并除以
+`q_last`。image builder 与软件执行器消费同一套规则，但不会自动插入 Rescale。
+`x^2+1` 示例的 Square→Relinearize→Rescale→AddPlain 已由该执行器
 真正执行，SEAL Evaluator 只提供独立逐字 oracle。
 
 多层执行回归使用 Q4|P1 image，完整运行 Q4

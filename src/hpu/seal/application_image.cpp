@@ -469,6 +469,22 @@ PreparedRnsObject CkksApplicationImageBuilder::reserve_ciphertext(
     std::uint64_t key_domain)
 {
     const CkksLevelDescriptor& authoritative = require_level(level.parms_id);
+    return reserve_ciphertext(
+        std::move(id),
+        CkksValueMetadata{
+            authoritative.parms_id, authoritative.chain_index, scale},
+        component_count, domain, key_domain);
+}
+
+PreparedRnsObject CkksApplicationImageBuilder::reserve_ciphertext(
+    std::string id,
+    const CkksValueMetadata& metadata,
+    std::size_t component_count,
+    hpu::runtime::PolynomialDomain domain,
+    std::uint64_t key_domain)
+{
+    validate_ckks_metadata(level_chain_, metadata, "reserved CKKS ciphertext");
+    const CkksLevelDescriptor& authoritative = require_level(metadata.parms_id);
     const auto data = context_.get_context_data(authoritative.parms_id);
     if (!data || component_count == 0) {
         throw std::invalid_argument("invalid reserved CKKS ciphertext shape");
@@ -477,7 +493,7 @@ PreparedRnsObject CkksApplicationImageBuilder::reserve_ciphertext(
     result.id = std::move(id);
     result.parms_id = authoritative.parms_id;
     result.chain_index = authoritative.chain_index;
-    result.scale = scale;
+    result.scale = metadata.scale;
     result.domain = domain;
     result.key_domain = key_domain;
     const std::size_t degree = data->parms().poly_modulus_degree();

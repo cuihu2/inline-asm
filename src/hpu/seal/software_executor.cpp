@@ -4,18 +4,10 @@
 #include "scheme/ckks/galois.hpp"
 
 #include <algorithm>
-#include <cmath>
 #include <stdexcept>
 
 namespace hpu::seal_adapter {
 namespace {
-
-bool compatible_scales(double left, double right)
-{
-    return std::isfinite(left) && std::isfinite(right)
-        && left > 0.0 && right > 0.0
-        && std::abs(left - right) <= 1e-6 * std::max(left, right);
-}
 
 std::size_t bit_reverse(std::size_t value, std::size_t degree)
 {
@@ -92,7 +84,7 @@ const PreparedFusedAutomorphismTwiddles& find_fused_tables(
 CkksSoftwareExecutor::CkksSoftwareExecutor(
     const ::seal::SEALContext& context,
     const hpu::runtime::HpuMemImage& image)
-    : context_(context), memory_(image)
+    : context_(context), level_chain_(context), memory_(image)
 {
     const auto key_data = context.key_context_data();
     if (!key_data || key_data->parms().scheme() != ::seal::scheme_type::ckks) {
@@ -107,6 +99,7 @@ void CkksSoftwareExecutor::validate_object(
     const PreparedRnsObject& object,
     std::size_t component_count) const
 {
+    validate_ckks_metadata(level_chain_, object.metadata(), "prepared CKKS object");
     const auto data = context_.get_context_data(object.parms_id);
     if (!data || data->parms().scheme() != ::seal::scheme_type::ckks
         || object.components.size() != component_count) {
@@ -128,16 +121,6 @@ void CkksSoftwareExecutor::validate_object(
     }
 }
 
-void CkksSoftwareExecutor::require_same_level(
-    const PreparedRnsObject& left,
-    const PreparedRnsObject& right,
-    const PreparedRnsObject& output) const
-{
-    if (left.parms_id != right.parms_id || left.parms_id != output.parms_id) {
-        throw std::invalid_argument("CKKS software operands have different parms_id values");
-    }
-}
-
 void CkksSoftwareExecutor::ciphertext_binary(
     const PreparedRnsObject& left,
     const PreparedRnsObject& right,
@@ -147,11 +130,11 @@ void CkksSoftwareExecutor::ciphertext_binary(
     validate_object(left, 2);
     validate_object(right, 2);
     validate_object(output, 2);
-    require_same_level(left, right, output);
-    if (!compatible_scales(left.scale, right.scale)
-        || !compatible_scales(left.scale, output.scale)) {
-        throw std::invalid_argument("CKKS Add/Sub requires matching scales");
-    }
+    require_ckks_metadata_matches(
+        level_chain_,
+        infer_ckks_add_sub_metadata(
+            level_chain_, left.metadata(), right.metadata()),
+        output.metadata(), "CKKS Add/Sub output");
     for (std::size_t component = 0; component < 2; ++component) {
         const auto& left_poly = left.components[component];
         const auto& right_poly = right.components[component];
@@ -195,15 +178,15 @@ void CkksSoftwareExecutor::plaintext_binary(
     validate_object(ciphertext, 2);
     validate_object(plaintext, 1);
     validate_object(output, 2);
-    require_same_level(ciphertext, plaintext, output);
-    if ((operation == hpu::runtime::PointwiseOperation::multiply
-            && !compatible_scales(
-                ciphertext.scale * plaintext.scale, output.scale))
-        || (operation != hpu::runtime::PointwiseOperation::multiply
-            && (!compatible_scales(ciphertext.scale, plaintext.scale)
-                || !compatible_scales(ciphertext.scale, output.scale)))) {
-        throw std::invalid_argument("CKKS plaintext operation has incompatible scales");
-    }
+    const CkksValueMetadata expected =
+        operation == hpu::runtime::PointwiseOperation::multiply
+        ? infer_ckks_multiply_metadata(
+            level_chain_, ciphertext.metadata(), plaintext.metadata())
+        : infer_ckks_add_sub_metadata(
+            level_chain_, ciphertext.metadata(), plaintext.metadata());
+    require_ckks_metadata_matches(
+        level_chain_, expected, output.metadata(),
+        "CKKS plaintext operation output");
 
     const auto& plain_poly = plaintext.components[0];
     for (std::size_t component = 0; component < 2; ++component) {
@@ -264,9 +247,11 @@ void CkksSoftwareExecutor::negate(
 {
     validate_object(ciphertext, 2);
     validate_object(output, 2);
-    require_same_level(ciphertext, ciphertext, output);
-    if (!compatible_scales(ciphertext.scale, output.scale)
-        || ciphertext.domain
+    require_ckks_metadata_matches(
+        level_chain_,
+        infer_ckks_preserving_metadata(level_chain_, ciphertext.metadata()),
+        output.metadata(), "CKKS Negate output");
+    if (ciphertext.domain
             != hpu::runtime::PolynomialDomain::canonical_ntt_physical
         || output.domain
             != hpu::runtime::PolynomialDomain::canonical_ntt_physical
@@ -308,7 +293,11 @@ void CkksSoftwareExecutor::multiply(
     validate_object(left, 2);
     validate_object(right, 2);
     validate_object(tensor_output, 3);
-    require_same_level(left, right, tensor_output);
+    require_ckks_metadata_matches(
+        level_chain_,
+        infer_ckks_multiply_metadata(
+            level_chain_, left.metadata(), right.metadata()),
+        tensor_output.metadata(), "CKKS Multiply output");
     if (left.domain
             != hpu::runtime::PolynomialDomain::canonical_ntt_physical
         || right.domain
@@ -316,9 +305,7 @@ void CkksSoftwareExecutor::multiply(
         || tensor_output.domain
             != hpu::runtime::PolynomialDomain::canonical_ntt_physical
         || left.key_domain != 1 || right.key_domain != 1
-        || tensor_output.key_domain != 1
-        || !compatible_scales(
-            left.scale * right.scale, tensor_output.scale)) {
+        || tensor_output.key_domain != 1) {
         throw std::invalid_argument(
             "CKKS Multiply has incompatible output scale/representation");
     }
@@ -467,10 +454,13 @@ void CkksSoftwareExecutor::key_switch_impl(
     validate_object(base_ciphertext, 2);
     validate_object(switching_component, 1);
     validate_object(output, 2);
-    require_same_level(base_ciphertext, switching_component, output);
-    if (!compatible_scales(base_ciphertext.scale, switching_component.scale)
-        || !compatible_scales(base_ciphertext.scale, output.scale)
-        || base_ciphertext.domain
+    require_ckks_metadata_matches(
+        level_chain_,
+        infer_ckks_add_sub_metadata(
+            level_chain_, base_ciphertext.metadata(),
+            switching_component.metadata()),
+        output.metadata(), "CKKS KeySwitch output");
+    if (base_ciphertext.domain
             != hpu::runtime::PolynomialDomain::canonical_ntt_physical
         || output.domain
             != hpu::runtime::PolynomialDomain::canonical_ntt_physical
@@ -627,10 +617,10 @@ void CkksSoftwareExecutor::relinearize(
 {
     validate_object(tensor, 3);
     validate_object(output, 2);
-    if (tensor.parms_id != output.parms_id
-        || !compatible_scales(tensor.scale, output.scale)) {
-        throw std::invalid_argument("CKKS Relinearize changed level or scale");
-    }
+    require_ckks_metadata_matches(
+        level_chain_,
+        infer_ckks_preserving_metadata(level_chain_, tensor.metadata()),
+        output.metadata(), "CKKS Relinearize output");
     PreparedRnsObject base = tensor;
     base.components.resize(2);
     PreparedRnsObject switching = tensor;
@@ -652,12 +642,10 @@ void CkksSoftwareExecutor::rescale(
     }
     validate_object(input, input.components.size());
     validate_object(output, output.components.size());
-    const auto source_data = context_.get_context_data(input.parms_id);
-    const auto destination_data = source_data
-        ? source_data->next_context_data() : nullptr;
-    if (!destination_data
-        || output.parms_id != destination_data->parms_id()
-        || constants.source_parms_id != input.parms_id
+    require_ckks_metadata_matches(
+        level_chain_, infer_ckks_rescale_metadata(level_chain_, input.metadata()),
+        output.metadata(), "CKKS Rescale output");
+    if (constants.source_parms_id != input.parms_id
         || constants.destination_parms_id != output.parms_id
         || constants.source_chain_index != input.chain_index
         || constants.destination_chain_index != output.chain_index
@@ -682,9 +670,7 @@ void CkksSoftwareExecutor::rescale(
         || constant_words[4] != retained_count
         || !std::equal(
             destination_ids.begin(), destination_ids.end(),
-            source_ids.begin())
-        || !compatible_scales(
-            input.scale / static_cast<double>(q_last), output.scale)) {
+            source_ids.begin())) {
         throw std::invalid_argument("invalid HPU_MEM CKKS Rescale constants");
     }
     for (std::size_t basis = 0; basis < retained_count; ++basis) {
@@ -746,12 +732,16 @@ void CkksSoftwareExecutor::rotate(
     validate_object(input, 2);
     validate_object(coefficient_workspace, 2);
     validate_object(output, 2);
-    require_same_level(input, coefficient_workspace, output);
+    const auto expected = infer_ckks_preserving_metadata(
+        level_chain_, input.metadata());
+    require_ckks_metadata_matches(
+        level_chain_, expected, coefficient_workspace.metadata(),
+        "CKKS Rotate workspace");
+    require_ckks_metadata_matches(
+        level_chain_, expected, output.metadata(), "CKKS Rotate output");
     const std::size_t degree = input.components.front().degree;
     const std::uint64_t ring_order = 2ULL * degree;
     if ((galois_element & 1U) == 0U || galois_element >= ring_order
-        || !compatible_scales(input.scale, coefficient_workspace.scale)
-        || !compatible_scales(input.scale, output.scale)
         || input.domain
             != hpu::runtime::PolynomialDomain::canonical_ntt_physical
         || input.key_domain != 1
@@ -870,9 +860,11 @@ void CkksSoftwareExecutor::transform(
     }
     validate_object(input, input.components.size());
     validate_object(output, input.components.size());
-    if (input.parms_id != output.parms_id
-        || !compatible_scales(input.scale, output.scale)
-        || input.key_domain != output.key_domain
+    require_ckks_metadata_matches(
+        level_chain_,
+        infer_ckks_preserving_metadata(level_chain_, input.metadata()),
+        output.metadata(), "CKKS transform output");
+    if (input.key_domain != output.key_domain
         || input.domain != (inverse
             ? hpu::runtime::PolynomialDomain::canonical_ntt_physical
             : hpu::runtime::PolynomialDomain::coefficient)

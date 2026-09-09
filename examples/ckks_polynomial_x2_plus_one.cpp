@@ -118,17 +118,26 @@ int main(int argc, char** argv)
             "constants/rescale/top_to_next", top);
         const auto prepared_one = image_builder.add_plaintext(
             "constant/one/q3", encoded_one);
+        const auto tensor_metadata =
+            hpu::seal_adapter::infer_ckks_multiply_metadata(
+                level_chain, prepared_input.metadata(), prepared_input.metadata());
+        const auto relinearized_metadata =
+            hpu::seal_adapter::infer_ckks_preserving_metadata(
+                level_chain, tensor_metadata);
+        const auto rescaled_metadata =
+            hpu::seal_adapter::infer_ckks_rescale_metadata(
+                level_chain, relinearized_metadata);
+        const auto output_metadata =
+            hpu::seal_adapter::infer_ckks_add_sub_metadata(
+                level_chain, rescaled_metadata, prepared_one.metadata());
         const auto tensor = image_builder.reserve_ciphertext(
-            "intermediate/x_squared_tensor/top", top, 3,
-            input_scale * input_scale);
+            "intermediate/x_squared_tensor/top", tensor_metadata, 3);
         const auto relinearized = image_builder.reserve_ciphertext(
-            "intermediate/x_squared_relinearized/top", top, 2,
-            input_scale * input_scale);
+            "intermediate/x_squared_relinearized/top", relinearized_metadata, 2);
         const auto rescaled = image_builder.reserve_ciphertext(
-            "intermediate/x_squared/q3", after_rescale, 2,
-            host_result.scale());
+            "intermediate/x_squared/q3", rescaled_metadata, 2);
         const auto hpu_output = image_builder.reserve_ciphertext(
-            "output/x_squared_plus_one/q3", after_rescale, 2, host_result.scale());
+            "output/x_squared_plus_one/q3", output_metadata, 2);
 
         // Execute the same application from its HPU_MEM image. SEAL Evaluator
         // above is now only the independent oracle, not the implementation of
