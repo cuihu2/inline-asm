@@ -13,7 +13,7 @@
 
 1. [HPU 控制逻辑设计文档](https://icnj64z5e8zz.feishu.cn/wiki/KOlSwfEEtiMuqvkTppPcyJElnyf)，v0.4，2026-05-31。作为当前 26-bit 命令、对象状态、`pmodld`、`pfree` 和 `psync` 的编码/控制基线。
 2. [HPU 集成与编程手册](https://icnj64z5e8zz.feishu.cn/wiki/NZEgwsvshiQ6Twkrxvtck3UGnXg)，V0.2，2026-07-10。用于跨模块接口、CSR、SRAM、DMA 和软件流程；对 Bank 深度、固定地址和物理 NTT 策略等后更新字段优先于 5 月控制文档。
-3. [RISC-V核内接口设计](https://icnj64z5e8zz.feishu.cn/wiki/QE8MwYGIciNwoYkjomCcZbnmnOh)。核内 custom0/custom1 发射路径基线；其中 custom1 章节与集成手册存在冲突，见第 4 节。
+3. [RISC-V核内接口设计](https://icnj64z5e8zz.feishu.cn/wiki/QE8MwYGIciNwoYkjomCcZbnmnOh)。核内 custom2/custom1 发射路径基线；其中 custom1 章节与集成手册存在冲突，见第 4 节。
 4. [HPU_PE_反串讲](https://icnj64z5e8zz.feishu.cn/wiki/T7pTwV4eiiJbXHkTkrAcgDzxn0g)，v0.1，2026-06-22。PE 位宽、Barrett、twiddle 和 NTT/INTT 数据通路验证基线。
 5. [HPU](https://icnj64z5e8zz.feishu.cn/wiki/MZkHwbivGiOs7ekMGb0cMSk5nTY)。知识库根文档，包含新旧章节，只用于定位历史约定，不作为单一冻结版本。
 6. [HPU 通过 DMA 访问主存的实现方案讨论稿](https://icnj64z5e8zz.feishu.cn/wiki/KOfhwRW4Oi33f6kPEXWcJJwDnSS)。该文档明确是讨论稿；当它与集成手册冲突时，以集成手册为准。
@@ -30,14 +30,14 @@
 - 文档约定：`PSYNC=0111`，`PFREE=1000`。
 - 原项目：`PFREE=0111`，`PSYNC=1000`。
 - 当前状态：已修复编码器、编码单测、delivery 检查和项目指令手册。
-- 当前 RV 编码示例：`pfree p5 = 0x8140000B`，`psync = 0x7000000B`。
+- 当前 RV 编码示例：`pfree p5 = 0x8140005B`，`psync = 0x7000005B`。
 
-### A1. custom0 与 26-bit precode 字段契约（已修复，2026-07-23）
+### A1. custom2 与 26-bit precode 字段契约（已修复，2026-07-23）
 
 冻结映射为：
 
 ```text
-cmd26[25]   = custom_kind (0=custom0, 1=custom1)
+cmd26[25]   = command_kind (0=custom2 compute, 1=custom1 DMA)
 cmd26[24:0] = control payload
 ```
 
@@ -58,7 +58,7 @@ cmd26[24:0] = control payload
 当前实现已经完成以下迁移：
 
 1. 汇编语法改为 `pmodld mod_id`，范围 0..255；旧 `psrc/idx1/cfg15` 语法作为负例拒绝。
-2. 原始 32-bit 指令的 `MOD_ID` 编码在 `[21:14]`，经过 custom0 precode 后对应 `cmd26[14:7]`。
+2. 原始 32-bit 指令的 `MOD_ID` 编码在 `[21:14]`，经过 custom2 precode 后对应 `cmd26[14:7]`。
 3. 所有算子生成器均改为 `pmodld(i)`，不再把 `p4` 编入 `pmodld`。
 4. `MOD_ID` 编码仍为 8-bit；Bank 5 为 32 line、物理可放 512 个 context，但当前应用软件 ABI 要求 `MOD_ID[7:6]=0`，生成器最多使用 64 个。对象槽位仍独立保持 8 个。
 
@@ -66,7 +66,7 @@ cmd26[24:0] = control payload
 
 ### A3. `pfree` 对象字段和 `psync` 载荷（已修复，2026-08-18 更新语义）
 
-`pfree` 对象已移动到原始 custom0 `PSRC/OBJ_ID=[24:22]`；其他载荷位为 0。`psync` 语法为无操作数、所有载荷位为 0；根据 2026-08-18 硬件负责人确认，它只作为完整程序最后一条指令通知 CPU，不再作为统一 inflight 或 DMA 屏障使用。
+`pfree` 对象位于原始 custom2 `PSRC/OBJ_ID=[24:22]`；其他载荷位为 0。`psync` 语法为无操作数、所有载荷位为 0；根据 2026-08-18 硬件负责人确认，它只作为完整程序最后一条指令通知 CPU，不再作为统一 inflight 或 DMA 屏障使用。
 
 ### A4. DMA line sideband 与 relocation（已修复，2026-08-21）
 

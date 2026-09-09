@@ -236,7 +236,7 @@ void write_rv_interface_smoke(const std::filesystem::path& outputs_root) {
         const auto custom_kind = opcode == 0x2bU ? 1U : 0U;
         decode << i << ',' << hpu::format_word_hex(encoded[i].word) << ','
                << hpu::format_command26_hex(encoded[i].command26) << ','
-               << (opcode == 0x0bU ? "custom0" : "custom1") << ','
+               << (opcode == 0x5bU ? "custom2" : "custom1") << ','
                << csv_field(encoded[i].normalized_asm) << '\n';
         command_decode << i << ','
                        << hpu::format_command26_hex(encoded[i].command26) << ','

@@ -77,8 +77,8 @@ int main()
         }
         if ((encoded.front().word & 0x7fU) != 0x2bU
             || (encoded[10].word & 0x7fU) != 0x2bU
-            || (encoded[2].word & 0x7fU) != 0x0bU
-            || (encoded.back().word & 0x7fU) != 0x0bU) {
+            || (encoded[2].word & 0x7fU) != 0x5bU
+            || (encoded.back().word & 0x7fU) != 0x5bU) {
             throw std::runtime_error("custom opcode routing mismatch");
         }
         for (const auto& item : encoded) {
@@ -88,7 +88,7 @@ int main()
                 throw std::runtime_error("command kind is not encoded in cmd[25]");
             }
             if (expected_kind == 0U && item.command26 != (item.word >> 7U)) {
-                throw std::runtime_error("custom0 payload precode mismatch");
+                throw std::runtime_error("custom2 payload precode mismatch");
             }
             if (expected_kind == 1U
                 && item.command26 != ((1U << 25U) | (item.word >> 7U))) {
@@ -96,26 +96,27 @@ int main()
             }
         }
 
-        expect_encoded("padd p2, p0, p1", 0x0400400BU);
-        expect_encoded("psub p2, p0, p1", 0x1400400BU);
-        expect_encoded("pmul p2, p0, p1", 0x2400400BU);
-        expect_encoded("pmac p2, p0, p1", 0x3400400BU);
-        expect_encoded("pntt p0, p3, 15, 0, 0", 0x40C03C0BU);
-        expect_encoded("pintt p0, p3, 15, 0, 0", 0x50C03C0BU);
-        expect_encoded("pmodld 0", 0x6000000BU);
-        expect_encoded("pmodld 1", 0x6000400BU);
-        expect_encoded("pmodld 255", 0x603FC00BU);
-        expect_encoded("pfree p4", 0x8100000BU);
-        expect_encoded("psync", 0x7000000BU);
-        expect_precoded("padd p2, p0, p1", 0x0400400BU, 0x0080080U);
-        expect_precoded("pmodld 255", 0x603FC00BU, 0x0C07F80U);
+        expect_encoded("padd p2, p0, p1", 0x0400405BU);
+        expect_encoded("psub p2, p0, p1", 0x1400405BU);
+        expect_encoded("pmul p2, p0, p1", 0x2400405BU);
+        expect_encoded("pmac p2, p0, p1", 0x3400405BU);
+        expect_precoded("pntt p0, p3, 15, 0, 0", 0x4000FC5BU, 0x08001F8U);
+        expect_precoded("pintt p0, p3, 15, 0, 0", 0x5000FC5BU, 0x0A001F8U);
+        expect_precoded("pntt p2, p3, 1, 0, 0", 0x4480C45BU, 0x0890188U);
+        expect_encoded("pmodld 0", 0x6000005BU);
+        expect_encoded("pmodld 1", 0x6000405BU);
+        expect_encoded("pmodld 255", 0x603FC05BU);
+        expect_encoded("pfree p4", 0x8100005BU);
+        expect_encoded("psync", 0x7000005BU);
+        expect_precoded("padd p2, p0, p1", 0x0400405BU, 0x0080080U);
+        expect_precoded("pmodld 255", 0x603FC05BU, 0x0C07F80U);
         expect_precoded("dload x10, x11, p0, 0, 0", 0x00B5002BU, 0x2016A00U);
         expect_precoded("dload x1, x2, p0, 0, 0", 0x0020802BU, 0x2004100U);
         expect_precoded("dload x10, x11, p4, 2, 1", 0x08B540ABU, 0x2116A81U);
         expect_precoded("dstore x10, x11, p2, 1", 0x04B5502BU, 0x2096AA0U);
         expect_encoded("dstore x10, x11, p2, 1", 0x04B5502BU);
-        expect_encoded("pmul p2, p0, 255", 0x243FC10BU);
-        expect_encoded("pmac p2, p0, 255", 0x343FC10BU);
+        expect_encoded("pmul p2, p0, 255", 0x243FC15BU);
+        expect_encoded("pmac p2, p0, 255", 0x343FC15BU);
 
         const auto executable_encoded = hpu::assemble_source(
             "dload x10, x11, p4, 2, 1\n"
