@@ -46,5 +46,11 @@ cmake -S third_party/modified-SEAL -B build-modified-seal-self \
   -DSEAL_EXPERIMENTAL_BFV_NO_SMRQ=ON \
   -DSEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK=ON
 cmake --build build-modified-seal-self -j
-ctest --test-dir build-modified-seal-self --output-on-failure
+./build-modified-seal-self/bin/sealtest --gtest_color=no
+
+# Optional extended N=32768 depth sweep; this is not part of the default
+# functional gate.
+SEAL_NO_SMRQ_RUN_N32768_SWEEP=1 \
+  ./build-modified-seal-self/bin/sealtest \
+    --gtest_filter=BFVNoSmrqDiagnostics.N32768BatchingDepthSweep
 ```
