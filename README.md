@@ -237,7 +237,13 @@ MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、KeySwitch 和 Relinearizat
 ## 4. 关键设计实现说明
 
 - **基于 HPU 对象槽的 NTT/INTT：**
-  底层不再关注向量的大块切片 `l`。针对 `stage=0~log2(N)-1` 的蝶形运算，`pntt/pintt` 以**第一个对象槽位作为稳定的逻辑数据对象**，**第二个对象槽位作为 twiddle 对象**。控制器按物理 out-of-place 执行并在 stage 完成时提交新的 base；调用方保持逻辑对象号。系数域与 NTT 域镜像均为自然顺序，每个 stage 的 `N/2` 个 twiddle 按 group-major radix-2 DIT 顺序生成。Negacyclic NTT 在 stage 0 前显式 `PMUL psi^i`，INTT 在最终 stage 后显式 `PMUL (N^-1*psi^-i)`。
+  `pntt/pintt` 显式编码 `pdst`、数据源和 twiddle 源，每个 stage 在 data/scratch
+  对象间执行 out-of-place ping-pong。系数域硬件镜像满足
+  `memory[p]=coefficient[bit_reverse(p)]`，NTT 域镜像满足
+  `memory[p]=logical_ntt[forward_layout[p]]`。每级 twiddle 按 stream loader 的
+  batch/lane 消费顺序生成，PNTT 每批蝶形后执行 P，PINTT 每批蝶形前执行 P^-1
+  并使用 lazy-scale `w_bf=alpha/beta`。Negacyclic pre/post PMUL 仍显式执行；host
+  `uint64` 数学 golden 保持自然逻辑顺序。
   
 - **切片感知的模提升运算：**
   为了支持分解字（Digit Decomposition），`modup` 接口显式接收完整 `num_q`、处理宽度 `num_q_digit` 和 `q_offset`。它保留当前 digit，并对 `Q\digit ∪ P` 执行 BConv，从而为后续 KeySwitch 产生完整 $Q \cup P$ 表示。单纯 Q→P 的基转换仍由独立 `bconv` 原语提供。

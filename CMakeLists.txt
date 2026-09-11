@@ -214,7 +214,7 @@ if(BUILD_TESTING)
             PROPERTIES WILL_FAIL TRUE TIMEOUT 120)
 endif()
 
-set(HPU_DELIVERY_TEST_DEPENDENCIES)
+set(HPU_DELIVERY_TEST_DEPENDENCIES hpu_ntt_hardware_model_test)
 if(BUILD_TESTING)
     list(APPEND HPU_DELIVERY_TEST_DEPENDENCIES
         hpu_encode_self_test
@@ -231,6 +231,7 @@ add_custom_target(hpu_delivery
                 ${CMAKE_CURRENT_SOURCE_DIR}/outputs/ciphertext_multiply/test_data
                 ${CMAKE_CURRENT_SOURCE_DIR}/outputs
                 --config ${HPU_TEST_CONFIG}
+        COMMAND $<TARGET_FILE:hpu_ntt_hardware_model_test>
         COMMAND ${CMAKE_COMMAND}
                 -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/test/delivery/check_delivery.cmake

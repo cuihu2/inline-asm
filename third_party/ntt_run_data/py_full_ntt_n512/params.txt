@@ -1,0 +1,8 @@
+N = 512
+q = 1073750017 (30-bit prime, generate_prime)
+omega = 387049130
+seed_prime = 20260910, seed_data = 2538
+log2(N) = 9 stages (s = 0..8)
+hw.ntt vs reference_ntt_dit: PASS
+instrumented state vs hw.ntt physical: PASS
+intt(ntt(data)) round-trip: PASS

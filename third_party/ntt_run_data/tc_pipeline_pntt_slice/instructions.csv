@@ -1,0 +1,5 @@
+seq,cmd_bits,instruction,obj_id/pdst,psrc1,psrc2,stage_id,ddr_offset_rows,ddr_base_addr,len_rows,data_file,note
+1,0x2000000,DLOAD  obj0,0,-,-,-,0,0x142000,8,obj0_poly.csv,custom1 dload，poly 数据 {8{0x100|L}}/line
+2,0x2040000,DLOAD  obj1,1,-,-,-,8,0x142800,8,obj1_twiddle.csv,twiddle 数据 {8{0x200|L}}/line
+3,0x0880080,PNTT,2,0,1,0,-,-,-,pntt_stage0_bf_ops.csv,custom0 opc=4，outplace，ntt_alloc 自然分配 obj2
+4,0x2080020,DSTORE obj2,2,-,-,-,16,0x143000,8,obj2_output_exp_vs_rtl.csv,NTT 结果 64 lines 全量回读比对

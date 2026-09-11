@@ -198,15 +198,16 @@ Instruction parse_ar3(Mnemonic mnemonic,
 }
 
 Instruction parse_stg(Mnemonic mnemonic, const std::vector<std::string>& operands) {
-    expect_operand_count(operands, 5, to_string(mnemonic));
+    expect_operand_count(operands, 6, to_string(mnemonic));
 
     Instruction instruction {};
     instruction.mnemonic = mnemonic;
-    instruction.pdst = parse_pobj(operands[0], "pdata");
-    instruction.psrc1 = parse_pobj(operands[1], "ptwiddle");
-    instruction.idx0 = parse_base0_int(operands[2], "stage");
-    instruction.mode = static_cast<std::uint8_t>(parse_base0_int(operands[3], "mode"));
-    instruction.flag = static_cast<std::uint8_t>(parse_base0_int(operands[4], "flag"));
+    instruction.pdst = parse_pobj(operands[0], "pdst");
+    instruction.psrc1 = parse_pobj(operands[1], "psrc1");
+    instruction.psrc2 = parse_pobj(operands[2], "ptwiddle");
+    instruction.idx0 = parse_base0_int(operands[3], "stage");
+    instruction.mode = static_cast<std::uint8_t>(parse_base0_int(operands[4], "mode"));
+    instruction.flag = static_cast<std::uint8_t>(parse_base0_int(operands[5], "flag"));
     return instruction;
 }
 

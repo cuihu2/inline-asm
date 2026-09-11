@@ -19,8 +19,11 @@
 6. [HPU 通过 DMA 访问主存的实现方案讨论稿](https://icnj64z5e8zz.feishu.cn/wiki/KOfhwRW4Oi33f6kPEXWcJJwDnSS)。该文档明确是讨论稿；当它与集成手册冲突时，以集成手册为准。
 7. 硬件负责人于 2026-08-18 确认：DMA 一致性由硬件维护，`psync` 不作为 DMA 等待屏障，只在整个程序完成后用于通知 CPU。该确认覆盖此前文档中关于软件插入 DMA 屏障的推断。
 8. 硬件同学修订的本地《HPU 编程手册》`HPU_PROGRAMMING_MANUAL (1).md`，
-   2026-09-07 作为本轮 NTT/INTT group-major DIT、64 项软件 MOD_ID 上限和
-   DSTORE `OBJ.len`/总是释放语义的最新基线；它覆盖此前 autotest P-network 口径。
+   2026-09-07 作为 64 项软件 MOD_ID 上限和 DSTORE `OBJ.len`/总是释放语义的
+   基线。
+9. 硬件组 2026-09-10 提供的 `third_party/ntt_run_data`：包含 PNTT stage 0、PINTT stage
+   0/1 的 512-word RTL dump，以及设计师完整 N=512 batch/lane、P/P^-1 和
+   lazy-scale golden。该执行证据更新并覆盖第 8 项中的 group-major NTT 口径。
 
 ## 2. 已完成修复
 
@@ -43,7 +46,8 @@ cmd26[24:0] = control payload
 
 当前实现已经：
 
-1. STG 在 `[27:25]`、`[24:22]` 重复编码 `PDATA`，在 `[16:14]` 编码 3-bit `PTWID`；stage、mode、flag 分别使用 `[13:10]`、`[9:8]`、`[7]`。
+1. STG 在 `[27:25]`、`[24:22]` 分别编码 `PDST`、`PSRC1`，在 `[16:14]`
+   编码 3-bit `PTWID`；stage、mode、flag 分别使用 `[13:10]`、`[9:8]`、`[7]`。
 2. 将 AR3 立即数模式移动到 2-bit MODE 的 `[9:8]`。
 3. 增加 `precode_command26()`，所有可编码算子同时输出 `.inst32` 和 `.cmd26`。
 4. custom1 的原始 32-bit payload 已按 `reserved/OBJ_ID/RS2/RS1/TYPE_OR_REL/DIR/reserved/flag` 控制字段排布，precode 直接使用 `cmd26={1'b1,inst[31:7]}`；`cmd26[20:18]=OBJ_ID`、`cmd26[17:13]=RS2`、`cmd26[12:8]=RS1`。
@@ -79,21 +83,22 @@ cmd26[24:0] = control payload
 软件跟踪的 `OBJ.len` 相等。生命周期分析按当前 RTL 在任意 `rel` 值的 DSTORE
 成功后清除对象。交付门禁拒绝 `x0/x0`、零 span、未解析记录和 HPU_MEM 越界。
 
-### A5. stage twiddle 物理布局与硬件执行模型不一致（按修订稿重修，2026-09-07）
+### A5. stage twiddle 物理布局与硬件执行模型不一致（已按 RTL UT 重修，2026-09-10）
 
 原实现为 stage `s` 只生成 `2^s` 个唯一 twiddle，并声明由 butterfly group
 复用，不符合 PE 的物理搬运数量。
 
 文档来源：《HPU_PE_反串讲》13.2、13.3：每个 stage 的物理 twiddle 对象为 `N/2` 个 32-bit 元素；以 `N=65536` 为例正好是 512 line。每个 stage 前独立 DLoad。
 
-2026-09-07 的硬件修订稿覆盖此前 autotest P/P^-1 network 口径：系数域和 NTT
-域镜像均为自然顺序；每 stage 固定 `N/2` 个 twiddle，按 radix-2 DIT 的
-butterfly group 顺序排列，每个 group 重复写入本组所需幂。PINTT 使用相同
-group-major 顺序和逆根，不再反向遍历旧 schedule，也不声明隐含全多项式 shuffle。
+2026-09-10 的 RTL UT 数据证明实际执行使用 128-register loader 和 64 个 BF lane：
+PNTT 每 batch 蝶形后执行 P，PINTT 每 batch 蝶形前执行 P^-1。每级仍消费
+`N/2` 个 twiddle，但顺序是 batch-major/lane-major，不是 group-major；PINTT
+按正向 stage 的逆序执行，并使用 lazy-scale `w_bf=alpha/beta`。
 
-当前生成器和内置模型已按该口径重写。reference 逐项检查自然顺序前向 NTT、
-`PNTT -> pointwise -> PINTT` 卷积以及 Auto 路径；pre-twist 为 `psi^i`，
-post factor 为 `N^-1*psi^-i`，二者均为自然位置。
+当前生成器已采用 bit-reversed 系数物理镜像、P-network NTT 物理镜像和对应
+pre/post factor。独立 C++ 回归逐字命中三个 RTL stage 的全部 512 words，逐级
+匹配完整 N=512 Python golden，并以 schoolbook negacyclic convolution 验证 FHE
+乘法语义，避免只通过 round-trip 的同源错误。
 
 ### A6. HPU_MEM CSR 数字地址（已修复，2026-07-24）
 
@@ -173,9 +178,10 @@ monitor 证据。Host `PASS_PROBE` 自检不执行 HPU 算术，不能替代该�
 NTT/INTT out-of-place 提供 base 管理；5 月《HPU 控制逻辑设计文档》也描述
 完成后提交新 base。较旧《HPU_PE_反串讲》13.6 仅记录当时尚未确认的疑问。
 
-当前软件 ABI 冻结为“同一 logical object id、每 stage 物理 out-of-place、
-完成后提交新 base 并释放旧 base”，delivery 门禁检查该 machine-readable
-字段。PE 文档中的旧疑问不再作为备选 ABI。
+当前软件 ABI 冻结为三对象 `PDST/PSRC1/PTWID`。每 stage 的 `PDST` 必须是
+空闲对象，生成器在 data/scratch 间 ping-pong，完成后显式释放旧数据源和
+twiddle；最终结果保证回到调用者指定的数据对象。PE 文档中的旧疑问不再作为
+备选 ABI。
 
 ### A12. Bank 5 深度与模表基址（已修复，2026-07-24）
 
@@ -202,9 +208,9 @@ negacyclic twist 或 INTT 归一化融合。《HPU_PE_反串讲》13.2 也要求
 只执行一个 stage。
 
 当前 NTT 在 stage 0 前显式生成 `dload pre_twist -> pmul -> pfree`；INTT 在
-最终 stage 后显式生成
-`dload post_untwist_scale -> pmul -> pfree`。按照新版 A5，系数域数据、
-pre-twist 和 post factor 均使用自然位置；stage 不隐含全多项式 shuffle。
+最终 stage 后显式生成 `dload post_untwist_scale -> pmul -> pfree`。按照新版
+A5，物理位置 `p` 使用 `pre_twist=psi^bit_reverse(p)` 和
+`post=N^-1*psi^-bit_reverse(p)`；stage 内的 P/P^-1 由硬件执行模型定义。
 
 ### A14. 未定义的 `dload load_type=3`（已修复，2026-08-18）
 
@@ -222,9 +228,9 @@ type 3，并将其加入 parser/encoder 和 delivery 负例。原始 TYPE2 位�
 | C1 | `psync` 是否等待 custom1/DMA | 旧版《HPU 控制逻辑设计文档》曾引出统一 inflight 屏障解释；硬件负责人于 2026-08-18 进一步确认 DMA 一致性由硬件维护 | `psync` 仅在完整程序末尾通知 CPU；模表 dload 后不插入 `psync`，内部算子阶段也不使用它 |
 | C2 | custom1 是 rs1/rs2 line sideband，还是 VA 经 DTLB 后形成 `{paddr,len,dir,flags}` descriptor | 集成手册与较旧《RISC-V核内接口设计》custom1 HpuUnit 章节相反；最新修订稿进一步区分 DLOAD/DSTORE | DLOAD 使用 `rs1=offset,rs2=count`；DSTORE 使用 `rs1=offset,OBJ.len=count`，当前 RTL 忽略其 `rs2` 值 |
 | C3 | 模上下文记录是 `mu64+reserved32` 还是 `mu48+reserved48` | 较旧《HPU 控制逻辑设计文档》写 `{reserved[31:0],mu[63:0],q[31:0]}`；较新的《HPU 集成与编程手册》3.5.4 写 `{reserved[47:0],mu[47:0],q[31:0]}`，PE 端口也是 48-bit mu | 以较新的集成手册为准，项目已统一为 `q32+mu48+reserved48` |
-| C4 | NTT/INTT 物理 in-place 或 out-of-place | 较新的《HPU 集成与编程手册》3.4.6 与控制文档均为 out-of-place；较旧《HPU_PE_反串讲》13.6 只是未决记录 | 以较新的集成手册为准：每 stage 物理 out-of-place，完成后向同一 logical object id 提交新 base |
+| C4 | NTT/INTT 物理 in-place 或 out-of-place | 较新的《HPU 集成与编程手册》3.4.6 与 2026-09-10 RTL UT 均为 out-of-place | 每 stage 显式编码 `PDST/PSRC1/PTWID`，data/scratch 对象 ping-pong |
 | C5 | 32-bit 原始指令与 26-bit 内部命令映射 | 项目负责人根据硬件组最新说明确认两类 custom 指令均原样保留 `inst[31:7]`，并于 2026-09-07 补充最新 DMA 位域 | `cmd26={custom_kind,inst[31:7]}`；custom1 为 `{1,4'b0,OBJ_ID,RS2,RS1,TYPE_OR_REL,DIR,4'b0,flag}` |
-| C6 | NTT 使用 P/P^-1 network 物理排列或 group-major DIT 自然排列 | 2026-09-07 硬件修订稿覆盖此前 autotest 模型口径 | 使用自然系数/NTT 镜像；每 stage 的 `N/2` 个 twiddle 按 group-major DIT 重复排列 |
+| C6 | NTT 使用 P/P^-1 network 物理排列或 group-major DIT 自然排列 | 2026-09-10 RTL dump 与设计师模型晚于 2026-09-07 修订稿，且给出逐字执行证据 | 使用 bit-reversed 系数镜像、P-network NTT 镜像和 batch/lane twiddle；PNTT 后 P，PINTT 前 P^-1 |
 | C7 | 8-bit `MOD_ID` 是否允许软件使用 256 项 | 修订稿第 6.1 节增加应用 ABI 上限 | 编码器仍接受 0..255；生成器只使用 0..63，`MOD_ID[7:6]=0` |
 | C8 | DSTORE `rel=0` 是否保留对象 | 修订稿第 7.2 节记录当前 RTL 无条件清 V/ALLOC/busy | `rel` 位仍编码，但静态和 runtime 生命周期对 0/1 都视为释放 |
 

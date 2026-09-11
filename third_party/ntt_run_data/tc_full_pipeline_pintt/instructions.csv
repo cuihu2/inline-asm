@@ -1,0 +1,5 @@
+seq,cmd_bits,instruction,obj_id/pdst,psrc1,psrc2,stage_id,ddr_offset_rows,ddr_base_addr,len_rows,data_file,note
+1,0x2000000,DLOAD  obj0,0,-,-,-,0,0x142000,8,obj0_poly.csv,poly 数据
+2,0x2040000,DLOAD  obj1,1,-,-,-,8,0x142800,8,-,dummy（PINTT stage0 绕过 rd2，但 controller 仍需 obj1 valid）
+3,0x0A80080,PINTT stage0,2,0,1,0,-,-,-,intt_stage0_bf_ops.csv,twiddle_one_bypass W=1
+4,0x2080020,DSTORE obj2,2,-,-,-,16,0x143000,8,obj2_output_golden.csv,回归 64/64 lines match（场景与 pintt_slice stage0 一致）

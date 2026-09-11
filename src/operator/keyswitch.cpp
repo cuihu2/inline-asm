@@ -30,6 +30,7 @@ std::string generate_hpu_keyswitch_body_asm(
     const int POBJ_MOD_CTX = 4;
     const int TWIDDLE = 3;
     const int POBJ_TMP_A = 0;
+    const int POBJ_NTT_SCRATCH = 2;
 
     asm_code << "        /* KEYSWITCH BODY: (base, switching_component) -> (base + ks0, ks1) */\n";
     asm_code << "        /* --- Decomposed digits loop (dnum = " << dnum << ") --- */\n";
@@ -55,7 +56,8 @@ std::string generate_hpu_keyswitch_body_asm(
             asm_code << "        /* NTT ctx_" << i << " */\n";
             asm_code << hpu::pmodld(i);
             asm_code << hpu::dload(POBJ_TMP_A, hpu::DataType::poly);
-            asm_code << generate_hpu_ntt_body_asm(N, POBJ_TMP_A, TWIDDLE, false);
+            asm_code << generate_hpu_ntt_body_asm(
+                N, POBJ_TMP_A, POBJ_NTT_SCRATCH, TWIDDLE, false);
             asm_code << hpu::dstore(POBJ_TMP_A, 1);
         }
 
@@ -92,6 +94,7 @@ std::string generate_hpu_keyswitch_body_asm(
     const int POBJ_MOD_CTX2 = 4;
     const int TWIDDLE2 = 3;
     const int POBJ_TMP_A2 = 0;
+    const int POBJ_INTT_SCRATCH = 2;
     asm_code << hpu::dload(POBJ_MOD_CTX2, hpu::DataType::mod_ctx,
                            hpu::DloadFlag::small_bank);
     for (int v = 0; v < 2; ++v) {
@@ -100,7 +103,8 @@ std::string generate_hpu_keyswitch_body_asm(
             asm_code << "        /* INTT ctx_" << i << " */\n";
             asm_code << hpu::pmodld(i);
             asm_code << hpu::dload(POBJ_TMP_A2, hpu::DataType::poly);
-            asm_code << generate_hpu_intt_body_asm(N, POBJ_TMP_A2, TWIDDLE2, false);
+            asm_code << generate_hpu_intt_body_asm(
+                N, POBJ_TMP_A2, POBJ_INTT_SCRATCH, TWIDDLE2, false);
             asm_code << hpu::dstore(POBJ_TMP_A2, 1);
         }
     }

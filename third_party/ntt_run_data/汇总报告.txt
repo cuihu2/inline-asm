@@ -1,0 +1,87 @@
+================================================================
+NTT 执行运行数据导出包 — 汇总报告
+生成日期：2026-09-10
+生成脚本：gen_ntt_run_data.py（/usr/bin/python3.12 gen_ntt_run_data.py 可复现整包）
+================================================================
+
+一、包概况
+----------
+本包从 hpu_top UT 的 NTT 相关 testcase golden model 中导出"每条指令的多项式 /
+旋转因子 / BF 运算 / 输出"全量运行数据，供 NTT 负责人对账 RTL 行为。
+
+数据源两部分：
+  Part A：3 个 NTT tc 的单级 slice 实测数据（golden model 公式已于 2026-09-09
+          用 RTL ddr_dump ground truth 反解验证，512/512 word 逐字命中）
+  Part B：doc/hw_ntt_intt_complete.py（设计师 golden model）完整多级正向
+          NTT N=512 参考：每级 loader batch / 旋转因子 / BF 运算 / 级后存储
+          状态 + INTT 旋转因子表
+
+目录结构（4 个子目录，共 34 个 CSV/txt）：
+  tc_pipeline_pntt_slice/    PNTT stage0（真实 twiddle）端到端
+  tc_pipeline_pintt_slice/    PINTT stage0（W=1 bypass）+ stage1（真实 twiddle）
+  tc_full_pipeline_pintt/    PINTT stage0 full-pipeline 场景（golden，无 dump）
+  py_full_ntt_n512/          py 模型 9 级完整正向 NTT + INTT 旋转因子表
+
+二、数据约定（Part A，3 个 tc 共用）
+------------------------------------
+模数：q = 0xFFFFFFFE（Barrett mu = 0x1_0000_0002）
+DDR：HPU_MEM window 基址 0x142000（CSR 0x00）；cmd_mem_line_offset 单位 =
+     256B row = 8 条 DDR line；1 条 DDR line = 32B = 8 个 32-bit word
+预载数据（line 级分辨率，每 line 8 word 同值）：
+     poly    line L = {8{0x100|L}}   → word 值 0x100+line号
+     twiddle line L = {8{0x200|L}}   → word 值 0x200+line号
+每子目录文件：
+     instructions.csv    指令流（seq/cmd_bits/译码字段/DDR 地址/长度/数据文件）
+     obj*.csv            指令级对象数据：512 word 逐 word 的 DDR 地址 + 值
+     *_bf_ops.csv        BF 运算级：每 (iter,lane) 的 a/b/t 源、pe_a/pe_b/
+                         twiddle_T、out0/out1 及写回 word 序号
+     obj*_output_*.csv   输出 512 word：golden expected vs RTL 实测 rtl_act
+     rtl_act_dump.txt    RTL ddr_dump 原始记录（ground truth 通道）
+
+三、BF 排列语义（已 512/512 word 实测验证，详见各 bf_ops.csv）
+--------------------------------------------------------------
+PNTT stage0（= py 正向 s=0）：
+     4 batch × 128 word 顺序窗；lane l：pe_a=word 128b+2l，pe_b=+1（相邻配对），
+     T=twiddle word 64b+l；out0=(a+b·T) mod q → word 128b+l，
+     out1=(a−b·T) mod q → word 128b+64+l（P rotate-right-1 写回）
+PINTT stage0（twiddle_one_bypass，W=1）：
+     iter k(0..3) × lane l：pe_a=poly line [(l偶?8k:32+8k)+(l>>4)]，pe_b=+4 line；
+     out0=(a+b) → word 64k+l（0..255），out1=(a−b) → word 256+64k+l
+PINTT stage1（真实 twiddle）：
+     pe_a line = l偶 ? 8(k&1)+32(k>>1)+(l>>4) : 16+8(k&1)+32(k>>1)+(l>>4)；
+     T line = 8k+(l>>3)；写回 16-line 块交错：out0 基 {0,64,256,320}[k]+l，
+     out1 = out0+128
+
+四、Part B：py 模型完整多级 NTT（py_full_ntt_n512/）
+---------------------------------------------------
+参数：N=512，q=1073750017（30-bit 素数，generate_prime，seed=20260910），
+     omega=387049130，seed_data=2538；9 级（s=0..8）
+文件：
+     input_poly.csv / output_physical.csv / output_logical.csv  输入输出全量
+     stage{s}_bf_ops.csv     每级每 batch 每 lane 的 loader 源（load_mode/
+                             first_start/second_start）、逻辑/物理位置、
+                             pe_a/pe_b/twiddle_w/b·w/out0/out1
+     stage{s}_mem_after.csv  级后 512 mem 位置值 + 逻辑序 label
+     intt_bf_twiddles.csv    INTT 旋转因子表 2304 行（w_forward/w_dif_inverse/
+                             lazy-scale w_bf/scale_even_in/scale_odd_in）
+三重校验（params.txt 内记录，全 PASS）：
+     hw.ntt vs reference_ntt_dit                PASS
+     插桩复刻状态 vs hw.ntt physical            PASS
+     intt(ntt(data)) round-trip                 PASS
+
+五、校验状态与注意事项
+----------------------
+1. Part A 的 pntt_slice / pintt_slice：golden vs RTL 实测 512/512 word 全命中
+   （obj*_output_exp_vs_rtl.csv 的 match 列全 TRUE，脚本内 assert 强制）。
+2. tc_full_pipeline_pintt：本 tc 无 raw dump phase，输出为 golden 期望值；
+   实测正确性依据回归 log（64/64 lines match，且场景与 pintt_slice stage0 相同）。
+3. tc 场景 q=0xFFFFFFFE 不是素数（=2×(2^31−1)），不存在真正的 NTT 群结构 ——
+   tc 验证的是"单级 BF 数据通路"（配对/旋转因子读取/Barrett mod/写回排列），
+   twiddle 是预载 pattern 数据而非真实单位根。完整多级 NTT 数学参考以 Part B
+   的素数域（q=1073750017）数据为准。
+4. tc 预载数据为 line 级分辨率（每 line 8 word 同值）；word 级分辨率的逐
+   word 数据流参考 Part B 的 stage{s}_bf_ops.csv。
+5. RTL 实测数据来源：tc 的 Phase G raw dump（top_tb.ddr_bd_dump_req）→
+   ddr_dump.txt；rtl_act_dump.txt 为其拷贝。复现方法：重跑对应 tc 后执行
+   gen_ntt_run_data.py（脚本读取 /tmp/act_pntt_slice.txt、/tmp/act_pintt_slice.txt，
+   重跑 tc 后需先从 sim/ddr_dump.txt 拷贝恢复这两个文件）。

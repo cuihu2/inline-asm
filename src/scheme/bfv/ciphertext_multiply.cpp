@@ -58,6 +58,7 @@ std::string generate_basis_transform_body_asm(
 {
     std::ostringstream asm_code;
     constexpr int POBJ_POLY = 0;
+    constexpr int POBJ_SCRATCH = 2;
     constexpr int POBJ_TWIDDLE = 3;
     constexpr int POBJ_MOD_CTX = 4;
 
@@ -72,9 +73,9 @@ std::string generate_basis_transform_body_asm(
             asm_code << hpu::dload(POBJ_POLY, hpu::DataType::poly);
             asm_code << (inverse
                 ? ::generate_hpu_intt_body_asm(
-                      N, POBJ_POLY, POBJ_TWIDDLE, false)
+                      N, POBJ_POLY, POBJ_SCRATCH, POBJ_TWIDDLE, false)
                 : ::generate_hpu_ntt_body_asm(
-                      N, POBJ_POLY, POBJ_TWIDDLE, false));
+                      N, POBJ_POLY, POBJ_SCRATCH, POBJ_TWIDDLE, false));
             asm_code << hpu::dstore(POBJ_POLY, 1);
         }
     }

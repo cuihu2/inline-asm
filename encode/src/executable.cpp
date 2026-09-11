@@ -118,8 +118,17 @@ void validate_executable_program(
             break;
         case Mnemonic::kPntt:
         case Mnemonic::kPintt:
-            require_live(instruction.pdst, index, "transform data");
-            require_live(instruction.psrc1, index, "transform twiddle");
+            require_live(instruction.psrc1, index, "transform data source");
+            require_live(instruction.psrc2, index, "transform twiddle source");
+            if (instruction.pdst == instruction.psrc1
+                || instruction.pdst == instruction.psrc2
+                || live[instruction.pdst]) {
+                throw std::runtime_error(
+                    "transform destination p" + std::to_string(instruction.pdst)
+                    + " is not a distinct free object at instruction "
+                    + std::to_string(index));
+            }
+            live[instruction.pdst] = true;
             break;
         case Mnemonic::kPmodld:
             if (modulus_table_object < 0) {
@@ -263,6 +272,12 @@ std::string render_executable_source(
                 || instruction.mnemonic == Mnemonic::kPsub
                 || instruction.mnemonic == Mnemonic::kPmul
                 || instruction.mnemonic == Mnemonic::kPmac) {
+                output << "    hpu_obj_len["
+                       << static_cast<unsigned>(instruction.pdst)
+                       << "] = hpu_obj_len["
+                       << static_cast<unsigned>(instruction.psrc1) << "];\n";
+            } else if (instruction.mnemonic == Mnemonic::kPntt
+                       || instruction.mnemonic == Mnemonic::kPintt) {
                 output << "    hpu_obj_len["
                        << static_cast<unsigned>(instruction.pdst)
                        << "] = hpu_obj_len["

@@ -29,6 +29,7 @@ std::string generate_hpu_auto_body_asm(
     }
 
     constexpr int kDataObject = 0;
+    constexpr int kScratchObject = 2;
     constexpr int kTwiddleObject = 3;
     constexpr int kModContextObject = 4;
 
@@ -45,11 +46,11 @@ std::string generate_hpu_auto_body_asm(
             asm_code << hpu::dload(kDataObject, hpu::DataType::poly);
             asm_code << "        /* Forward loads use the standard ntt profile. */\n";
             asm_code << generate_hpu_ntt_body_asm(
-                N, kDataObject, kTwiddleObject, false);
+                N, kDataObject, kScratchObject, kTwiddleObject, false);
             asm_code << "        /* Runtime binds inverse loads to auto_intt_g"
                      << galois_element << ". */\n";
             asm_code << generate_hpu_intt_body_asm(
-                N, kDataObject, kTwiddleObject, false);
+                N, kDataObject, kScratchObject, kTwiddleObject, false);
             asm_code << hpu::dstore(kDataObject, 1);
         }
     }

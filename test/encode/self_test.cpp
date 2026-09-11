@@ -66,8 +66,8 @@ int main()
             "psub p2, p0, p1\n"
             "pmul p2, p0, p1\n"
             "pmac p2, p0, p1\n"
-            "pntt p2, p3, 15, 3, 1\n"
-            "pintt p0, p3, 15, 3, 1\n"
+            "pntt p2, p0, p3, 15, 3, 1\n"
+            "pintt p2, p0, p3, 15, 3, 1\n"
             "pfree p5\n"
             "dstore x10, x11, p2, 1\n"
             "psync\n";
@@ -100,9 +100,9 @@ int main()
         expect_encoded("psub p2, p0, p1", 0x1400405BU);
         expect_encoded("pmul p2, p0, p1", 0x2400405BU);
         expect_encoded("pmac p2, p0, p1", 0x3400405BU);
-        expect_precoded("pntt p0, p3, 15, 0, 0", 0x4000FC5BU, 0x08001F8U);
-        expect_precoded("pintt p0, p3, 15, 0, 0", 0x5000FC5BU, 0x0A001F8U);
-        expect_precoded("pntt p2, p3, 1, 0, 0", 0x4480C45BU, 0x0890188U);
+        expect_precoded("pntt p2, p0, p1, 0, 0, 0", 0x4400405BU, 0x0880080U);
+        expect_precoded("pintt p2, p0, p1, 0, 0, 0", 0x5400405BU, 0x0A80080U);
+        expect_precoded("pintt p3, p1, p4, 1, 0, 0", 0x5641045BU, 0x0AC8208U);
         expect_encoded("pmodld 0", 0x6000005BU);
         expect_encoded("pmodld 1", 0x6000405BU);
         expect_encoded("pmodld 255", 0x603FC05BU);
@@ -183,9 +183,10 @@ int main()
             "padd p8, p0, p1",
             "padd p0, p1, 1",
             "pmul p0, p1, 256",
-            "pntt p0, p1, 16, 0, 0",
-            "pntt p0, p1, 0, 4, 0",
-            "pntt p0, p1, 0, 0, 2",
+            "pntt p2, p0, p1, 16, 0, 0",
+            "pntt p2, p0, p1, 0, 4, 0",
+            "pntt p2, p0, p1, 0, 0, 2",
+            "pntt p0, p1, 0, 0, 0",
             "pmodld 256",
             "pmodld -1",
             "pmodld p0, 0, 0",

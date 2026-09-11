@@ -82,8 +82,9 @@ std::uint32_t encode_ar3(const Instruction& instruction) {
 }
 
 std::uint32_t encode_stg(const Instruction& instruction) {
-    ensure_range(instruction.pdst, 0, 7, "pdata");
-    ensure_range(instruction.psrc1, 0, 7, "ptwiddle");
+    ensure_range(instruction.pdst, 0, 7, "pdst");
+    ensure_range(instruction.psrc1, 0, 7, "psrc1");
+    ensure_range(instruction.psrc2, 0, 7, "ptwiddle");
     ensure_range(instruction.idx0, 0, 0xF, "stage");
     ensure_range(instruction.mode, 0, 0x3, "mode");
     ensure_range(instruction.flag, 0, 0x1, "flag");
@@ -91,8 +92,8 @@ std::uint32_t encode_stg(const Instruction& instruction) {
     std::uint32_t word = 0;
     word |= opcode_for(instruction.mnemonic) << 28;
     word |= static_cast<std::uint32_t>(instruction.pdst) << 25;
-    word |= static_cast<std::uint32_t>(instruction.pdst) << 22;
-    word |= static_cast<std::uint32_t>(instruction.psrc1) << 14;
+    word |= static_cast<std::uint32_t>(instruction.psrc1) << 22;
+    word |= static_cast<std::uint32_t>(instruction.psrc2) << 14;
     word |= static_cast<std::uint32_t>(instruction.idx0) << 10;
     word |= static_cast<std::uint32_t>(instruction.mode) << 8;
     word |= static_cast<std::uint32_t>(instruction.flag) << 7;

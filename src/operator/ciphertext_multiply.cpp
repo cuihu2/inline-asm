@@ -21,6 +21,7 @@ std::string generate_basis_ntt_body_asm(
     std::ostringstream asm_code;
 
     const int POBJ_POLY = 0;
+    const int POBJ_SCRATCH = 2;
     const int POBJ_TWIDDLE = 3;
     const int POBJ_MOD_CTX = 4;
 
@@ -33,7 +34,8 @@ std::string generate_basis_ntt_body_asm(
             asm_code << "        /* q_" << i << " */\n";
             asm_code << hpu::pmodld(i);
             asm_code << hpu::dload(POBJ_POLY, hpu::DataType::poly);
-            asm_code << generate_hpu_ntt_body_asm(N, POBJ_POLY, POBJ_TWIDDLE, false);
+            asm_code << generate_hpu_ntt_body_asm(
+                N, POBJ_POLY, POBJ_SCRATCH, POBJ_TWIDDLE, false);
             asm_code << hpu::dstore(POBJ_POLY, 1);
         }
     }
@@ -51,6 +53,7 @@ std::string generate_basis_intt_body_asm(
     std::ostringstream asm_code;
 
     const int POBJ_POLY = 0;
+    const int POBJ_SCRATCH = 2;
     const int POBJ_TWIDDLE = 3;
     const int POBJ_MOD_CTX = 4;
 
@@ -63,7 +66,8 @@ std::string generate_basis_intt_body_asm(
             asm_code << "        /* q_" << i << " */\n";
             asm_code << hpu::pmodld(i);
             asm_code << hpu::dload(POBJ_POLY, hpu::DataType::poly);
-            asm_code << generate_hpu_intt_body_asm(N, POBJ_POLY, POBJ_TWIDDLE, false);
+            asm_code << generate_hpu_intt_body_asm(
+                N, POBJ_POLY, POBJ_SCRATCH, POBJ_TWIDDLE, false);
             asm_code << hpu::dstore(POBJ_POLY, 1);
         }
     }

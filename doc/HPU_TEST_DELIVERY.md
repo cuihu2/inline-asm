@@ -221,18 +221,22 @@ Relinearization 输入 span，runtime 只提交一份 HPU_MEM 镜像和一条完
 但当前应用软件 ABI 要求 `MOD_ID[7:6]=0`，所以只允许 64 个 context，使用
 `0x1400..0x1403`。
 
-系数域和 NTT 域镜像均使用自然多项式顺序。NTT stage 0 前显式执行
-`PMUL psi^i`；PNTT 的每个 stage 按 group-major radix-2 DIT 顺序生成并消费
-`N/2` 个 twiddle，每个 butterfly group 重复保存本组所需的幂。PINTT 使用
-相同 group-major 顺序和逆根 `omega^-1`。最终显式执行
-`PMUL (N^-1 * psi^-i)`，不依赖 PE 隐式归一化或 twist。每个 stage 固定
-`N/2` 个 `uint32`、`N/128` 条 256B line；
-默认 `N=4096` 时为 2048 words、32 line。
+host `uint64` 数学数据保持自然多项式顺序；硬件 `uint32` 系数域镜像满足
+`memory[p]=coefficient[bit_reverse(p)]`，NTT 域镜像满足
+`memory[p]=logical_ntt[forward_layout[p]]`。NTT stage 0 前显式执行物理
+`PMUL psi^bit_reverse(p)`。PNTT 每级按 loader batch、PE lane 顺序消费 `N/2`
+个 twiddle：`stage<7` 使用连续 128-word window，之后交错加载两段 64-word
+数据；每批蝶形后执行一次 P。PINTT 按正向 stage 的逆序执行，每批蝶形前执行
+P^-1，并使用 lazy-scale `w_bf=alpha/beta`。最终显式执行物理
+`PMUL (N^-1*psi^-bit_reverse(p))`。每个 stage 固定 `N/2` 个 `uint32`、
+`N/128` 条 256B line；默认 `N=4096` 时为 2048 words、32 line。
 
 硬件组原始 round-trip 自测只能证明 PNTT/PINTT 互逆，不能证明逐点乘对应 FHE
-卷积；自然顺序输入曾出现 round-trip 通过而卷积失败。当前 reference 因此额外检查
-`PNTT(a) * PNTT(b) -> PINTT` 的 negacyclic convolution，并逐项对照 coefficient
-image、NTT image、pre/post factor 和全部 stage twiddle。默认 Q0 的冻结结果为
+卷积；自然顺序物理输入会出现 round-trip 通过而卷积失败。当前 reference 因此采用
+bit-reversed 系数物理 ABI，并额外检查 `PNTT(a) * PNTT(b) -> PINTT` 的
+negacyclic convolution。`test/fixtures/ntt_hw_ut` 还冻结了硬件组 PNTT stage 0、
+PINTT stage 0/1 的 512-word RTL dump，以及素数域 N=512 的完整 stage 状态和
+INTT lazy-scale twiddle 流；独立 C++ CTest 不依赖 Python 或 autotest。默认 Q0 的冻结结果为
 `AUTOTEST_ORACLE=PASS q=50061313 N=4096 ntt_stages=12 intt_stages=12`。Auto 包还包含
 `auto_intt_g<g>` profile；`dma_plan.csv` 将前置融合阶段绑定到该 profile，并将后续
 KeySwitch 绑定回标准 profile。`input/ciphertext_q.bin` 未经过 host 自同构。
@@ -299,8 +303,8 @@ slots 精确比较；CKKS 对全部 `N/2` 个复数 slots 按生成参数中的�
 
 1. RTL 正确接受 V1 `mod_ctx = {reserved48, mu48, q32}`、32-line Bank 5 与固定
    `MOD_TABLE_BASE_LINE=0x1400`。
-2. `pntt/pintt stage` 按 `twiddle_map.csv` 的 `N/2` 个值，以 group-major
-   radix-2 DIT 次序执行，采用物理 out-of-place 提交和显式 pre/post PMUL；
+2. `pntt/pintt stage` 按 `twiddle_map.csv` 的 `N/2` 个值，以 loader
+   batch/lane 和 P/P^-1 次序执行，采用三对象物理 out-of-place ping-pong 和显式 pre/post PMUL；
    当前数据为 canonical residue，不是 Montgomery 域。
 3. DMA、allocator 和 PE 对 `pfree`、`dstore rel=0/1` 均释放对象、FAULT/IRQ 的
    目标实现与软件 ABI 一致。

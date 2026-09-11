@@ -107,11 +107,11 @@ struct TwiddleMapEntry {
     U64 modulus = 0;
     std::string phase;
     int stage = -1;
+    int forward_stage = -1;
     std::size_t value_count = 0;
-    std::size_t group_count = 0;
-    std::size_t twiddles_per_group = 0;
-    U64 first_value = 0;
-    U64 step = 0;
+    std::size_t batch_count = 0;
+    std::size_t lanes_per_batch = 0;
+    std::string loader_mode;
     std::size_t image_index = 0;
 };
 
@@ -1565,6 +1565,109 @@ std::size_t bit_reverse_index(std::size_t value, std::size_t n)
     return reversed;
 }
 
+struct NttBatch {
+    bool interleaved = false;
+    std::size_t first = 0;
+    std::size_t second = 0;
+};
+
+std::vector<NttBatch> ntt_stage_batches(std::size_t n, std::size_t stage)
+{
+    constexpr std::size_t kArrayWidth = 128;
+    constexpr std::size_t kHalfArray = 64;
+    const std::size_t m = std::size_t{1} << stage;
+    std::vector<NttBatch> batches;
+    batches.reserve(n / kArrayWidth);
+    if (m < kArrayWidth) {
+        for (std::size_t base = 0; base < n; base += kArrayWidth) {
+            batches.push_back({false, base, base + kHalfArray});
+        }
+    } else {
+        for (std::size_t group = 0; group < n; group += 2 * m) {
+            for (std::size_t offset = 0; offset < m; offset += kHalfArray) {
+                batches.push_back({true, group + offset, group + m + offset});
+            }
+        }
+    }
+    return batches;
+}
+
+std::string ntt_loader_mode(std::size_t stage)
+{
+    return (std::size_t{1} << stage) < 128
+        ? "sequential_128"
+        : "interleaved_64x2";
+}
+
+template <typename T>
+std::pair<std::array<T, 128>, std::array<std::size_t, 128>>
+load_ntt_batch(const std::vector<T>& values, const NttBatch& batch)
+{
+    std::array<T, 128> registers {};
+    std::array<std::size_t, 128> positions {};
+    if (!batch.interleaved) {
+        for (std::size_t i = 0; i < registers.size(); ++i) {
+            positions[i] = batch.first + i;
+            registers[i] = values[positions[i]];
+        }
+    } else {
+        for (std::size_t i = 0; i < registers.size() / 2; ++i) {
+            positions[2 * i] = batch.first + i;
+            positions[2 * i + 1] = batch.second + i;
+            registers[2 * i] = values[positions[2 * i]];
+            registers[2 * i + 1] = values[positions[2 * i + 1]];
+        }
+    }
+    return {registers, positions};
+}
+
+template <typename T>
+void store_ntt_batch(std::vector<T>& values,
+                     const std::array<T, 128>& registers,
+                     const std::array<std::size_t, 128>& positions)
+{
+    for (std::size_t i = 0; i < registers.size(); ++i) {
+        values[positions[i]] = registers[i];
+    }
+}
+
+template <typename T>
+std::array<T, 128> apply_p_network(
+    std::array<T, 128> registers, std::size_t count = 1)
+{
+    for (std::size_t rotation = 0; rotation < count % 7; ++rotation) {
+        std::array<T, 128> shifted {};
+        for (std::size_t old_position = 0;
+             old_position < registers.size(); ++old_position) {
+            const std::size_t new_position =
+                (old_position >> 1U) | ((old_position & 1U) << 6U);
+            shifted[new_position] = registers[old_position];
+        }
+        registers = shifted;
+    }
+    return registers;
+}
+
+std::vector<std::size_t> hardware_ntt_layout(std::size_t n)
+{
+    if (n < 128 || (n & (n - 1)) != 0 || n % 128 != 0) {
+        throw std::runtime_error(
+            "hardware NTT layout requires power-of-two N >= 128");
+    }
+    std::vector<std::size_t> labels(n);
+    std::iota(labels.begin(), labels.end(), 0);
+    const std::size_t log_n = static_cast<std::size_t>(
+        std::log2(static_cast<double>(n)));
+    for (std::size_t stage = 0; stage < log_n; ++stage) {
+        for (const NttBatch& batch : ntt_stage_batches(n, stage)) {
+            auto loaded = load_ntt_batch(labels, batch);
+            loaded.first = apply_p_network(loaded.first);
+            store_ntt_batch(labels, loaded.first, loaded.second);
+        }
+    }
+    return labels;
+}
+
 std::vector<U32> to_hardware_words(const Artifact& artifact)
 {
     if (artifact.shape.empty() || artifact.shape.back() != g_n
@@ -1573,7 +1676,21 @@ std::vector<U32> to_hardware_words(const Artifact& artifact)
             artifact.path + " does not have a complete polynomial as its innermost axis");
     }
 
-    return to_u32_words(artifact.words, artifact.path);
+    const std::vector<U32> logical = to_u32_words(
+        artifact.words, artifact.path);
+    std::vector<U32> physical(logical.size());
+    const std::vector<std::size_t> ntt_layout = hardware_ntt_layout(g_n);
+    for (std::size_t block = 0; block < logical.size() / g_n; ++block) {
+        const std::size_t base = block * g_n;
+        for (std::size_t position = 0; position < g_n; ++position) {
+            const std::size_t logical_index =
+                artifact.hardware_domain == HardwareDomain::kNtt
+                ? ntt_layout[position]
+                : bit_reverse_index(position, g_n);
+            physical[base + position] = logical[base + logical_index];
+        }
+    }
+    return physical;
 }
 
 void append_words(std::vector<U64>& out, const Poly& poly)
@@ -2577,21 +2694,32 @@ std::vector<std::vector<U32>> hardware_ntt_twiddle_tables(U64 omega, U64 modulus
 {
     const std::size_t log_n = static_cast<std::size_t>(
         std::log2(static_cast<double>(g_n)));
+    std::vector<std::size_t> labels(g_n);
+    std::iota(labels.begin(), labels.end(), 0);
     std::vector<std::vector<U32>> tables;
     tables.reserve(log_n);
 
     for (std::size_t stage = 0; stage < log_n; ++stage) {
-        const std::size_t length = std::size_t{1} << (stage + 1);
-        const U64 step = pow_mod(
-            omega, static_cast<U64>(g_n / length), modulus);
+        const std::size_t m = std::size_t{1} << stage;
         std::vector<U32> words;
         words.reserve(g_n / 2);
-        for (std::size_t begin = 0; begin < g_n; begin += length) {
-            U64 twiddle = 1;
-            for (std::size_t j = 0; j < length / 2; ++j) {
-                words.push_back(checked_u32(twiddle, "forward stage twiddle"));
-                twiddle = mul_mod(twiddle, step, modulus);
+        for (const NttBatch& batch : ntt_stage_batches(g_n, stage)) {
+            auto loaded = load_ntt_batch(labels, batch);
+            for (std::size_t lane = 0; lane < 64; ++lane) {
+                const std::size_t lower = loaded.first[2 * lane];
+                const std::size_t upper = loaded.first[2 * lane + 1];
+                if (upper != lower + m) {
+                    throw std::runtime_error(
+                        "forward NTT physical lane pairing mismatch");
+                }
+                const U64 exponent = static_cast<U64>(
+                    (lower % m) * g_n / (2 * m));
+                words.push_back(checked_u32(
+                    pow_mod(omega, exponent, modulus),
+                    "forward stage twiddle"));
             }
+            loaded.first = apply_p_network(loaded.first);
+            store_ntt_batch(labels, loaded.first, loaded.second);
         }
         if (words.size() != g_n / 2) {
             throw std::runtime_error("forward NTT stage twiddle count is not N/2");
@@ -2603,40 +2731,137 @@ std::vector<std::vector<U32>> hardware_ntt_twiddle_tables(U64 omega, U64 modulus
 
 std::vector<std::vector<U32>> hardware_intt_twiddle_tables(U64 omega, U64 modulus)
 {
-    return hardware_ntt_twiddle_tables(inverse_mod(omega, modulus), modulus);
+    const std::size_t log_n = static_cast<std::size_t>(
+        std::log2(static_cast<double>(g_n)));
+    std::vector<std::size_t> labels = hardware_ntt_layout(g_n);
+    std::vector<U64> scales(g_n, 1);
+    std::vector<std::vector<U32>> tables;
+    tables.reserve(log_n);
+
+    for (std::size_t inverse_stage = 0;
+         inverse_stage < log_n; ++inverse_stage) {
+        const std::size_t forward_stage = log_n - 1 - inverse_stage;
+        const std::size_t m = std::size_t{1} << forward_stage;
+        std::vector<U32> words;
+        words.reserve(g_n / 2);
+        for (const NttBatch& batch : ntt_stage_batches(g_n, forward_stage)) {
+            auto loaded_labels = load_ntt_batch(labels, batch);
+            auto loaded_scales = load_ntt_batch(scales, batch);
+            loaded_labels.first = apply_p_network(loaded_labels.first, 6);
+            loaded_scales.first = apply_p_network(loaded_scales.first, 6);
+
+            for (std::size_t lane = 0; lane < 64; ++lane) {
+                const std::size_t even = 2 * lane;
+                const std::size_t odd = even + 1;
+                const std::size_t lower = loaded_labels.first[even];
+                const std::size_t upper = loaded_labels.first[odd];
+                if (upper != lower + m) {
+                    throw std::runtime_error(
+                        "inverse NTT physical lane pairing mismatch");
+                }
+                const U64 alpha = loaded_scales.first[even];
+                const U64 beta = loaded_scales.first[odd];
+                const U64 exponent = static_cast<U64>(
+                    (lower % m) * g_n / (2 * m));
+                const U64 forward_twiddle = pow_mod(
+                    omega, exponent, modulus);
+                words.push_back(checked_u32(
+                    mul_mod(alpha, inverse_mod(beta, modulus), modulus),
+                    "inverse BF twiddle"));
+                loaded_scales.first[even] = alpha;
+                loaded_scales.first[odd] = mul_mod(
+                    alpha, forward_twiddle, modulus);
+            }
+            store_ntt_batch(labels, loaded_labels.first, loaded_labels.second);
+            store_ntt_batch(scales, loaded_scales.first, loaded_scales.second);
+        }
+        if (words.size() != g_n / 2) {
+            throw std::runtime_error("inverse NTT stage twiddle count is not N/2");
+        }
+        tables.push_back(std::move(words));
+    }
+
+    for (std::size_t position = 0; position < g_n; ++position) {
+        if (labels[position] != position || scales[position] != 1) {
+            throw std::runtime_error(
+                "inverse NTT dual schedule does not restore layout/scale");
+        }
+    }
+    return tables;
 }
 
-Poly hardware_group_major_dit(const Poly& logical,
-                              const std::vector<std::vector<U32>>& tables,
-                              U64 modulus)
+Poly hardware_forward_cyclic(const Poly& logical,
+                             const std::vector<std::vector<U32>>& tables,
+                             U64 modulus)
 {
     if (logical.size() != g_n || tables.size() != static_cast<std::size_t>(
             std::log2(static_cast<double>(g_n)))) {
-        throw std::runtime_error("hardware DIT model shape mismatch");
+        throw std::runtime_error("hardware forward NTT model shape mismatch");
     }
-    Poly values(g_n);
+    Poly physical(g_n);
     for (std::size_t position = 0; position < g_n; ++position) {
-        values[position] = logical[bit_reverse_index(position, g_n)];
+        physical[position] = logical[bit_reverse_index(position, g_n)];
     }
     for (std::size_t stage = 0; stage < tables.size(); ++stage) {
-        const std::size_t length = std::size_t{1} << (stage + 1);
         std::size_t twiddle_index = 0;
-        for (std::size_t begin = 0; begin < g_n; begin += length) {
-            for (std::size_t j = 0; j < length / 2; ++j) {
-                const std::size_t even = begin + j;
-                const std::size_t odd = even + length / 2;
-                const U64 a = values[even];
+        for (const NttBatch& batch : ntt_stage_batches(g_n, stage)) {
+            auto loaded = load_ntt_batch(physical, batch);
+            for (std::size_t lane = 0; lane < 64; ++lane) {
+                const std::size_t even = 2 * lane;
+                const std::size_t odd = even + 1;
+                const U64 a = loaded.first[even];
                 const U64 product = mul_mod(
-                    values[odd], tables[stage][twiddle_index++], modulus);
-                values[even] = add_mod(a, product, modulus);
-                values[odd] = sub_mod(a, product, modulus);
+                    loaded.first[odd],
+                    tables[stage][twiddle_index++], modulus);
+                loaded.first[even] = add_mod(a, product, modulus);
+                loaded.first[odd] = sub_mod(a, product, modulus);
             }
+            loaded.first = apply_p_network(loaded.first);
+            store_ntt_batch(physical, loaded.first, loaded.second);
         }
         if (twiddle_index != g_n / 2) {
-            throw std::runtime_error("hardware DIT stage did not consume N/2 twiddles");
+            throw std::runtime_error(
+                "hardware forward stage did not consume N/2 twiddles");
         }
     }
-    return values;
+    return physical;
+}
+
+Poly hardware_inverse_cyclic(const Poly& physical_input,
+                             const std::vector<std::vector<U32>>& tables,
+                             U64 modulus)
+{
+    if (physical_input.size() != g_n || tables.size() != static_cast<std::size_t>(
+            std::log2(static_cast<double>(g_n)))) {
+        throw std::runtime_error("hardware inverse NTT model shape mismatch");
+    }
+    Poly physical = physical_input;
+    const std::size_t log_n = tables.size();
+    for (std::size_t inverse_stage = 0;
+         inverse_stage < log_n; ++inverse_stage) {
+        const std::size_t forward_stage = log_n - 1 - inverse_stage;
+        std::size_t twiddle_index = 0;
+        for (const NttBatch& batch : ntt_stage_batches(g_n, forward_stage)) {
+            auto loaded = load_ntt_batch(physical, batch);
+            loaded.first = apply_p_network(loaded.first, 6);
+            for (std::size_t lane = 0; lane < 64; ++lane) {
+                const std::size_t even = 2 * lane;
+                const std::size_t odd = even + 1;
+                const U64 a = loaded.first[even];
+                const U64 product = mul_mod(
+                    loaded.first[odd],
+                    tables[inverse_stage][twiddle_index++], modulus);
+                loaded.first[even] = add_mod(a, product, modulus);
+                loaded.first[odd] = sub_mod(a, product, modulus);
+            }
+            store_ntt_batch(physical, loaded.first, loaded.second);
+        }
+        if (twiddle_index != g_n / 2) {
+            throw std::runtime_error(
+                "hardware inverse stage did not consume N/2 twiddles");
+        }
+    }
+    return physical;
 }
 
 void validate_hardware_ntt_model(U64 omega,
@@ -2655,13 +2880,14 @@ void validate_hardware_ntt_model(U64 omega,
     Poly b_ntt = b;
     cyclic_ntt(a_ntt, omega, modulus, false);
     cyclic_ntt(b_ntt, omega, modulus, false);
-    const Poly a_physical = hardware_group_major_dit(a, ntt_tables, modulus);
-    const Poly b_physical = hardware_group_major_dit(b, ntt_tables, modulus);
+    const Poly a_physical = hardware_forward_cyclic(a, ntt_tables, modulus);
+    const Poly b_physical = hardware_forward_cyclic(b, ntt_tables, modulus);
+    const std::vector<std::size_t> layout = hardware_ntt_layout(g_n);
     for (std::size_t position = 0; position < g_n; ++position) {
-        if (a_physical[position] != a_ntt[position]
-            || b_physical[position] != b_ntt[position]) {
+        if (a_physical[position] != a_ntt[layout[position]]
+            || b_physical[position] != b_ntt[layout[position]]) {
             throw std::runtime_error(
-                "group-major PNTT model disagrees with mathematical NTT");
+                "hardware PNTT model disagrees with mathematical NTT");
         }
     }
 
@@ -2676,13 +2902,14 @@ void validate_hardware_ntt_model(U64 omega,
     }
     cyclic_ntt(product_logical, omega, modulus, true);
 
-    Poly inverse_physical = hardware_group_major_dit(
+    Poly inverse_physical = hardware_inverse_cyclic(
         product_physical, intt_tables, modulus);
     const U64 n_inverse = inverse_mod(static_cast<U64>(g_n), modulus);
     for (std::size_t position = 0; position < g_n; ++position) {
         inverse_physical[position] = mul_mod(
             inverse_physical[position], n_inverse, modulus);
-        if (inverse_physical[position] != product_logical[position]) {
+        if (inverse_physical[position]
+            != product_logical[bit_reverse_index(position, g_n)]) {
             throw std::runtime_error(
                 "hardware PNTT/pointwise/PINTT path violates convolution semantics");
         }
@@ -2715,25 +2942,28 @@ void validate_hardware_automorphism_model(
         mul_mod(standard_psi, standard_psi, modulus), modulus);
     const auto auto_inverse_tables = hardware_intt_twiddle_tables(
         mul_mod(auto_inverse_psi, auto_inverse_psi, modulus), modulus);
-    const Poly ntt_physical = hardware_group_major_dit(
+    const Poly ntt_physical = hardware_forward_cyclic(
         pre_twisted, forward_tables, modulus);
-    Poly output_physical = hardware_group_major_dit(
+    Poly output_physical = hardware_inverse_cyclic(
         ntt_physical, auto_inverse_tables, modulus);
     const U64 n_inverse = inverse_mod(static_cast<U64>(g_n), modulus);
     const U64 psi_inverse = inverse_mod(auto_inverse_psi, modulus);
     for (std::size_t position = 0; position < g_n; ++position) {
+        const std::size_t logical_index = bit_reverse_index(position, g_n);
         output_physical[position] = mul_mod(
             output_physical[position],
             mul_mod(
                 n_inverse,
-                pow_mod(psi_inverse, static_cast<U64>(position), modulus),
+                pow_mod(
+                    psi_inverse, static_cast<U64>(logical_index), modulus),
                 modulus),
             modulus);
     }
     const Poly expected = apply_negacyclic_automorphism(
         input, galois_element, modulus);
     for (std::size_t position = 0; position < g_n; ++position) {
-        if (output_physical[position] != expected[position]) {
+        if (output_physical[position]
+            != expected[bit_reverse_index(position, g_n)]) {
             throw std::runtime_error(
                 "hardware standard-NTT/Auto-INTT path violates X->X^g");
         }
@@ -2821,25 +3051,26 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
         std::vector<U32> pre_twist(g_n);
         for (std::size_t position = 0; position < g_n; ++position) {
             pre_twist[position] = checked_u32(
-                pow_mod(psi, static_cast<U64>(position), modulus),
+                pow_mod(
+                    psi,
+                    static_cast<U64>(bit_reverse_index(position, g_n)),
+                    modulus),
                 "physical pre-twist");
         }
         std::size_t image_index = add_hardware_image(
             images,
             "constants/twiddle/" + profile + "/" + basis_dir
                 + "/pre_twist.u32.bin",
-            profile + " negacyclic pre-twist in natural coefficient order",
+            profile + " negacyclic pre-twist in bit-reversed coefficient order",
             {g_n},
             std::move(pre_twist));
-        twiddle_entries.push_back({profile, basis, modulus, "pre_twist", -1,
-                                    g_n, 1, g_n, 1, psi, image_index});
+        twiddle_entries.push_back(
+            {profile, basis, modulus, "pre_twist", -1, -1,
+             g_n, 1, g_n, "pointwise", image_index});
 
         const U64 omega = mul_mod(psi, psi, modulus);
         const auto ntt_tables = hardware_ntt_twiddle_tables(omega, modulus);
         for (std::size_t stage = 0; stage < ntt_tables.size(); ++stage) {
-            const std::size_t length = std::size_t{1} << (stage + 1);
-            const U64 step = pow_mod(
-                omega, static_cast<U64>(g_n / length), modulus);
             const std::string stage_name = "stage_"
                 + (stage < 10 ? std::string("0") : std::string())
                 + std::to_string(stage);
@@ -2847,13 +3078,14 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
                 images,
                 "constants/twiddle/" + profile + "/" + basis_dir + "/"
                     + stage_name + ".u32.bin",
-                profile + " radix-2 DIT stage twiddles in group-major order",
+                profile
+                    + " forward DIT twiddles in hardware batch/lane order",
                 {g_n / 2},
                 ntt_tables[stage]);
             twiddle_entries.push_back(
                 {profile, basis, modulus, "butterfly", static_cast<int>(stage),
-                 g_n / 2, g_n / length, length / 2,
-                 ntt_tables[stage].front(), step, image_index});
+                 static_cast<int>(stage), g_n / 2, g_n / 128, 64,
+                 ntt_loader_mode(stage), image_index});
         }
         return ntt_tables;
     };
@@ -2876,42 +3108,45 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
         std::size_t image_index = 0;
         std::size_t stage = 0;
         for (; stage < intt_tables.size(); ++stage) {
-            const std::size_t length = std::size_t{1} << (stage + 1);
-            const U64 step = pow_mod(
-                inverse_mod(omega, modulus),
-                static_cast<U64>(g_n / length), modulus);
+            const std::size_t forward_stage =
+                intt_tables.size() - 1 - stage;
             const std::string stage_name = "stage_" +
                 (stage < 10 ? std::string("0") : std::string()) + std::to_string(stage);
             image_index = add_hardware_image(
                 images,
                 "constants/twiddle/intt/" + basis_dir + "/" + stage_name + ".u32.bin",
-                "inverse radix-2 DIT stage twiddles in group-major order",
+                "inverse DIF lazy-scale BF twiddles in dual-loader batch/lane order",
                 {g_n / 2},
                 intt_tables[stage]);
-            twiddle_entries.push_back({"intt", basis, modulus, "butterfly", static_cast<int>(stage),
-                                        g_n / 2, g_n / length, length / 2,
-                                        intt_tables[stage].front(), step, image_index});
+            twiddle_entries.push_back(
+                {"intt", basis, modulus, "butterfly",
+                 static_cast<int>(stage), static_cast<int>(forward_stage),
+                 g_n / 2, g_n / 128, 64,
+                 ntt_loader_mode(forward_stage), image_index});
         }
 
         const U64 n_inverse = inverse_mod(static_cast<U64>(g_n), modulus);
         const U64 psi_inverse = inverse_mod(psi, modulus);
         std::vector<U32> post_untwist(g_n);
         for (std::size_t position = 0; position < g_n; ++position) {
+            const U64 logical_index = static_cast<U64>(
+                bit_reverse_index(position, g_n));
             post_untwist[position] = checked_u32(
                 mul_mod(
                     n_inverse,
-                    pow_mod(psi_inverse, static_cast<U64>(position), modulus),
+                    pow_mod(psi_inverse, logical_index, modulus),
                     modulus),
                 "physical post-untwist");
         }
         image_index = add_hardware_image(
             images,
             "constants/twiddle/intt/" + basis_dir + "/post_untwist_scale.u32.bin",
-            "inverse negacyclic post-factor in natural coefficient order",
+            "inverse negacyclic post-factor in bit-reversed coefficient order",
             {g_n},
             std::move(post_untwist));
-        twiddle_entries.push_back({"intt", basis, modulus, "post_untwist_scale", -1,
-                                    g_n, 1, g_n, n_inverse, psi_inverse, image_index});
+        twiddle_entries.push_back(
+            {"intt", basis, modulus, "post_untwist_scale", -1, -1,
+             g_n, 1, g_n, "pointwise", image_index});
     }
 
     for (const NttTwiddleProfile& profile : additional_ntt_profiles) {
@@ -2968,10 +3203,8 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
             validate_hardware_automorphism_model(
                 roots[basis], psi, modulus, profile.galois_element);
             for (std::size_t stage = 0; stage < intt_tables.size(); ++stage) {
-                const std::size_t length = std::size_t{1} << (stage + 1);
-                const U64 step = pow_mod(
-                    inverse_mod(omega, modulus),
-                    static_cast<U64>(g_n / length), modulus);
+                const std::size_t forward_stage =
+                    intt_tables.size() - 1 - stage;
                 const std::string stage_name = "stage_"
                     + (stage < 10 ? std::string("0") : std::string())
                     + std::to_string(stage);
@@ -2980,23 +3213,25 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
                     "constants/twiddle/" + profile.name + "/" + basis_dir
                         + "/" + stage_name + ".u32.bin",
                     profile.name
-                        + " inverse radix-2 DIT stage twiddles in group-major order",
+                        + " inverse DIF lazy-scale BF twiddles in dual-loader batch/lane order",
                     {g_n / 2}, intt_tables[stage]);
                 twiddle_entries.push_back(
                     {profile.name, basis, modulus, "butterfly",
-                     static_cast<int>(stage), g_n / 2, g_n / length,
-                     length / 2, intt_tables[stage].front(), step, image_index});
+                     static_cast<int>(stage), static_cast<int>(forward_stage),
+                     g_n / 2, g_n / 128, 64,
+                     ntt_loader_mode(forward_stage), image_index});
             }
             const U64 n_inverse = inverse_mod(
                 static_cast<U64>(g_n), modulus);
             const U64 psi_inverse = inverse_mod(psi, modulus);
             std::vector<U32> post_untwist(g_n);
             for (std::size_t position = 0; position < g_n; ++position) {
+                const U64 logical_index = static_cast<U64>(
+                    bit_reverse_index(position, g_n));
                 post_untwist[position] = checked_u32(
                     mul_mod(
                         n_inverse,
-                        pow_mod(
-                            psi_inverse, static_cast<U64>(position), modulus),
+                        pow_mod(psi_inverse, logical_index, modulus),
                         modulus),
                     "physical custom inverse post-untwist");
             }
@@ -3005,11 +3240,11 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
                 "constants/twiddle/" + profile.name + "/" + basis_dir
                     + "/post_untwist_scale.u32.bin",
                 profile.name
-                    + " inverse post-factor in natural coefficient order",
+                    + " inverse post-factor in bit-reversed coefficient order",
                 {g_n}, std::move(post_untwist));
             twiddle_entries.push_back(
                 {profile.name, basis, modulus, "post_untwist_scale", -1,
-                 g_n, 1, g_n, n_inverse, psi_inverse, image_index});
+                 -1, g_n, 1, g_n, "pointwise", image_index});
         }
     }
 
@@ -3081,15 +3316,17 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
 
     if (includes_twiddles) {
         std::ostringstream twiddle_map;
-        twiddle_map << "direction,basis_index,modulus,phase,stage,value_count,group_count,"
-                       "twiddles_per_group,first_value,recurrence_step,path,line_offset,line_count\n";
+        twiddle_map
+            << "direction,basis_index,modulus,phase,stage,forward_stage,"
+               "value_count,batch_count,lanes_per_batch,loader_mode,path,"
+               "line_offset,line_count\n";
         for (const TwiddleMapEntry& entry : twiddle_entries) {
             const HardwareImage& image = images[entry.image_index];
             twiddle_map << entry.direction << ',' << entry.basis << ',' << entry.modulus << ','
-                        << entry.phase << ',' << entry.stage << ',' << entry.value_count << ','
-                        << entry.group_count << ',' << entry.twiddles_per_group << ','
-                        << hex32(checked_u32(entry.first_value, "twiddle first value")) << ','
-                        << hex32(checked_u32(entry.step, "twiddle step")) << ','
+                        << entry.phase << ',' << entry.stage << ','
+                        << entry.forward_stage << ',' << entry.value_count << ','
+                        << entry.batch_count << ',' << entry.lanes_per_batch << ','
+                        << entry.loader_mode << ','
                         << csv_field(image.path) << ',' << image.line_offset << ','
                         << image.padded_words.size() / kHpuWordsPerLine << '\n';
         }
@@ -3195,20 +3432,20 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
     if (includes_twiddles) {
         abi << ",\n"
             << "  \"twiddle\": {\n"
-            << "    \"convention\": \"group-major radix-2 DIT with one N/2-word image per stage\",\n"
-            << "    \"coefficient_physical_order\": \"memory[position] = coefficient[position]\",\n"
-            << "    \"ntt_physical_order\": \"memory[position] = logical_ntt[position]\",\n"
-            << "    \"pre_twist_execution\": \"explicit PMUL by psi^position before PNTT stage 0\",\n"
+            << "    \"convention\": \"hardware loader batch/lane order with P after PNTT and P^-1 before PINTT\",\n"
+            << "    \"coefficient_physical_order\": \"memory[position] = coefficient[bit_reverse(position)]\",\n"
+            << "    \"ntt_physical_order\": \"memory[position] = logical_ntt[forward_layout[position]]\",\n"
+            << "    \"pre_twist_execution\": \"explicit PMUL by psi^bit_reverse(position) before PNTT stage 0\",\n"
             << "    \"stage_payload_words\": " << g_n / 2 << ",\n"
             << "    \"stage_payload_lines\": "
             << (g_n / 2 + kHpuWordsPerLine - 1) / kHpuWordsPerLine << ",\n"
-            << "    \"stage_payload\": \"N/2 values in butterfly-group then in-group j order; equal per-group powers are repeated\",\n"
-            << "    \"group_rule\": \"stage s uses length=2^(s+1), N/length groups, and length/2 twiddles per group\",\n"
-            << "    \"intt_rule\": \"stages 0..log2(N)-1 use the same group-major DIT order with omega^-1\",\n"
+            << "    \"stage_payload\": \"N/2 values in loader-batch then PE-lane consumption order\",\n"
+            << "    \"batch_rule\": \"N/128 batches per stage and 64 twiddles per batch; stages below 7 load sequential windows and later stages interleave two 64-word segments\",\n"
+            << "    \"intt_rule\": \"reverse forward-stage order, apply P^-1 before BF, and use lazy-scale w_bf=alpha/beta\",\n"
             << "    \"stage_alignment\": \"each stage image starts at a 256-byte line\",\n"
-            << "    \"stage_pairing\": \"stream_ctrl stage address generation; no implicit full-polynomial shuffle or standalone bit-reversal command\",\n"
-            << "    \"physical_update\": \"out-of-place per stage; controller commits a new base to the same logical object id\",\n"
-            << "    \"intt_post_factor\": \"at position p: N^-1 * psi^-p\",\n"
+            << "    \"stage_pairing\": \"stream_ctrl loader plus per-batch P/P^-1 network; no standalone shuffle instruction\",\n"
+            << "    \"physical_update\": \"three-object out-of-place stages ping-pong between explicit data and scratch object ids\",\n"
+            << "    \"intt_post_factor\": \"at physical position p: N^-1 * psi^-bit_reverse(p)\",\n"
             << "    \"intt_post_execution\": \"explicit PMUL after the final PINTT stage\"\n"
             << "  }";
     }
@@ -3237,15 +3474,16 @@ void write_hardware_package(const std::filesystem::path& test_data_root,
         << "line. Program the frozen CSR offsets in `hpu_mem_config.json`, then use "
         << "`line_map.csv` for `cmd_mem_line_offset` and `cmd_mem_len_lines`.\n\n"
         << "`images/` contains independently loadable, line-padded hardware forms of the "
-        << "uint64 mathematical golden. Coefficient-domain and NTT-domain images both use "
-        << "natural polynomial order. `mod_ctx_map.csv` "
+        << "uint64 mathematical golden. Coefficient-domain images use bit-reversed "
+        << "coefficient order; NTT-domain images use the physical order produced by all "
+        << "forward P networks. `mod_ctx_map.csv` "
         << "documents q and Barrett mu records. "
         << "Load that image with dload type=2 and flag[0]=1 so the object allocator "
         << "places it in 32-line small Bank 5 at MOD_TABLE_BASE_LINE=0x1400; "
         << "hardware maintains DMA consistency, so pmodld needs no software psync. ";
     if (includes_twiddles) {
         hardware_readme
-            << "`twiddle_map.csv` gives each modulus, direction, phase, stage, group-major DIT "
+            << "`twiddle_map.csv` gives each modulus, direction, phase, stage, loader-batch/lane "
             << "layout, line offset, and line count. ";
     } else {
         hardware_readme
@@ -4138,7 +4376,7 @@ void generate(const std::filesystem::path& output_root,
            << "  \"coefficient_encoding\": \"uint64 little-endian canonical residue\",\n"
            << "  \"hardware_coefficient_encoding\": \"uint32 little-endian, 64 words per 256-byte line\",\n"
            << "  \"hardware_package\": \"hardware/\",\n"
-           << "  \"ntt_convention\": \"negacyclic twist, DIT cyclic NTT, natural-order output\",\n"
+           << "  \"ntt_convention\": \"host mathematical golden uses natural logical order; hardware images use bit-reversed coefficient and P-network NTT layouts\",\n"
            << "  \"evaluation_key_noise\": 0,\n"
            << "  \"evaluation_key_fixture\": \"P-divisible exact functional key\",\n"
            << "  \"security_status\": \"FUNCTIONAL_TEST_ONLY\",\n"
@@ -4229,7 +4467,7 @@ void generate(const std::filesystem::path& output_root,
                 << "\",\n  \"N\": " << g_n << ",\n  \"input_domain\": \""
                 << input_domain << "\",\n  \"output_domain\": \"" << output_domain
                 << "\",\n  \"layout\": \"row-major, coefficient last, little-endian uint64\",\n"
-                << "  \"hardware_layout\": \"hardware/: little-endian uint32; coefficient and NTT domains use natural polynomial order; 64 words per 256-byte line\",\n"
+                << "  \"hardware_layout\": \"hardware/: little-endian uint32; coefficient domain bit-reversed, NTT domain P-network physical; 64 words per 256-byte line\",\n"
                 << "  \"moduli\": [";
             for (std::size_t i = 0; i < moduli.size(); ++i) {
                 out << (i ? ", " : "") << moduli[i];
@@ -4250,7 +4488,7 @@ void generate(const std::filesystem::path& output_root,
                 << "\",\n  \"N\": " << g_n << ",\n  \"input_domain\": \""
                 << input_domain << "\",\n  \"output_domain\": \"" << output_domain
                 << "\",\n  \"layout\": \"row-major, coefficient last, little-endian uint64\",\n"
-                << "  \"hardware_layout\": \"hardware/: little-endian uint32 in natural polynomial order; 64 words per 256-byte line\",\n"
+                << "  \"hardware_layout\": \"hardware/: little-endian uint32; coefficient domain bit-reversed, NTT domain P-network physical; 64 words per 256-byte line\",\n"
                 << "  \"moduli\": [";
             for (std::size_t i = 0; i < moduli.size(); ++i) {
                 out << (i ? ", " : "") << moduli[i];

@@ -40,6 +40,7 @@ math(EXPR FHE_BFV_MSK_CONTEXT
 math(EXPR FHE_BFV_T_CONTEXT "${FHE_BFV_MSK_CONTEXT} + 1")
 math(EXPR FHE_STAGE_WORDS "${FHE_N} / 2")
 math(EXPR FHE_STAGE_LINES "(${FHE_STAGE_WORDS} + 63) / 64")
+math(EXPR FHE_NTT_BATCH_COUNT "${FHE_N} / 128")
 
 set(FHE_STAGE_COUNT 0)
 set(FHE_STAGE_LENGTH 1)
@@ -453,18 +454,18 @@ if(NOT HARDWARE_ABI MATCHES
     message(FATAL_ERROR "Hardware ABI stage twiddle line count is not ceil((N/2)/64)")
 endif()
 if(NOT HARDWARE_ABI MATCHES
-        "\"coefficient_physical_order\": \"memory\\[position\\] = coefficient\\[position\\]\"")
-    message(FATAL_ERROR "Hardware ABI does not freeze natural-order coefficient images")
+        "\"coefficient_physical_order\": \"memory\\[position\\] = coefficient\\[bit_reverse\\(position\\)\\]\"")
+    message(FATAL_ERROR "Hardware ABI does not freeze bit-reversed coefficient images")
 endif()
 if(NOT HARDWARE_ABI MATCHES
-        "\"ntt_physical_order\": \"memory\\[position\\] = logical_ntt\\[position\\]\"")
-    message(FATAL_ERROR "Hardware ABI does not freeze natural-order NTT images")
+        "\"ntt_physical_order\": \"memory\\[position\\] = logical_ntt\\[forward_layout\\[position\\]\\]\"")
+    message(FATAL_ERROR "Hardware ABI does not freeze the P-network NTT layout")
 endif()
-if(NOT HARDWARE_ABI MATCHES "group-major radix-2 DIT")
-    message(FATAL_ERROR "Hardware ABI does not identify the group-major DIT layout")
+if(NOT HARDWARE_ABI MATCHES "hardware loader batch/lane order")
+    message(FATAL_ERROR "Hardware ABI does not identify the batch/lane NTT layout")
 endif()
-if(NOT HARDWARE_ABI MATCHES "same group-major DIT order with omega\\^-1")
-    message(FATAL_ERROR "Hardware ABI does not freeze the inverse group-major DIT rule")
+if(NOT HARDWARE_ABI MATCHES "lazy-scale w_bf=alpha/beta")
+    message(FATAL_ERROR "Hardware ABI does not freeze the inverse lazy-scale rule")
 endif()
 if(NOT HARDWARE_ABI MATCHES "\"pre_twist_execution\": \"explicit PMUL")
     message(FATAL_ERROR "Hardware ABI does not explicitly execute the negacyclic pre-twist")
@@ -472,8 +473,8 @@ endif()
 if(NOT HARDWARE_ABI MATCHES "\"intt_post_execution\": \"explicit PMUL")
     message(FATAL_ERROR "Hardware ABI does not explicitly execute INTT normalization/inverse twist")
 endif()
-if(NOT HARDWARE_ABI MATCHES "\"physical_update\": \"out-of-place per stage")
-    message(FATAL_ERROR "Hardware ABI does not freeze NTT/INTT as physical out-of-place")
+if(NOT HARDWARE_ABI MATCHES "\"physical_update\": \"three-object out-of-place stages")
+    message(FATAL_ERROR "Hardware ABI does not freeze explicit three-object transforms")
 endif()
 
 file(READ "${ROOT}/outputs/ciphertext_multiply/test_data/hardware/hpu_mem_config.json" HPU_MEM_CONFIG)
@@ -495,21 +496,36 @@ if(NOT MOD_CTX_MAP MATCHES "barrett_mu48_hex")
 endif()
 
 file(READ "${ROOT}/outputs/ciphertext_multiply/test_data/hardware/twiddle_map.csv" TWIDDLE_MAP)
+if(NOT TWIDDLE_MAP MATCHES
+        "stage,forward_stage,value_count,batch_count,lanes_per_batch,loader_mode")
+    message(FATAL_ERROR "Hardware twiddle map does not expose loader batch/lane fields")
+endif()
 file(STRINGS "${ROOT}/outputs/ciphertext_multiply/test_data/hardware/twiddle_map.csv"
     TWIDDLE_ROWS)
 foreach(DIRECTION ntt intt)
     foreach(STAGE RANGE 0 ${FHE_LAST_STAGE})
+        if(DIRECTION STREQUAL "ntt")
+            set(FORWARD_STAGE ${STAGE})
+        else()
+            math(EXPR FORWARD_STAGE "${FHE_LAST_STAGE} - ${STAGE}")
+        endif()
+        if(FORWARD_STAGE LESS 7)
+            set(EXPECTED_LOADER_MODE "sequential_128")
+        else()
+            set(EXPECTED_LOADER_MODE "interleaved_64x2")
+        endif()
+
         set(STAGE_FOUND 0)
         foreach(TWIDDLE_ROW IN LISTS TWIDDLE_ROWS)
             if(TWIDDLE_ROW MATCHES
-                    "^${DIRECTION},0,[0-9]+,butterfly,${STAGE},${FHE_STAGE_WORDS},"
+                    "^${DIRECTION},0,[0-9]+,butterfly,${STAGE},${FORWARD_STAGE},${FHE_STAGE_WORDS},${FHE_NTT_BATCH_COUNT},64,${EXPECTED_LOADER_MODE},"
                     AND TWIDDLE_ROW MATCHES ",${FHE_STAGE_LINES}$")
                 set(STAGE_FOUND 1)
             endif()
         endforeach()
         if(NOT STAGE_FOUND)
             message(FATAL_ERROR
-                "Hardware twiddle map does not provide ${FHE_STAGE_WORDS} words/${FHE_STAGE_LINES} lines for ${DIRECTION} stage ${STAGE}")
+                "Hardware twiddle map does not provide forward_stage=${FORWARD_STAGE}, loader=${EXPECTED_LOADER_MODE}, ${FHE_STAGE_WORDS} words/${FHE_STAGE_LINES} lines for ${DIRECTION} stage ${STAGE}")
         endif()
     endforeach()
 endforeach()
@@ -879,8 +895,8 @@ endif()
 if(NOT RV_EXPECTED_DECODE MATCHES "0x8140005B,0x1028000,custom2,\"pfree p5\"")
     message(FATAL_ERROR "RV decode expectations are missing the architectural pfree encoding")
 endif()
-if(NOT RV_EXPECTED_DECODE MATCHES "0x4480FFDB,0x08901FF,custom2,\"pntt p2, p3, 15, 3, 1\"")
-    message(FATAL_ERROR "RV decode expectations are missing the duplicated-PDATA STG encoding")
+if(NOT RV_EXPECTED_DECODE MATCHES "0x4400FFDB,0x08801FF,custom2,\"pntt p2, p0, p3, 15, 3, 1\"")
+    message(FATAL_ERROR "RV decode expectations are missing the three-object STG encoding")
 endif()
 if(NOT RV_EXPECTED_DECODE MATCHES "0x08B540AB,0x2116A81,custom1,\"dload x10, x11, p4, 2, 1\"")
     message(FATAL_ERROR "RV decode expectations are missing mod_ctx small-bank flag[0]")
@@ -917,7 +933,24 @@ function(CHECK_OBJECT_LIFECYCLE RELATIVE_PATH)
                 message(FATAL_ERROR "${RELATIVE_PATH}: dload overwrites live object p${SLOT}")
             endif()
             set(LIVE_${SLOT} 1)
-        elseif(LINE MATCHES "\"(padd|psub|pmul|pmac|pntt|pintt) p([0-7]),")
+        elseif(LINE MATCHES "\"(pntt|pintt) p([0-7]), p([0-7]), p([0-7]),")
+            set(DEST_SLOT "${CMAKE_MATCH_2}")
+            set(DATA_SLOT "${CMAKE_MATCH_3}")
+            set(TWIDDLE_SLOT "${CMAKE_MATCH_4}")
+            if(LIVE_${DEST_SLOT})
+                message(FATAL_ERROR
+                    "${RELATIVE_PATH}: transform overwrites live destination p${DEST_SLOT}")
+            endif()
+            if(NOT LIVE_${DATA_SLOT} OR NOT LIVE_${TWIDDLE_SLOT})
+                message(FATAL_ERROR
+                    "${RELATIVE_PATH}: transform source is not live")
+            endif()
+            if(DEST_SLOT STREQUAL DATA_SLOT OR DEST_SLOT STREQUAL TWIDDLE_SLOT)
+                message(FATAL_ERROR
+                    "${RELATIVE_PATH}: transform destination is not distinct")
+            endif()
+            set(LIVE_${DEST_SLOT} 1)
+        elseif(LINE MATCHES "\"(padd|psub|pmul|pmac) p([0-7]),")
             set(SLOT "${CMAKE_MATCH_2}")
             set(LIVE_${SLOT} 1)
         elseif(LINE MATCHES "\"pfree p([0-7])")
@@ -1105,7 +1138,7 @@ file(WRITE "${ROOT}/outputs/DELIVERY_REPORT.txt"
     "MOD_CTX_Q32_MU48=PASS\n"
     "MOD_TABLE_BASE_0X1400=PASS\n"
     "STAGE_TWIDDLE_LAYOUT=PASS\n"
-    "GROUP_MAJOR_NTT_SCHEDULE=PASS\n"
+    "BATCH_LANE_NTT_SCHEDULE=PASS\n"
     "FHE_HARDWARE_CONVOLUTION=PASS\n"
     "NEGACYCLIC_FACTORS_EXPLICIT=PASS\n"
     "NTT_PHYSICAL_OUT_OF_PLACE=PASS\n"

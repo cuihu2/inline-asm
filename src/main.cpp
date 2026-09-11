@@ -38,6 +38,7 @@ struct NttConfig {
 	int obj_poly;
 	int twiddle_obj;
 	int mod_ctx_obj;
+	int scratch_obj;
 };
 
 struct MmConfig {
@@ -148,7 +149,7 @@ void configure_generators(const hpu::test::FheTestConfig& config)
 	const int num_p = static_cast<int>(config.num_p);
 	const int dnum = static_cast<int>(config.dnum);
 
-	g_ntt_cfg = {N, 0, 1, 2};
+	g_ntt_cfg = {N, 0, 1, 2, 3};
 	g_bconv_cfg = {
 		num_q, num_p,
 		0, 1, 2, 3, 4, 5, 6};
@@ -291,6 +292,7 @@ void test_intt_codegen() {
 		std::string intt = generate_hpu_intt_asm(
 		g_ntt_cfg.N,
 		g_ntt_cfg.obj_poly,
+		g_ntt_cfg.scratch_obj,
 		g_ntt_cfg.twiddle_obj,
 		g_ntt_cfg.mod_ctx_obj,
 		true);
@@ -302,6 +304,7 @@ void test_intt_codegen() {
 		std::string intt_body = generate_hpu_intt_asm(
 		g_ntt_cfg.N,
 		g_ntt_cfg.obj_poly,
+		g_ntt_cfg.scratch_obj,
 		g_ntt_cfg.twiddle_obj,
 		g_ntt_cfg.mod_ctx_obj,
 		true);
@@ -316,6 +319,7 @@ void test_ntt_codegen()
 		std::string ntt = generate_hpu_ntt_asm(
 		g_ntt_cfg.N,
 		g_ntt_cfg.obj_poly,
+		g_ntt_cfg.scratch_obj,
 		g_ntt_cfg.twiddle_obj,
 		g_ntt_cfg.mod_ctx_obj,
 		true);
@@ -327,6 +331,7 @@ void test_ntt_codegen()
 		std::string ntt_body = generate_hpu_ntt_asm(
 		g_ntt_cfg.N,
 		g_ntt_cfg.obj_poly,
+		g_ntt_cfg.scratch_obj,
 		g_ntt_cfg.twiddle_obj,
 		g_ntt_cfg.mod_ctx_obj,
 		true);

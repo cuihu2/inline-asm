@@ -137,18 +137,21 @@ inline std::string pmac_imm(int pdst, int psrc1, int cimm8) {
 }
 
 // --- STG 格式：stage / transform 执行类 ---
-// 语义：第一个对象为逻辑数据对象，第二个对象为 twiddle 对象。
-// 控制器在保持逻辑对象号不变的情况下执行 out-of-place 并提交新的物理 base。
-inline std::string pntt(int pdata, int ptwiddle, int stage, int mode = 0, int flag = 0) {
+// 语义：目标、数据源和 twiddle 源均为显式对象，目标必须可分配。
+inline std::string pntt(
+    int pdst, int psrc1, int ptwiddle, int stage, int mode = 0, int flag = 0) {
     std::ostringstream ss;
-    ss << "        \"pntt " << pobj(pdata) << ", " << pobj(ptwiddle) << ", " << stage
+    ss << "        \"pntt " << pobj(pdst) << ", " << pobj(psrc1) << ", "
+       << pobj(ptwiddle) << ", " << stage
        << ", " << mode << ", " << flag << " \\n\\t\"\n";
     return ss.str();
 }
 
-inline std::string pintt(int pdata, int ptwiddle, int stage, int mode = 0, int flag = 0) {
+inline std::string pintt(
+    int pdst, int psrc1, int ptwiddle, int stage, int mode = 0, int flag = 0) {
     std::ostringstream ss;
-    ss << "        \"pintt " << pobj(pdata) << ", " << pobj(ptwiddle) << ", " << stage
+    ss << "        \"pintt " << pobj(pdst) << ", " << pobj(psrc1) << ", "
+       << pobj(ptwiddle) << ", " << stage
        << ", " << mode << ", " << flag << " \\n\\t\"\n";
     return ss.str();
 }

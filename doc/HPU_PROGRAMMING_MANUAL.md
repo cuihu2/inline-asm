@@ -203,21 +203,22 @@ word = (OPC4 << 28) | (PDST << 25) | (PSRC1 << 22)
 ```text
  31      28 27    25 24    22 21             14 13       10 9    8 7 6       0
 +----------+--------+--------+-----------------+-------------+------+--+---------+
-|   OPC4   | PDATA  | PDATA  |     PTWID       |   STAGE4    | MODE2| F| 1011011 |
+|   OPC4   |  PDST  | PSRC1  |     PTWID       |   STAGE4    | MODE2| F| 1011011 |
 +----------+--------+--------+-----------------+-------------+------+--+---------+
 ```
 
 编码公式：
 
 ```text
-word = (OPC4 << 28) | (PDATA << 25) | (PDATA << 22)
+word = (OPC4 << 28) | (PDST << 25) | (PSRC1 << 22)
      | (PTWID << 14)
      | (STAGE4 << 10) | (MODE2 << 8) | (FLAG1 << 7) | 0x5B
 ```
 
-`PDATA` 在 `[27:25]` 和 `[24:22]` 重复编码；`PTWID` 是 3-bit 对象号，写入
-`[16:14]`，所以 `[21:17]` 保持为 0。`stage`、`mode` 和 `flag` 均由汇编显式
-给出；当前生成器使用 `mode=0, flag=0`。
+`PDST`、`PSRC1` 分别编码输出对象和数据源对象；`PTWID` 是 3-bit twiddle
+对象号，写入 `[16:14]`，所以 `[21:17]` 保持为 0。`stage`、`mode` 和 `flag`
+均由汇编显式给出；当前生成器使用 `mode=0, flag=0`。可执行流要求两个源对象
+均为 live，且 `PDST` 是与源对象不同的空闲槽位。
 
 ### 3.3 MOD 格式
 
@@ -425,23 +426,24 @@ pmac p2, p0, 255      # 0x343FC15B
 **语法**
 
 ```asm
-pntt pdata, ptwiddle, stage, mode, flag
+pntt pdst, psrc1, ptwiddle, stage, mode, flag
 ```
 
 **操作**
 
 ```text
-P[pdata] = NTT_STAGE(P[pdata], P[ptwiddle], stage, mode, flag, q)
+P[pdst] = NTT_STAGE(P[psrc1], P[ptwiddle], stage, mode, flag, q)
 ```
 
-当前生成器把 `pdata` 视为同一 logical object id 下的读写对象，每条 `pntt`
-只执行一个 stage。物理执行固定为 out-of-place：controller 分配下一物理
-base，完成后提交给同一 logical object id 并释放旧 base。完整长度为 `N` 的
-NTT 发出 `log2(N)` 条指令，stage 从 0 递增到 `log2(N)-1`。
+每条 `pntt` 只执行一个 stage，物理执行固定为三对象 out-of-place。生成器在
+data/scratch 两个槽位之间 ping-pong，指令完成后显式 `pfree psrc1` 和
+`pfree ptwiddle`。完整长度为 `N` 的 NTT 发出 `log2(N)` 条指令，stage 从 0
+递增到 `log2(N)-1`。
 
 | 操作数 | 范围 | 当前用法 |
 | --- | --- | --- |
-| `pdata` | `p0`..`p7` | 数据对象 |
+| `pdst` | `p0`..`p7` | 空闲输出对象 |
+| `psrc1` | `p0`..`p7` | 当前 stage 数据源 |
 | `ptwiddle` | `p0`..`p7` | 当前 stage 的 twiddle 对象 |
 | `stage` | 0..15 | 编入 `STAGE4` |
 | `mode` | 0..3 | 当前生成器写 0 |
@@ -450,64 +452,70 @@ NTT 发出 `log2(N)` 条指令，stage 从 0 递增到 `log2(N)-1`。
 **示例**
 
 ```asm
-pntt p0, p3, 15, 0, 0    # 0x4000FC5B
+pntt p2, p0, p1, 0, 0, 0    # 0x4400405B, cmd26=0x0880080
 ```
 
 软件通常在每个 stage 前加载 twiddle，并在该 stage 后释放：
 
 ```asm
 dload x12, x13, p3, 1, 0
-pntt  p0, p3, 0, 0, 0
+pntt  p2, p0, p3, 0, 0, 0
+pfree p0
 pfree p3
 ```
 
 完整 negacyclic NTT 在 stage 0 前还会显式加载 `pre_twist.u32.bin`，并执行
-`pmul pdata, pdata, ptwiddle`，实现逐系数乘 `psi^i`。该步骤不是
+`pmul pdata, pdata, ptwiddle`，实现逐系数乘 twist。该步骤不是
 `pntt stage=0` 的隐含行为。
 
-硬件镜像中的系数域和 NTT 域多项式均使用自然顺序：
-`memory[i] = polynomial[i]`。`pre_twist[i] = psi^i mod q`。
+host 数学多项式保持自然顺序，硬件镜像采用：
+
+```text
+coefficient memory[p] = coefficient[bit_reverse(p)]
+NTT memory[p]         = logical_ntt[forward_layout[p]]
+pre_twist[p]          = psi^bit_reverse(p) mod q
+```
 
 每个 stage 固定生成 `N/2` 个 little-endian `uint32` twiddle，即
-`N/128` 条 256B line。当前物理顺序是 group-major radix-2 DIT：对
-`length=2^(stage+1)`，依次遍历每个 butterfly group；组内按
-`j=0..length/2-1` 写出 `omega^(j*N/length) mod q`。不同 group 需要的
-相同 twiddle 也在镜像中重复写入。默认 `N=4096` 时每个 stage 为
-2048 words、32 line。stage 不隐含一次全多项式 shuffle，软件 reference
-中的 bit-reversal 循环只是 DIT 实现细节，不定义额外镜像排列或 HPU 指令。
+`N/128` 条 256B line。每级有 `N/128` 个 loader batch，每 batch 按 64 个 PE
+lane 的消费顺序存放 twiddle。`stage<7` 时 loader 读取连续 128-word window；
+后续 stage 交错读取两个 64-word segment。twiddle 由当前物理 label 的 lower
+索引计算，batch 蝶形结束后执行一次 P 网络并更新 `forward_layout`。默认
+`N=4096` 时每个 stage 为 2048 words、32 line。
 
 ### 5.2 PINTT - 逆向 NTT stage
 
 **语法**
 
 ```asm
-pintt pdata, ptwiddle, stage, mode, flag
+pintt pdst, psrc1, ptwiddle, stage, mode, flag
 ```
 
 **操作**
 
 ```text
-P[pdata] = INTT_STAGE(P[pdata], P[ptwiddle], stage, mode, flag, q)
+P[pdst] = INTT_STAGE(P[psrc1], P[ptwiddle], stage, mode, flag, q)
 ```
 
-操作数范围和生命周期与 `pntt` 相同。当前汇编生成器按
-`stage=0..log2(N)-1` 的顺序执行 INTT；`pdata` 的逻辑对象号在所有 stage
-之间保持不变，控制器对每个 stage 执行物理 out-of-place，完成后提交新的
-base 并释放旧空间。每个 stage 依次生成 `dload`、`pintt` 和 `pfree`：
+操作数范围和生命周期与 `pntt` 相同。汇编中的 INTT stage 从 0 递增，但
+stage `k` 对应正向 stage `log2(N)-1-k`。每个 stage 依次生成 `dload`、
+三对象 `pintt`，然后释放数据源和 twiddle：
 
 ```asm
 dload ..., ptwiddle, 1, 0
-pintt pdata, ptwiddle, stage, 0, 0
+pintt pdst, psrc1, ptwiddle, stage, 0, 0
+pfree psrc1
 pfree ptwiddle
 ```
 
-PINTT 同样按 `stage=0..log2(N)-1` 使用 group-major radix-2 DIT 布局，
-但 twiddle 根改为 `omega^-1 mod q`。每个 stage 仍有 `N/2` 项，group 和
-组内 `j` 的遍历顺序与 PNTT 相同。
+PINTT 对相应正向 stage 使用相同 loader batch，在蝶形前执行 P^-1。由于固定
+蝶形单元没有减法后的乘法，软件跟踪 `stored=scale*ideal` 的 lazy-scale tag，
+并提供 `w_bf=alpha*beta^-1 mod q`。全部逆 stage 结束后物理 label 恢复为
+identity、scale tag 恢复为 1。
 
 随后显式加载 `post_untwist_scale.u32.bin` 并执行
-`dload + pmul + pfree`。自然位置 `i` 的值为
-`N^-1 * psi^-i mod q`，同时完成归一化和 negacyclic inverse
+`dload + pmul + pfree`。物理位置 `p` 的值为
+`N^-1 * psi^-bit_reverse(p) mod q`，同时完成归一化和 negacyclic inverse
 twist。完整的 `PNTT -> pointwise multiply -> PINTT` 已由 reference 与硬件
 schedule 模型逐字比较，结果对应系数域的 negacyclic convolution。
 runtime 按 `twiddle_map.csv` 绑定 pre-twist、各 stage twiddle 和 post factor
@@ -516,7 +524,7 @@ runtime 按 `twiddle_map.csv` 绑定 pre-twist、各 stage twiddle 和 post fact
 **示例**
 
 ```asm
-pintt p0, p3, 15, 0, 0   # 0x5000FC5B
+pintt p3, p1, p4, 1, 0, 0   # 0x5641045B, cmd26=0x0AC8208
 ```
 
 ## 6. 配置与生命周期指令
@@ -741,17 +749,19 @@ pmac p2, p6, 7             # p2 += p6 * 7
 # q already selected with pmodld
 dload x10, x11, p0, 1, 0   # polynomial
 
-dload x12, x13, p3, 1, 0   # pre_twist = psi^i
+dload x12, x13, p3, 1, 0   # pre_twist[p] = psi^bit_reverse(p)
 pmul  p0, p0, p3
 pfree p3
 
 dload x12, x13, p3, 1, 0   # stage 0 twiddle
-pntt  p0, p3, 0, 0, 0
+pntt  p2, p0, p3, 0, 0, 0
+pfree p0
 pfree p3
 
 # repeat for stage 1 .. 11
 dload x14, x15, p3, 1, 0
-pntt  p0, p3, 11, 0, 0
+pntt  p0, p2, p3, 11, 0, 0
+pfree p2
 pfree p3
 
 dstore x16, x17, p0, 1
@@ -759,7 +769,8 @@ psync
 ```
 
 完整 INTT 在最后一个 `pintt` 后还必须加载
-`post_untwist_scale = N^-1 * psi^-i` 并显式 `pmul`，再执行 `dstore`。
+`post_untwist_scale[p] = N^-1 * psi^-bit_reverse(p)` 并显式 `pmul`，再执行
+`dstore`。
 
 ### 8.4 RNS 循环
 
@@ -965,8 +976,9 @@ ctest --test-dir build --output-on-failure
 | `pmul p2, p0, 255` | `0x243FC15B` | `0x0487F82` |
 | `pmac p2, p0, p1` | `0x3400405B` | `0x0680080` |
 | `pmac p2, p0, 255` | `0x343FC15B` | `0x0687F82` |
-| `pntt p0, p3, 15, 0, 0` | `0x4000FC5B` | `0x08001F8` |
-| `pintt p0, p3, 15, 0, 0` | `0x5000FC5B` | `0x0A001F8` |
+| `pntt p2, p0, p1, 0, 0, 0` | `0x4400405B` | `0x0880080` |
+| `pintt p2, p0, p1, 0, 0, 0` | `0x5400405B` | `0x0A80080` |
+| `pintt p3, p1, p4, 1, 0, 0` | `0x5641045B` | `0x0AC8208` |
 | `pmodld 0` | `0x6000005B` | `0x0C00000` |
 | `pmodld 255` | `0x603FC05B` | `0x0C07F80` |
 | `psync` | `0x7000005B` | `0x0E00000` |
@@ -981,7 +993,8 @@ ctest --test-dir build --output-on-failure
 
 1. relocation/runtime 是否把每条 DMA 的实际 line offset/count 装入 `rs1/rs2`。
 2. runtime 是否按 `MOD_TABLE_BASE_LINE=0x1400` 将模表 DMA 搬入 Bank 5。
-3. RTL 是否按 `twiddle_map.csv` 的 group-major radix-2 DIT 次序消费每 stage 的 `N/2` 个 twiddle，并按 out-of-place 协议提交各 stage 新 base。
+3. RTL 是否按 `twiddle_map.csv` 的 loader batch/lane 和 P/P^-1 次序消费每 stage
+   的 `N/2` 个 twiddle，并按三对象 out-of-place 协议写入 `PDST`。
 4. cache maintenance、中断和 fault 的 runtime 实现。
 
 这些事项不由指令编码器证明；当前软件完成度与剩余 RTL/板级签字项以
@@ -1053,18 +1066,20 @@ ModDown 的 source context 是 P，target context 是 Q：
 
 ### C.3 NTT、INTT 与 host Encode/Decode
 
-NTT/INTT body 假定数据对象和活动模上下文已由外层准备。独立用例使用 `p0` 作为
-数据、`p1` 作为 twiddle；复合算子使用 `p0` 和 `p3`。
+NTT/INTT body 假定数据对象和活动模上下文已由外层准备。独立用例使用
+`p0=data,p3=scratch,p1=twiddle,p2=mod_ctx`；复合算子使用
+`p0=data,p2=scratch,p3=twiddle,p4=mod_ctx`。
 
 | 顺序 | NTT dload | INTT dload | 使用后动作 |
 | --- | --- | --- | --- |
-| 1 | `pre_twist=psi^i` | stage 0 twiddle | `pmul` / `pintt` 后 `pfree twiddle` |
+| 1 | `pre_twist[p]=psi^bit_reverse(p)` | stage 0 twiddle | `pmul` / `pintt` 后 `pfree` 已消费源与 twiddle |
 | 2..logN | 当前 stage twiddle | 后续每个 stage twiddle | 每 stage 后 `pfree twiddle` |
-| 最后 | - | `post_untwist_scale=N^-1*psi^-i` | `pmul` 后 `pfree twiddle` |
+| 最后 | - | `post_untwist_scale[p]=N^-1*psi^-bit_reverse(p)` | `pmul` 后 `pfree twiddle` |
 
 每个 stage 都重新执行一次 twiddle `dload`，不会由硬件从上一 stage 自动更新。
-每份 stage 表固定包含 `N/2` 个 `uint32`。数据对象 `p0` 跨 stage 保持同一逻辑
-OBJ_ID，但控制器可按 out-of-place 协议提交新的物理 base。
+每份 stage 表固定包含 `N/2` 个 `uint32`。数据对象和 scratch 对象跨 stage
+交替充当 `PSRC1/PDST`；生成器根据 stage 数奇偶安排 pre/post PMUL，保证 body
+返回时最终结果仍位于调用者指定的数据对象。
 
 CKKS Encode 的 host 顺序是：generator-3 槽位映射、填充共轭半区、复数逆嵌入、
 乘 scale 并舍入为 `int64`。BGV coefficient

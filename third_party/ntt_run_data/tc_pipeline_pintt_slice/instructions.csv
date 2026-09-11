@@ -1,0 +1,8 @@
+seq,cmd_bits,instruction,obj_id/pdst,psrc1,psrc2,stage_id,ddr_offset_rows,ddr_base_addr,len_rows,data_file,note
+1,0x2000000,DLOAD  obj0,0,-,-,-,0,0x142000,8,obj0_polyA.csv,poly_A（stage0 输入）
+2,0x2040000,DLOAD  obj1,1,-,-,-,8,0x142800,8,obj1_polyB.csv,poly_B（stage1 输入 + stage0 psrc2 占位）
+3,0x2100000,DLOAD  obj4,4,-,-,-,32,0x144000,8,obj4_twiddle.csv,twiddle（stage1 用）
+4,0x0A80080,PINTT stage0,2,0,1,0,-,-,-,intt_stage0_bf_ops.csv,twiddle_one_bypass W=1（rd2 不读）
+5,0x0AC8208,PINTT stage1,3,1,4,1,-,-,-,intt_stage1_bf_ops.csv,真实 twiddle 读取（rd2=obj4）
+6,0x2080020,DSTORE obj2,2,-,-,-,16,0x143000,8,obj2_stage0_output_exp_vs_rtl.csv,stage0 结果 64 lines 回读
+7,0x20C0020,DSTORE obj3,3,-,-,-,24,0x143800,8,obj3_stage1_output_exp_vs_rtl.csv,stage1 结果 64 lines 回读

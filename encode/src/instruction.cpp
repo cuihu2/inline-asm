@@ -82,6 +82,7 @@ std::string to_string(const Instruction& instruction) {
         case Format::kSTG:
             oss << ' ' << format_pobj(instruction.pdst)
                 << ", " << format_pobj(instruction.psrc1)
+                << ", " << format_pobj(instruction.psrc2)
                 << ", " << instruction.idx0
                 << ", " << static_cast<int>(instruction.mode)
                 << ", " << static_cast<int>(instruction.flag);

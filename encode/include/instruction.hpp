@@ -31,8 +31,8 @@ enum class Mnemonic {
 struct Instruction {
     Mnemonic mnemonic {};
 
-    // Logical object operands reused by AR3 and STG encodings. STG duplicates
-    // pdata in two physical fields and places ptwiddle in inst[16:14].
+    // Logical object operands reused by AR3 and STG encodings. STG uses all
+    // three fields as pdst, psrc1 (data), and psrc2 (twiddle).
     int pdst = -1;
     int psrc1 = -1;
     int psrc2 = -1;
