@@ -162,6 +162,19 @@ int main()
                     "invalid/relinearized");
             },
             "operation plan accepted wrong-level relinearization constants");
+        auto compact_only_keyswitch_constants = keyswitch_constants;
+        compact_only_keyswitch_constants.hardware_prefix.clear();
+        compact_only_keyswitch_constants.hardware_constant_polynomial_count = 0;
+        compact_only_keyswitch_constants.hardware_workspace_polynomial_count = 0;
+        require_invalid_argument(
+            [&] {
+                (void)plan.append_relinearize(
+                    "missing_hardware_relinearize", tensor,
+                    prepared_relinearization_key,
+                    compact_only_keyswitch_constants,
+                    "invalid/missing_hardware_relinearized");
+            },
+            "operation plan accepted compact-only KeySwitch constants");
         const auto relinearized = plan.append_relinearize(
             "relinearize", tensor, prepared_relinearization_key,
             keyswitch_constants, "intermediate/relinearized");
@@ -283,21 +296,24 @@ int main()
         const std::size_t generated_dma_count =
             count_token(lowered.body_asm, "\"dload ")
             + count_token(lowered.body_asm, "\"dstore ");
+        const std::size_t relinearize_dma_count =
+            count_token(lowered.operations[1].body_asm, "\"dload ")
+            + count_token(lowered.operations[1].body_asm, "\"dstore ");
         require(
             relocations.expected_dma_count == generated_dma_count
-                && relocations.bindings.size() == 44
+                && relocations.bindings.size()
+                    == 44 + relinearize_dma_count
                 && !relocations.complete(),
             "relocation schedule did not account for generated DMA instructions");
         require(
-            relocations.unresolved_operations.size() == 2
-                && relocations.unresolved_operations[0].operation_index == 1
+            relocations.unresolved_operations.size() == 1
+                && relocations.unresolved_operations[0].operation_index == 2
                 && relocations.unresolved_operations[0].operation_id
-                    == "relinearize"
-                && relocations.unresolved_operations[0].dma_count != 0
-                && relocations.unresolved_operations[1].operation_index == 2
-                && relocations.unresolved_operations[1].operation_id
                     == "rescale"
-                && relocations.unresolved_operations[1].dma_count != 0,
+                && relocations.unresolved_operations[0].dma_count != 0
+                && relocations.bindings.size()
+                    + relocations.unresolved_operations[0].dma_count
+                    == relocations.expected_dma_count,
             "relocation schedule hid unresolved complex-kernel resources");
         require(
             relocations.bindings.front().operation_id == "$application"
@@ -315,23 +331,47 @@ int main()
                 && relocations.bindings.back().program_dma_index
                     == generated_dma_count - 1,
             "pointwise relocation bindings have incorrect spans or ordinals");
-
-        hpu::seal_adapter::CkksLoweredProgram pointwise_program;
-        pointwise_program.operations = {
-            lowered.operations[0], lowered.operations[3]};
-        pointwise_program.body_asm = hpu::dload(
-            4, hpu::DataType::mod_ctx, hpu::DloadFlag::small_bank);
-        pointwise_program.body_asm += lowered.operations[0].body_asm;
-        pointwise_program.body_asm += lowered.operations[3].body_asm;
-        const auto pointwise_relocations =
-            hpu::seal_adapter::build_ckks_relocation_schedule(
-                pointwise_program, image_builder.image(), *bundle.context);
+        const auto has_binding = [&](const std::string& allocation_id) {
+            return std::any_of(
+                relocations.bindings.begin(), relocations.bindings.end(),
+                [&](const hpu::seal_adapter::CkksDmaBinding& binding) {
+                    return binding.operation_id == "relinearize"
+                        && binding.allocation_id == allocation_id;
+                });
+        };
         require(
-            pointwise_relocations.complete()
-                && pointwise_relocations.expected_dma_count == 44
-                && pointwise_relocations.bindings.size() == 44
-                && pointwise_relocations.unresolved_operations.empty(),
-            "fully resolvable pointwise program produced an incomplete schedule");
+            has_binding("intermediate/tensor/c2/mod0")
+                && has_binding(
+                    "constants/twiddle/canonical/mod0/intt/stage0")
+                && has_binding(
+                    "constants/keyswitch/top/hardware/modup/d0/qhat_inv/mod0")
+                && has_binding(
+                    "key/relinearization/top/d0/c0/mod0")
+                && has_binding(
+                    "constants/keyswitch/top/hardware/workspace/accumulator/c0/mod0")
+                && has_binding("intermediate/relinearized/c1/mod2"),
+            "Relinearize relocation omitted an operand class");
+
+        hpu::seal_adapter::CkksLoweredProgram fully_bound_program;
+        fully_bound_program.operations = {
+            lowered.operations[0], lowered.operations[1],
+            lowered.operations[3]};
+        fully_bound_program.body_asm = hpu::dload(
+            4, hpu::DataType::mod_ctx, hpu::DloadFlag::small_bank);
+        fully_bound_program.body_asm += lowered.operations[0].body_asm;
+        fully_bound_program.body_asm += lowered.operations[1].body_asm;
+        fully_bound_program.body_asm += lowered.operations[3].body_asm;
+        const auto fully_bound_relocations =
+            hpu::seal_adapter::build_ckks_relocation_schedule(
+                fully_bound_program, image_builder.image(), *bundle.context);
+        require(
+            fully_bound_relocations.complete()
+                && fully_bound_relocations.expected_dma_count
+                    == 44 + relinearize_dma_count
+                && fully_bound_relocations.bindings.size()
+                    == fully_bound_relocations.expected_dma_count
+                && fully_bound_relocations.unresolved_operations.empty(),
+            "fully resolvable program produced an incomplete schedule");
 
         hpu::seal_adapter::CkksSoftwareExecutor executor(
             *bundle.context, image_builder.image());

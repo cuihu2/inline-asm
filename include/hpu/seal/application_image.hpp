@@ -51,6 +51,9 @@ struct PreparedKeySwitchConstants {
     ::seal::parms_id_type data_parms_id{};
     std::size_t chain_index = 0;
     hpu::runtime::HpuMemSpan values;
+    std::string hardware_prefix;
+    std::size_t hardware_constant_polynomial_count = 0;
+    std::size_t hardware_workspace_polynomial_count = 0;
 };
 
 struct PreparedRescaleConstants {

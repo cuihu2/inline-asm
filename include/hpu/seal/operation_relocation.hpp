@@ -59,10 +59,9 @@ struct CkksRelocationSchedule {
     }
 };
 
-// Resolves the current pointwise kernels (Square and AddPlain) and validates
-// their binding order against the actual generated assembly. Relinearize and
-// Rescale are reported as unresolved until the application image owns their
-// expanded BConv/scalar constants and intermediate workspace allocations.
+// Resolves Square, Relinearize, and AddPlain and validates their binding order
+// against the actual generated assembly. Rescale remains unresolved until the
+// application image owns its expanded constants and intermediate workspace.
 CkksRelocationSchedule build_ckks_relocation_schedule(
     const CkksLoweredProgram& program,
     const hpu::runtime::HpuMemImage& image,

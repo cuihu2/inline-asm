@@ -261,6 +261,9 @@ void register_rns_object(hpu::runtime::Application& application,
   自然映射为一个 regular-bank 常驻对象。
 - 推荐把 `infer_ckks_*_metadata` 的结果直接交给 metadata overload，避免调用方
   手工组合下一层 `parms_id` 和 scale；descriptor + scale overload 继续保留兼容。
+- `add_keyswitch_constants` 同时写入紧凑 `KSW1` 软件执行记录，以及 generic
+  Relinearize codegen 所需的多项式级 ModUp/ModDown BConv 常量、P inverse 和可复用
+  Q|P workspace；`PreparedKeySwitchConstants` 记录硬件资源前缀与常量/workspace 数量。
 - `register_rns_object` 把每个 limb 注册为独立对象，跨 kernel 驻留决策留给
   `hpu::runtime::Application`。
 
@@ -318,9 +321,9 @@ CkksRelocationSchedule schedule = build_ckks_relocation_schedule(
   `line_offset/line_count` 装入 `x10/x11`。
 - resolver 会解析实际生成的 assembly，并逐条核对方向、对象槽、load type/bank
   flag 或 store release；codegen 和 relocation 配方发生漂移时立即报错。
-- 当前模表、Square 和 AddPlain 已完整解析。Relinearize 与 Rescale 需要的多项式级
-  BConv/标量常量及中间 workspace 尚未进入 application image，因此保留精确 DMA
-  区间并返回 `unresolved_operations`，不把现有紧凑软件常量错误绑定成 N-word 对象。
+- 当前模表、Square、Relinearize 和 AddPlain 已完整解析。Relinearize 覆盖前后
+  NTT/INTT twiddle、逐 digit ModUp、evaluation-key 乘加、P→Q ModDown、base merge
+  及所有 workspace；Rescale 暂时保留精确 DMA 区间并返回 `unresolved_operations`。
 - 只有 `unresolved_operations` 为空且绑定数等于 `expected_dma_count` 时，
   `schedule.complete()` 才返回 true。
 

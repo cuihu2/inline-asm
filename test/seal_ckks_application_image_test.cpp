@@ -93,7 +93,13 @@ int main()
                     && prepared_keyswitch_constants.data_parms_id
                         == level.parms_id
                     && prepared_keyswitch_constants.chain_index == level.chain_index
-                    && prepared_keyswitch_constants.values.line_count == 1,
+                    && prepared_keyswitch_constants.values.line_count == 1
+                    && prepared_keyswitch_constants.hardware_prefix
+                        == "constants/keyswitch/q2/hardware"
+                    && prepared_keyswitch_constants
+                        .hardware_constant_polynomial_count == 11
+                    && prepared_keyswitch_constants
+                        .hardware_workspace_polynomial_count == 12,
                 "level-specific KeySwitch constant record is incorrect");
         require(prepared_rescale_constants.id
                     == "constants/rescale/q2_to_q1"
@@ -119,6 +125,31 @@ int main()
                     && keyswitch_allocation.read_only
                     && image.words()[keyswitch_word_offset] == 0x4b535731U,
                 "KeySwitch constants were not serialized as immutable HPU_MEM data");
+        const auto& modup_inverse = image.allocation(
+            "constants/keyswitch/q2/hardware/modup/d0/qhat_inv/mod0");
+        const auto& expanded_p_inverse = image.allocation(
+            "constants/keyswitch/q2/hardware/moddown/p_inverse/mod0");
+        const auto& keyswitch_workspace = image.allocation(
+            "constants/keyswitch/q2/hardware/workspace/accumulator/c0/mod0");
+        const std::size_t modup_inverse_word = static_cast<std::size_t>(
+            modup_inverse.span.line_offset) * hpu::runtime::kHpuMemLineWords;
+        const std::size_t expanded_p_inverse_word = static_cast<std::size_t>(
+            expanded_p_inverse.span.line_offset)
+            * hpu::runtime::kHpuMemLineWords;
+        require(
+            modup_inverse.word_count == spec.poly_modulus_degree
+                && modup_inverse.kind
+                    == hpu::runtime::AllocationKind::constant
+                && modup_inverse.read_only
+                && image.words()[modup_inverse_word] == 1
+                && expanded_p_inverse.word_count == spec.poly_modulus_degree
+                && image.words()[expanded_p_inverse_word]
+                    == image.words()[keyswitch_word_offset + 6]
+                && keyswitch_workspace.word_count == spec.poly_modulus_degree
+                && keyswitch_workspace.kind
+                    == hpu::runtime::AllocationKind::workspace
+                && !keyswitch_workspace.read_only,
+            "hardware-expanded KeySwitch resources are incomplete or inconsistent");
         const auto& rescale_allocation = image.allocation(
             "constants/rescale/q2_to_q1");
         const std::size_t rescale_word_offset = static_cast<std::size_t>(

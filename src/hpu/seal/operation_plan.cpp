@@ -190,6 +190,12 @@ PreparedRnsObject CkksOperationPlan::append_relinearize(
     validate_constant_resource(
         image_builder_.image(), constants.id, constants.values,
         "CKKS Relinearize constants");
+    if (constants.hardware_prefix != constants.id + "/hardware"
+        || constants.hardware_constant_polynomial_count == 0
+        || constants.hardware_workspace_polynomial_count == 0) {
+        throw std::invalid_argument(
+            "CKKS Relinearize constants lack hardware-expanded resources");
+    }
 
     const auto output_metadata = infer_ckks_preserving_metadata(
         image_builder_.level_chain(), tensor.metadata());

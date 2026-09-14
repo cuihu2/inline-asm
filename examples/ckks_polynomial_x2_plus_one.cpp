@@ -2,6 +2,7 @@
 #include "hpu/seal/ckks_context.hpp"
 #include "hpu/seal/operation_codegen.hpp"
 #include "hpu/seal/operation_plan.hpp"
+#include "hpu/seal/operation_relocation.hpp"
 #include "hpu/seal/software_executor.hpp"
 #include "util/hpu_asm.hpp"
 
@@ -185,6 +186,9 @@ int main(int argc, char** argv)
         const auto lowered = hpu::seal_adapter::lower_ckks_operation_plan(
             operation_plan, *bundle.context);
         const std::string& hpu_program = lowered.body_asm;
+        const auto relocation =
+            hpu::seal_adapter::build_ckks_relocation_schedule(
+                lowered, image_builder.image(), *bundle.context);
 
         if (lowered.operations.size() != operation_plan.steps().size()
             || count_token(hpu_program, hpu::psync()) != 1
@@ -193,6 +197,15 @@ int main(int argc, char** argv)
                 hpu::DataType::mod_ctx,
                 hpu::DloadFlag::small_bank)) != 1) {
             throw std::logic_error("polynomial program lifecycle is not application-scoped");
+        }
+        if (relocation.unresolved_operations.size() != 1
+            || relocation.unresolved_operations[0].kind
+                != hpu::seal_adapter::CkksOperationKind::rescale
+            || relocation.bindings.size()
+                + relocation.unresolved_operations[0].dma_count
+                != relocation.expected_dma_count) {
+            throw std::logic_error(
+                "polynomial program relocation has an unexpected unresolved range");
         }
 
         const double predicted_scale = rescaled.scale;
@@ -210,7 +223,10 @@ int main(int argc, char** argv)
                   << "Decoded: [" << decoded[0] << ", " << decoded[1]
                   << ", " << decoded[2] << "]\n"
                   << "Maximum HPU decoded error: " << maximum_error << '\n'
-                  << "Generated HPU body bytes: " << hpu_program.size() << '\n';
+                  << "Generated HPU body bytes: " << hpu_program.size() << '\n'
+                  << "DMA relocation: " << relocation.bindings.size()
+                  << " / " << relocation.expected_dma_count
+                  << " bound; unresolved=rescale\n";
         if (print_asm) {
             std::cout << "\n--- generated HPU inline-assembly body ---\n"
                       << hpu_program;

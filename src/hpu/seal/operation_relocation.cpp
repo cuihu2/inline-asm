@@ -2,6 +2,7 @@
 
 #include "hpu/seal/ckks_level.hpp"
 
+#include <algorithm>
 #include <regex>
 #include <stdexcept>
 #include <utility>
@@ -110,16 +111,26 @@ public:
 
     void load(int slot, const std::string& allocation_id)
     {
+        load_words(slot, allocation_id, polynomial_words_);
+    }
+
+    void load_words(
+        int slot,
+        const std::string& allocation_id,
+        std::size_t expected_words)
+    {
         append(
             CkksDmaDirection::load, slot, allocation_id,
-            hpu::DataType::poly, hpu::DloadFlag::regular_bank, 0);
+            hpu::DataType::poly, hpu::DloadFlag::regular_bank, 0,
+            expected_words);
     }
 
     void store(int slot, const std::string& allocation_id)
     {
         append(
             CkksDmaDirection::store, slot, allocation_id,
-            hpu::DataType::poly, hpu::DloadFlag::regular_bank, 1);
+            hpu::DataType::poly, hpu::DloadFlag::regular_bank, 1,
+            polynomial_words_);
     }
 
     void finish() const
@@ -138,7 +149,8 @@ private:
         const std::string& allocation_id,
         hpu::DataType load_type,
         hpu::DloadFlag load_flag,
-        int store_release)
+        int store_release,
+        std::size_t expected_words)
     {
         if (cursor_ >= instructions_.size()) {
             throw std::logic_error(
@@ -159,7 +171,7 @@ private:
         }
 
         const auto& allocation = image_.allocation(allocation_id);
-        if (allocation.word_count != polynomial_words_
+        if (allocation.word_count != expected_words
             || allocation.span.line_count == 0) {
             throw std::invalid_argument(
                 "CKKS polynomial relocation has an incompatible allocation: "
@@ -245,6 +257,259 @@ void bind_add_plain(
         bindings.store(2, limb_id(step.output, 0, modulus_id));
         bindings.load(0, limb_id(ciphertext, 1, modulus_id));
         bindings.store(0, limb_id(step.output, 1, modulus_id));
+    }
+    bindings.finish();
+}
+
+std::size_t ntt_stage_count(std::size_t degree)
+{
+    std::size_t stages = 0;
+    for (std::size_t remaining = degree; remaining > 1; remaining >>= 1U) {
+        ++stages;
+    }
+    return stages;
+}
+
+std::string canonical_twiddle_id(
+    int modulus_id,
+    bool inverse,
+    const std::string& suffix)
+{
+    return "constants/twiddle/canonical/mod" + std::to_string(modulus_id)
+        + (inverse ? "/intt/" : "/ntt/") + suffix;
+}
+
+std::string workspace_mod_id(
+    const std::string& prefix,
+    const std::string& role,
+    int modulus_id)
+{
+    return prefix + "/workspace/" + role
+        + "/mod" + std::to_string(modulus_id);
+}
+
+void bind_transform_limb(
+    OperationBindingBuilder& bindings,
+    const std::string& data_id,
+    int modulus_id,
+    std::size_t degree,
+    bool inverse)
+{
+    bindings.load(0, data_id);
+    const std::size_t stages = ntt_stage_count(degree);
+    if (!inverse) {
+        bindings.load_words(
+            3, canonical_twiddle_id(
+                modulus_id, false, "pre_twist"),
+            degree);
+    }
+    for (std::size_t stage = 0; stage < stages; ++stage) {
+        bindings.load_words(
+            3, canonical_twiddle_id(
+                modulus_id, inverse,
+                "stage" + std::to_string(stage)),
+            degree / 2);
+    }
+    if (inverse) {
+        bindings.load_words(
+            3, canonical_twiddle_id(
+                modulus_id, true, "post_untwist_scale"),
+            degree);
+    }
+    bindings.store(0, data_id);
+}
+
+void bind_relinearize(
+    OperationBindingBuilder& bindings,
+    const CkksOperationStep& step,
+    const CkksLevelDescriptor& level,
+    std::size_t degree)
+{
+    if (step.inputs.size() != 1 || step.inputs[0].component_count != 3
+        || step.output.component_count != 2
+        || step.resources.evaluation_key_ids.size() != 1
+        || step.resources.constant_ids.size() != 1
+        || !step.resources.requires_canonical_twiddles) {
+        throw std::invalid_argument(
+            "invalid Relinearize relocation manifest");
+    }
+    const auto& tensor = step.inputs[0];
+    const auto& layout = level.rns_layout;
+    const std::string& evaluation_key_id =
+        step.resources.evaluation_key_ids[0];
+    const std::string hardware_prefix =
+        step.resources.constant_ids[0] + "/hardware";
+    std::vector<int> full_contexts = layout.q_mod_ids;
+    full_contexts.insert(
+        full_contexts.end(), layout.p_mod_ids.begin(),
+        layout.p_mod_ids.end());
+
+    for (std::size_t component = 0; component < 3; ++component) {
+        for (int context : layout.q_mod_ids) {
+            bind_transform_limb(
+                bindings, limb_id(tensor, component, context),
+                context, degree, true);
+        }
+    }
+
+    for (std::size_t digit = 0; digit < layout.key_digits.size(); ++digit) {
+        const auto& sources = layout.key_digits[digit];
+        std::vector<int> targets;
+        for (int context : layout.q_mod_ids) {
+            if (std::find(sources.begin(), sources.end(), context)
+                == sources.end()) {
+                targets.push_back(context);
+            }
+        }
+        targets.insert(
+            targets.end(), layout.p_mod_ids.begin(), layout.p_mod_ids.end());
+        const std::string digit_prefix = hardware_prefix
+            + "/modup/d" + std::to_string(digit);
+
+        for (int source : sources) {
+            bindings.load(0, limb_id(tensor, 2, source));
+            bindings.store(
+                0, workspace_mod_id(
+                    hardware_prefix, "modup", source));
+        }
+        for (std::size_t source_index = 0;
+             source_index < sources.size(); ++source_index) {
+            const int source = sources[source_index];
+            bindings.load(0, limb_id(tensor, 2, source));
+            bindings.load(
+                1, digit_prefix + "/qhat_inv/mod"
+                    + std::to_string(source));
+            bindings.store(
+                0, hardware_prefix + "/workspace/bconv/normalized"
+                    + std::to_string(source_index));
+        }
+        for (int target : targets) {
+            for (std::size_t source_index = 0;
+                 source_index < sources.size(); ++source_index) {
+                const int source = sources[source_index];
+                bindings.load(
+                    0, hardware_prefix + "/workspace/bconv/normalized"
+                        + std::to_string(source_index));
+                bindings.load(
+                    1, digit_prefix + "/qhat_mod_target/target"
+                        + std::to_string(target) + "/source"
+                        + std::to_string(source));
+            }
+            bindings.store(
+                2, workspace_mod_id(
+                    hardware_prefix, "modup", target));
+        }
+
+        for (int context : full_contexts) {
+            bind_transform_limb(
+                bindings,
+                workspace_mod_id(hardware_prefix, "modup", context),
+                context, degree, false);
+        }
+
+        for (int component = 0; component < 2; ++component) {
+            for (int context : full_contexts) {
+                bindings.load(
+                    0, workspace_mod_id(
+                        hardware_prefix, "modup", context));
+                bindings.load(
+                    1, evaluation_key_id + "/d" + std::to_string(digit)
+                        + "/c" + std::to_string(component) + "/mod"
+                        + std::to_string(context));
+                if (digit != 0) {
+                    bindings.load(
+                        2, workspace_mod_id(
+                            hardware_prefix,
+                            "accumulator/c" + std::to_string(component),
+                            context));
+                }
+                bindings.store(
+                    2, workspace_mod_id(
+                        hardware_prefix,
+                        "accumulator/c" + std::to_string(component),
+                        context));
+            }
+        }
+    }
+
+    for (int component = 0; component < 2; ++component) {
+        for (int context : full_contexts) {
+            const auto accumulator = workspace_mod_id(
+                hardware_prefix,
+                "accumulator/c" + std::to_string(component), context);
+            bind_transform_limb(
+                bindings, accumulator, context, degree, true);
+        }
+    }
+
+    const std::string moddown_prefix = hardware_prefix + "/moddown";
+    for (int component = 0; component < 2; ++component) {
+        const std::string accumulator_role =
+            "accumulator/c" + std::to_string(component);
+        for (std::size_t source_index = 0;
+             source_index < layout.p_mod_ids.size(); ++source_index) {
+            const int source = layout.p_mod_ids[source_index];
+            bindings.load(
+                0, workspace_mod_id(
+                    hardware_prefix, accumulator_role, source));
+            bindings.load(
+                1, moddown_prefix + "/qhat_inv/mod"
+                    + std::to_string(source));
+            bindings.store(
+                0, hardware_prefix + "/workspace/bconv/normalized"
+                    + std::to_string(source_index));
+        }
+        for (int target : layout.q_mod_ids) {
+            for (std::size_t source_index = 0;
+                 source_index < layout.p_mod_ids.size(); ++source_index) {
+                const int source = layout.p_mod_ids[source_index];
+                bindings.load(
+                    0, hardware_prefix + "/workspace/bconv/normalized"
+                        + std::to_string(source_index));
+                bindings.load(
+                    1, moddown_prefix + "/qhat_mod_target/target"
+                        + std::to_string(target) + "/source"
+                        + std::to_string(source));
+            }
+            bindings.store(
+                2, workspace_mod_id(
+                    hardware_prefix, "moddown/correction", target));
+        }
+        for (int context : layout.q_mod_ids) {
+            const auto accumulator = workspace_mod_id(
+                hardware_prefix, accumulator_role, context);
+            bindings.load(0, accumulator);
+            bindings.load(
+                1, workspace_mod_id(
+                    hardware_prefix, "moddown/correction", context));
+            bindings.load(
+                2, moddown_prefix + "/p_inverse/mod"
+                    + std::to_string(context));
+            bindings.store(0, accumulator);
+        }
+    }
+
+    for (int context : layout.q_mod_ids) {
+        bindings.load(
+            0, workspace_mod_id(
+                hardware_prefix, "accumulator/c0", context));
+        bindings.load(1, limb_id(tensor, 0, context));
+        bindings.store(2, limb_id(step.output, 0, context));
+    }
+    for (int context : layout.q_mod_ids) {
+        bindings.load(0, limb_id(tensor, 1, context));
+        bindings.load(
+            1, workspace_mod_id(
+                hardware_prefix, "accumulator/c1", context));
+        bindings.store(2, limb_id(step.output, 1, context));
+    }
+
+    for (std::size_t component = 0; component < 2; ++component) {
+        for (int context : layout.q_mod_ids) {
+            bind_transform_limb(
+                bindings, limb_id(step.output, component, context),
+                context, degree, false);
+        }
     }
     bindings.finish();
 }
@@ -358,15 +623,20 @@ CkksRelocationSchedule build_ckks_relocation_schedule(
                 bindings, step, level_chain.require(step.inputs[0].metadata.parms_id));
             break;
         }
-        case CkksOperationKind::relinearize:
-            result.unresolved_operations.push_back(CkksUnresolvedRelocation{
-                operation_index,
-                step.id,
-                step.kind,
-                first_program_dma_index,
-                instructions.size(),
-                "requires expanded BConv constants and Q|P workspace allocations"});
+        case CkksOperationKind::relinearize: {
+            if (step.inputs.empty()) {
+                throw std::invalid_argument(
+                    "Relinearize relocation manifest has no tensor input");
+            }
+            OperationBindingBuilder bindings(
+                result, image, operation, operation_index,
+                first_program_dma_index, degree, instructions);
+            bind_relinearize(
+                bindings, step,
+                level_chain.require(step.inputs[0].metadata.parms_id),
+                degree);
             break;
+        }
         case CkksOperationKind::rescale:
             result.unresolved_operations.push_back(CkksUnresolvedRelocation{
                 operation_index,

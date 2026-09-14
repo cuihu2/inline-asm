@@ -46,6 +46,11 @@ std::string stage_id(const std::string& prefix, std::size_t stage)
     return prefix + "/stage" + std::to_string(stage);
 }
 
+std::string mod_id(const std::string& prefix, int modulus_id)
+{
+    return prefix + "/mod" + std::to_string(modulus_id);
+}
+
 } // namespace
 
 CkksApplicationImageBuilder::CkksApplicationImageBuilder(
@@ -291,8 +296,156 @@ PreparedKeySwitchConstants CkksApplicationImageBuilder::add_keyswitch_constants(
     result.data_parms_id = authoritative.parms_id;
     result.chain_index = authoritative.chain_index;
     result.values = image_.add(
-        std::move(id), words,
+        id, words,
         hpu::runtime::AllocationKind::constant, true).span;
+
+    const auto key_data = context_.key_context_data();
+    if (!key_data) {
+        throw std::logic_error(
+            "SEALContext lost its key context while preparing KeySwitch resources");
+    }
+    const std::size_t degree = key_data->parms().poly_modulus_degree();
+    const auto& key_moduli = key_data->parms().coeff_modulus();
+    const auto modulus = [&](int modulus_id) {
+        if (modulus_id < 0
+            || static_cast<std::size_t>(modulus_id) >= key_moduli.size()) {
+            throw std::logic_error(
+                "KeySwitch layout references an absent application modulus");
+        }
+        return narrow(
+            key_moduli[static_cast<std::size_t>(modulus_id)].value(),
+            "SEAL modulus exceeds the HPU uint32 ABI");
+    };
+    const auto add_constant_polynomial = [&](
+        const std::string& allocation_id,
+        std::uint32_t value) {
+        image_.add(
+            allocation_id, std::vector<std::uint32_t>(degree, value),
+            hpu::runtime::AllocationKind::constant, true);
+        ++result.hardware_constant_polynomial_count;
+    };
+    const auto reserve_workspace = [&](const std::string& allocation_id) {
+        image_.reserve(
+            allocation_id, degree, hpu::runtime::AllocationKind::workspace);
+        ++result.hardware_workspace_polynomial_count;
+    };
+
+    result.hardware_prefix = id + "/hardware";
+    std::vector<int> full_contexts = authoritative.rns_layout.q_mod_ids;
+    full_contexts.insert(
+        full_contexts.end(), authoritative.rns_layout.p_mod_ids.begin(),
+        authoritative.rns_layout.p_mod_ids.end());
+
+    // Generic BConv consumes polynomial-sized scalar objects. Keep these
+    // separate from the compact KSW1 record used by the software executor.
+    for (std::size_t digit = 0;
+         digit < authoritative.rns_layout.key_digits.size(); ++digit) {
+        const auto& sources = authoritative.rns_layout.key_digits[digit];
+        const std::string digit_prefix = result.hardware_prefix
+            + "/modup/d" + std::to_string(digit);
+        for (int source : sources) {
+            std::uint32_t source_hat = 1;
+            for (int other : sources) {
+                if (other != source) {
+                    source_hat = multiply_mod(
+                        source_hat, modulus(other) % modulus(source),
+                        modulus(source));
+                }
+            }
+            add_constant_polynomial(
+                mod_id(digit_prefix + "/qhat_inv", source),
+                hpu::model::inverse_mod_prime(
+                    source_hat, modulus(source)));
+        }
+        for (int target : full_contexts) {
+            if (std::find(sources.begin(), sources.end(), target)
+                != sources.end()) {
+                continue;
+            }
+            for (int source : sources) {
+                std::uint32_t source_hat = 1;
+                for (int other : sources) {
+                    if (other != source) {
+                        source_hat = multiply_mod(
+                            source_hat, modulus(other) % modulus(target),
+                            modulus(target));
+                    }
+                }
+                add_constant_polynomial(
+                    digit_prefix + "/qhat_mod_target/target"
+                        + std::to_string(target) + "/source"
+                        + std::to_string(source),
+                    source_hat);
+            }
+        }
+    }
+
+    const auto& p_contexts = authoritative.rns_layout.p_mod_ids;
+    const std::string moddown_prefix = result.hardware_prefix + "/moddown";
+    for (int source : p_contexts) {
+        std::uint32_t source_hat = 1;
+        for (int other : p_contexts) {
+            if (other != source) {
+                source_hat = multiply_mod(
+                    source_hat, modulus(other) % modulus(source),
+                    modulus(source));
+            }
+        }
+        add_constant_polynomial(
+            mod_id(moddown_prefix + "/qhat_inv", source),
+            hpu::model::inverse_mod_prime(source_hat, modulus(source)));
+    }
+    for (int target : authoritative.rns_layout.q_mod_ids) {
+        std::uint32_t p_product = 1;
+        for (int source : p_contexts) {
+            std::uint32_t source_hat = 1;
+            for (int other : p_contexts) {
+                if (other != source) {
+                    source_hat = multiply_mod(
+                        source_hat, modulus(other) % modulus(target),
+                        modulus(target));
+                }
+            }
+            add_constant_polynomial(
+                moddown_prefix + "/qhat_mod_target/target"
+                    + std::to_string(target) + "/source"
+                    + std::to_string(source),
+                source_hat);
+            p_product = multiply_mod(
+                p_product, modulus(source) % modulus(target),
+                modulus(target));
+        }
+        add_constant_polynomial(
+            mod_id(moddown_prefix + "/p_inverse", target),
+            hpu::model::inverse_mod_prime(p_product, modulus(target)));
+    }
+
+    const std::string workspace_prefix = result.hardware_prefix + "/workspace";
+    for (int context : full_contexts) {
+        reserve_workspace(mod_id(workspace_prefix + "/modup", context));
+    }
+    for (int component = 0; component < 2; ++component) {
+        for (int context : full_contexts) {
+            reserve_workspace(
+                mod_id(
+                    workspace_prefix + "/accumulator/c"
+                        + std::to_string(component),
+                    context));
+        }
+    }
+    std::size_t normalized_count = p_contexts.size();
+    for (const auto& digit : authoritative.rns_layout.key_digits) {
+        normalized_count = std::max(normalized_count, digit.size());
+    }
+    for (std::size_t source = 0; source < normalized_count; ++source) {
+        reserve_workspace(
+            workspace_prefix + "/bconv/normalized"
+                + std::to_string(source));
+    }
+    for (int context : authoritative.rns_layout.q_mod_ids) {
+        reserve_workspace(
+            mod_id(workspace_prefix + "/moddown/correction", context));
+    }
     return result;
 }
 
