@@ -63,6 +63,10 @@ struct PreparedRescaleConstants {
     std::size_t source_chain_index = 0;
     std::size_t destination_chain_index = 0;
     hpu::runtime::HpuMemSpan values;
+    std::string hardware_prefix;
+    std::size_t hardware_component_capacity = 0;
+    std::size_t hardware_constant_polynomial_count = 0;
+    std::size_t hardware_workspace_polynomial_count = 0;
 };
 
 struct PreparedCanonicalTwiddles {

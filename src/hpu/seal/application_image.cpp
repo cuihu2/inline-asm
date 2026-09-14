@@ -492,8 +492,77 @@ PreparedRescaleConstants CkksApplicationImageBuilder::add_rescale_constants(
     result.source_chain_index = source.chain_index;
     result.destination_chain_index = destination.chain_index;
     result.values = image_.add(
-        std::move(id), words,
+        id, words,
         hpu::runtime::AllocationKind::constant, true).span;
+
+    const auto source_data = context_.get_context_data(source.parms_id);
+    if (!source_data) {
+        throw std::logic_error(
+            "SEALContext lost the Rescale source context");
+    }
+    const std::size_t degree = source_data->parms().poly_modulus_degree();
+    const auto add_constant_polynomial = [&](
+        const std::string& allocation_id,
+        std::uint32_t value) {
+        image_.add(
+            allocation_id, std::vector<std::uint32_t>(degree, value),
+            hpu::runtime::AllocationKind::constant, true);
+        ++result.hardware_constant_polynomial_count;
+    };
+    const auto reserve_workspace = [&](const std::string& allocation_id) {
+        image_.reserve(
+            allocation_id, degree, hpu::runtime::AllocationKind::workspace);
+        ++result.hardware_workspace_polynomial_count;
+    };
+
+    result.hardware_prefix = id + "/hardware";
+    result.hardware_component_capacity = 2;
+    const int dropped_id = source.rns_layout.q_mod_ids.back();
+    for (std::size_t basis = 0; basis < source.q_moduli.size(); ++basis) {
+        add_constant_polynomial(
+            mod_id(
+                result.hardware_prefix + "/half",
+                source.rns_layout.q_mod_ids[basis]),
+            (q_last >> 1U) % source.q_moduli[basis]);
+    }
+    add_constant_polynomial(
+        mod_id(result.hardware_prefix + "/moddown/qhat_inv", dropped_id),
+        1);
+    for (std::size_t basis = 0;
+         basis < destination.q_moduli.size(); ++basis) {
+        const int target_id = destination.rns_layout.q_mod_ids[basis];
+        add_constant_polynomial(
+            result.hardware_prefix + "/moddown/qhat_mod_target/target"
+                + std::to_string(target_id) + "/source"
+                + std::to_string(dropped_id),
+            1);
+        add_constant_polynomial(
+            mod_id(
+                result.hardware_prefix + "/moddown/q_last_inverse",
+                target_id),
+            hpu::model::inverse_mod_prime(
+                q_last % destination.q_moduli[basis],
+                destination.q_moduli[basis]));
+    }
+
+    for (std::size_t component = 0;
+         component < result.hardware_component_capacity; ++component) {
+        for (int context : source.rns_layout.q_mod_ids) {
+            reserve_workspace(
+                mod_id(
+                    result.hardware_prefix + "/workspace/rounded/c"
+                        + std::to_string(component),
+                    context));
+        }
+    }
+    reserve_workspace(
+        result.hardware_prefix + "/workspace/bconv/normalized0");
+    for (int context : destination.rns_layout.q_mod_ids) {
+        reserve_workspace(
+            mod_id(
+                result.hardware_prefix + "/workspace/moddown/correction",
+                context));
+    }
     return result;
 }
 

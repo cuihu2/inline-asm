@@ -198,14 +198,11 @@ int main(int argc, char** argv)
                 hpu::DloadFlag::small_bank)) != 1) {
             throw std::logic_error("polynomial program lifecycle is not application-scoped");
         }
-        if (relocation.unresolved_operations.size() != 1
-            || relocation.unresolved_operations[0].kind
-                != hpu::seal_adapter::CkksOperationKind::rescale
-            || relocation.bindings.size()
-                + relocation.unresolved_operations[0].dma_count
-                != relocation.expected_dma_count) {
+        if (!relocation.complete()
+            || !relocation.unresolved_operations.empty()
+            || relocation.bindings.size() != relocation.expected_dma_count) {
             throw std::logic_error(
-                "polynomial program relocation has an unexpected unresolved range");
+                "polynomial program relocation schedule is incomplete");
         }
 
         const double predicted_scale = rescaled.scale;
@@ -226,7 +223,7 @@ int main(int argc, char** argv)
                   << "Generated HPU body bytes: " << hpu_program.size() << '\n'
                   << "DMA relocation: " << relocation.bindings.size()
                   << " / " << relocation.expected_dma_count
-                  << " bound; unresolved=rescale\n";
+                  << " bound; complete=yes\n";
         if (print_asm) {
             std::cout << "\n--- generated HPU inline-assembly body ---\n"
                       << hpu_program;

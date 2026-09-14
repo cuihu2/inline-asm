@@ -59,9 +59,9 @@ struct CkksRelocationSchedule {
     }
 };
 
-// Resolves Square, Relinearize, and AddPlain and validates their binding order
-// against the actual generated assembly. Rescale remains unresolved until the
-// application image owns its expanded constants and intermediate workspace.
+// Resolves every currently supported plan operation and validates its binding
+// order against the actual generated assembly. A schedule built from the
+// official application image is therefore complete and directly consumable.
 CkksRelocationSchedule build_ckks_relocation_schedule(
     const CkksLoweredProgram& program,
     const hpu::runtime::HpuMemImage& image,

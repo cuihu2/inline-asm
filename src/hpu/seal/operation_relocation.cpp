@@ -514,6 +514,99 @@ void bind_relinearize(
     bindings.finish();
 }
 
+void bind_rescale(
+    OperationBindingBuilder& bindings,
+    const CkksOperationStep& step,
+    const CkksLevelDescriptor& source_level,
+    const CkksLevelDescriptor& destination_level,
+    std::size_t degree)
+{
+    if (step.inputs.size() != 1 || step.inputs[0].component_count != 2
+        || step.output.component_count != 2
+        || step.resources.constant_ids.size() != 1
+        || !step.resources.evaluation_key_ids.empty()
+        || !step.resources.requires_canonical_twiddles
+        || source_level.rns_layout.q_mod_ids.size() < 2
+        || destination_level.rns_layout.q_mod_ids.size() + 1
+            != source_level.rns_layout.q_mod_ids.size()
+        || !std::equal(
+            destination_level.rns_layout.q_mod_ids.begin(),
+            destination_level.rns_layout.q_mod_ids.end(),
+            source_level.rns_layout.q_mod_ids.begin())) {
+        throw std::invalid_argument("invalid Rescale relocation manifest");
+    }
+    const auto& input = step.inputs[0];
+    const auto& source_contexts = source_level.rns_layout.q_mod_ids;
+    const auto& destination_contexts =
+        destination_level.rns_layout.q_mod_ids;
+    const int dropped_context = source_contexts.back();
+    const std::string hardware_prefix =
+        step.resources.constant_ids[0] + "/hardware";
+
+    for (std::size_t component = 0; component < 2; ++component) {
+        for (int context : source_contexts) {
+            bind_transform_limb(
+                bindings, limb_id(input, component, context),
+                context, degree, true);
+        }
+    }
+
+    for (std::size_t component = 0; component < 2; ++component) {
+        const std::string rounded_role =
+            "rounded/c" + std::to_string(component);
+        for (int context : source_contexts) {
+            bindings.load(0, limb_id(input, component, context));
+            bindings.load(
+                1, hardware_prefix + "/half/mod"
+                    + std::to_string(context));
+            bindings.store(
+                0, workspace_mod_id(
+                    hardware_prefix, rounded_role, context));
+        }
+
+        bindings.load(
+            0, workspace_mod_id(
+                hardware_prefix, rounded_role, dropped_context));
+        bindings.load(
+            1, hardware_prefix + "/moddown/qhat_inv/mod"
+                + std::to_string(dropped_context));
+        bindings.store(
+            0, hardware_prefix + "/workspace/bconv/normalized0");
+        for (int target : destination_contexts) {
+            bindings.load(
+                0, hardware_prefix + "/workspace/bconv/normalized0");
+            bindings.load(
+                1, hardware_prefix + "/moddown/qhat_mod_target/target"
+                    + std::to_string(target) + "/source"
+                    + std::to_string(dropped_context));
+            bindings.store(
+                2, workspace_mod_id(
+                    hardware_prefix, "moddown/correction", target));
+        }
+        for (int context : destination_contexts) {
+            bindings.load(
+                0, workspace_mod_id(
+                    hardware_prefix, rounded_role, context));
+            bindings.load(
+                1, workspace_mod_id(
+                    hardware_prefix, "moddown/correction", context));
+            bindings.load(
+                2, hardware_prefix + "/moddown/q_last_inverse/mod"
+                    + std::to_string(context));
+            bindings.store(0, limb_id(step.output, component, context));
+        }
+    }
+
+    for (std::size_t component = 0; component < 2; ++component) {
+        for (int context : destination_contexts) {
+            bind_transform_limb(
+                bindings, limb_id(step.output, component, context),
+                context, degree, false);
+        }
+    }
+    bindings.finish();
+}
+
 } // namespace
 
 CkksRelocationSchedule build_ckks_relocation_schedule(
@@ -637,15 +730,21 @@ CkksRelocationSchedule build_ckks_relocation_schedule(
                 degree);
             break;
         }
-        case CkksOperationKind::rescale:
-            result.unresolved_operations.push_back(CkksUnresolvedRelocation{
-                operation_index,
-                step.id,
-                step.kind,
-                first_program_dma_index,
-                instructions.size(),
-                "requires expanded q_last constants and rounded/BConv workspace allocations"});
+        case CkksOperationKind::rescale: {
+            if (step.inputs.empty()) {
+                throw std::invalid_argument(
+                    "Rescale relocation manifest has no ciphertext input");
+            }
+            const auto& source_level =
+                level_chain.require(step.inputs[0].metadata.parms_id);
+            OperationBindingBuilder bindings(
+                result, image, operation, operation_index,
+                first_program_dma_index, degree, instructions);
+            bind_rescale(
+                bindings, step, source_level,
+                level_chain.next(source_level.parms_id), degree);
             break;
+        }
         }
         first_program_dma_index += instructions.size();
     }

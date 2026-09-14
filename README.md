@@ -173,8 +173,9 @@ Relinearize/Rescale 和 AddPlain body，保留 relocation manifest，并在整�
 只管理一次模表与 `psync`。`build_ckks_relocation_schedule` 进一步逐条校验生成的
 DMA ABI，并已把模表、Square、Relinearize 与 AddPlain 精确绑定到 image span。
 KeySwitch 的 ModUp/ModDown 多项式级常量和复用 workspace 由 image builder 在应用
-初始化阶段准备；Rescale 暂时仍作为带 DMA 区间的 unresolved 项返回，不会生成
-猜测绑定。跨 step 的变换和 DDR 融合留作后续优化。
+初始化阶段准备；Rescale 的 half、单源 BConv、`q_last^-1` 和 rounded/correction
+workspace 也已展开。当前 `x^2+1` 全计划的每条 DMA 都有精确 span，schedule 为
+complete。跨 step 的变换和 DDR 融合留作后续优化。
 `x^2+1` 示例的 Square→Relinearize→Rescale→AddPlain 已由该执行器
 真正执行，SEAL Evaluator 只提供独立逐字 oracle。
 

@@ -105,7 +105,15 @@ int main()
                     == "constants/rescale/q2_to_q1"
                     && prepared_rescale_constants.source_parms_id
                         == level.parms_id
-                    && prepared_rescale_constants.values.line_count == 1,
+                    && prepared_rescale_constants.values.line_count == 1
+                    && prepared_rescale_constants.hardware_prefix
+                        == "constants/rescale/q2_to_q1/hardware"
+                    && prepared_rescale_constants.hardware_component_capacity
+                        == 2
+                    && prepared_rescale_constants
+                        .hardware_constant_polynomial_count == 5
+                    && prepared_rescale_constants
+                        .hardware_workspace_polynomial_count == 6,
                 "level-specific Rescale constant record is incorrect");
         require(fused.size() == level.q_moduli.size()
                     && fused.front().inverse_stages.size() == 7
@@ -159,6 +167,32 @@ int main()
                     && rescale_allocation.read_only
                     && image.words()[rescale_word_offset] == 0x52534331U,
                 "Rescale constants were not serialized as immutable HPU_MEM data");
+        const auto& expanded_half = image.allocation(
+            "constants/rescale/q2_to_q1/hardware/half/mod0");
+        const auto& expanded_q_last_inverse = image.allocation(
+            "constants/rescale/q2_to_q1/hardware/moddown/q_last_inverse/mod0");
+        const auto& rescale_workspace = image.allocation(
+            "constants/rescale/q2_to_q1/hardware/workspace/rounded/c1/mod1");
+        const std::size_t expanded_half_word = static_cast<std::size_t>(
+            expanded_half.span.line_offset) * hpu::runtime::kHpuMemLineWords;
+        const std::size_t expanded_q_last_inverse_word =
+            static_cast<std::size_t>(expanded_q_last_inverse.span.line_offset)
+            * hpu::runtime::kHpuMemLineWords;
+        require(
+            expanded_half.word_count == spec.poly_modulus_degree
+                && expanded_half.kind
+                    == hpu::runtime::AllocationKind::constant
+                && expanded_half.read_only
+                && image.words()[expanded_half_word]
+                    == image.words()[rescale_word_offset + 3]
+                        % level.q_moduli[0]
+                && image.words()[expanded_q_last_inverse_word]
+                    == image.words()[rescale_word_offset + 6]
+                && rescale_workspace.word_count == spec.poly_modulus_degree
+                && rescale_workspace.kind
+                    == hpu::runtime::AllocationKind::workspace
+                && !rescale_workspace.read_only,
+            "hardware-expanded Rescale resources are incomplete or inconsistent");
         require(image.used_lines() <= image.capacity_lines()
                     && image.words().size()
                         == image.used_lines() * hpu::runtime::kHpuMemLineWords,

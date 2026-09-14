@@ -237,6 +237,13 @@ PreparedRnsObject CkksOperationPlan::append_rescale(
     validate_constant_resource(
         image_builder_.image(), constants.id, constants.values,
         "CKKS Rescale constants");
+    if (constants.hardware_prefix != constants.id + "/hardware"
+        || constants.hardware_component_capacity < input.components.size()
+        || constants.hardware_constant_polynomial_count == 0
+        || constants.hardware_workspace_polynomial_count == 0) {
+        throw std::invalid_argument(
+            "CKKS Rescale constants lack hardware-expanded resources");
+    }
     auto output = image_builder_.reserve_ciphertext(
         std::move(output_id), output_metadata, input.components.size());
 

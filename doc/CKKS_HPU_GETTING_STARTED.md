@@ -152,8 +152,9 @@ psync                                             # 整个应用仅一次
 Square 复用通用 CMULT body；当前 `build_ckks_relocation_schedule` 已依据 lowering
 manifest，把它的左右输入都绑定到同一个 `input/x` span，不需要维护另一份相同
 密文。该调度同时完成模表、Relinearize 与 AddPlain 的逐条 DMA 绑定；KeySwitch
-所需多项式级 BConv 常量和 Q|P workspace 由 image builder 预分配。Rescale 在其
-硬件展开资源接入前仍会明确报告为 unresolved。
+所需多项式级 BConv 常量和 Q|P workspace 由 image builder 预分配。Rescale 的
+half、单源 BConv、inverse 和 rounded/correction workspace 也由同一 image 准备，
+因此当前整条示例计划的 relocation schedule 为 complete。
 
 组合接口通过 `manage_modulus_table=false` 告诉嵌套 kernel：small-bank 表由外层应用
 管理，不要各自重复 dload/pfree；`append_psync=false` 则保证只有应用末尾发出 psync。
@@ -178,7 +179,7 @@ Rescale 也各自保持 canonical NTT 输入/输出。因此它比原专用复�
 - 预测 scale 和 SEAL scale；
 - 解码结果与最大误差；
 - 生成的 HPU 指令 body 大小；
-- 已绑定 DMA 数、总 DMA 数和剩余 unresolved 算子。
+- 已绑定 DMA 数、总 DMA 数和 schedule 完整状态。
 
 程序同时从同一 HPU_MEM image 执行
 `Square -> Relinearize -> Rescale -> AddPlain`，把结果转换为 SEAL NTT 后先做
@@ -194,7 +195,7 @@ Rescale 也各自保持 canonical NTT 输入/输出。因此它比原专用复�
 生成流里的 DMA 指令使用 ABI 规定的 `x10/x11` offset/count 寄存器。
 `build_ckks_relocation_schedule` 已根据 HPU_MEM allocation manifest 为模表、Square、
 Relinearize 和 AddPlain 的每条 DMA 绑定具体 span；后续 runtime backend 消费这份
-有序调度。Rescale 的区间在下一阶段补齐。
+有序调度。Rescale 的跨 level DMA 也已完整绑定。
 
 ## 7. 当前软件执行器边界
 
