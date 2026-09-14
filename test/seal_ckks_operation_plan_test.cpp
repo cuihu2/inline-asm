@@ -2,6 +2,7 @@
 #include "hpu/seal/operation_codegen.hpp"
 #include "hpu/seal/operation_plan.hpp"
 #include "hpu/seal/operation_relocation.hpp"
+#include "hpu/seal/operation_runtime.hpp"
 #include "hpu/seal/software_executor.hpp"
 #include "poly/cmult.hpp"
 #include "scheme/ckks/basic_arithmetic.hpp"
@@ -393,6 +394,80 @@ int main()
                 && nested_relocations.bindings.front().program_dma_index == 0
                 && nested_relocations.bindings.front().operation_index == 0,
             "nested CKKS program produced an incomplete relocation schedule");
+
+        const auto runtime_program =
+            hpu::seal_adapter::lower_ckks_runtime_program(
+                lowered, relocations);
+        const auto runtime_spans = runtime_program.spans();
+        require(
+            runtime_program.instructions.size() > runtime_program.dma.size()
+                && runtime_program.dma.size() == generated_dma_count
+                && runtime_spans.size() == generated_dma_count
+                && runtime_program.dma.front().instruction_index == 0
+                && runtime_program.dma.front().binding.allocation_id
+                    == "constants/modulus_table"
+                && runtime_spans.front().line_offset
+                    == relocations.bindings.front().span.line_offset
+                && runtime_spans.front().line_count
+                    == relocations.bindings.front().span.line_count
+                && runtime_program.dma.back().binding.allocation_id
+                    == "output/x2_plus_one/c1/mod1",
+            "runtime lowering lost encoded instructions or resolved spans");
+        const auto runtime_artifacts =
+            hpu::seal_adapter::render_ckks_runtime_artifacts(
+                "ckks_x2_plus_one", runtime_program,
+                image_builder.image().capacity_lines());
+        require(
+            runtime_artifacts.header.find(
+                "int hpu_run_ckks_x2_plus_one(void);")
+                    != std::string::npos
+                && runtime_artifacts.source.find(
+                    "static const hpu_dma_span_t hpu_program_ckks_x2_plus_one_resolved_spans[]")
+                    != std::string::npos
+                && runtime_artifacts.source.find(
+                    "{ UINT32_C(0), UINT32_C(1) }")
+                    != std::string::npos
+                && runtime_artifacts.source.find(
+                    "return hpu_program_ckks_x2_plus_one(")
+                    != std::string::npos
+                && runtime_artifacts.resolved_dma_manifest.find(
+                    "operation_dma_index,direction,object_slot")
+                    != std::string::npos
+                && runtime_artifacts.resolved_dma_manifest.find(
+                    "\"constants/modulus_table\",0,1")
+                    != std::string::npos
+                && runtime_artifacts.resolved_dma_manifest.find(
+                    "\"output/x2_plus_one/c1/mod1\"")
+                    != std::string::npos
+                && count_token(
+                    runtime_artifacts.resolved_dma_manifest, "\n")
+                    == generated_dma_count + 1,
+            "runtime artifacts omitted executable or relocation provenance");
+        auto incomplete_relocations = relocations;
+        incomplete_relocations.bindings.pop_back();
+        require_invalid_argument(
+            [&] {
+                (void)hpu::seal_adapter::lower_ckks_runtime_program(
+                    lowered, incomplete_relocations);
+            },
+            "runtime lowering accepted an incomplete relocation schedule");
+        auto mismatched_relocations = relocations;
+        mismatched_relocations.bindings.front().object_slot = 0;
+        require_invalid_argument(
+            [&] {
+                (void)hpu::seal_adapter::lower_ckks_runtime_program(
+                    lowered, mismatched_relocations);
+            },
+            "runtime lowering accepted a schedule that differs from encoded DMA");
+        auto mismatched_runtime_program = runtime_program;
+        ++mismatched_runtime_program.dma.front().instruction_index;
+        require_invalid_argument(
+            [&] {
+                (void)hpu::seal_adapter::render_ckks_runtime_artifacts(
+                    "invalid_runtime", mismatched_runtime_program,
+                    image_builder.image().capacity_lines());
+            },
+            "runtime renderer accepted reordered encoded DMA metadata");
 
         hpu::seal_adapter::CkksSoftwareExecutor executor(
             *bundle.context, image_builder.image());

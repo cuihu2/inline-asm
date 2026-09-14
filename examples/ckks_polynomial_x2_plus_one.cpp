@@ -3,6 +3,7 @@
 #include "hpu/seal/operation_codegen.hpp"
 #include "hpu/seal/operation_plan.hpp"
 #include "hpu/seal/operation_relocation.hpp"
+#include "hpu/seal/operation_runtime.hpp"
 #include "hpu/seal/software_executor.hpp"
 #include "util/hpu_asm.hpp"
 
@@ -204,6 +205,9 @@ int main(int argc, char** argv)
             throw std::logic_error(
                 "polynomial program relocation schedule is incomplete");
         }
+        const auto runtime_program =
+            hpu::seal_adapter::lower_ckks_runtime_program(
+                lowered, relocation);
 
         const double predicted_scale = rescaled.scale;
         std::cout << std::setprecision(8)
@@ -223,7 +227,9 @@ int main(int argc, char** argv)
                   << "Generated HPU body bytes: " << hpu_program.size() << '\n'
                   << "DMA relocation: " << relocation.bindings.size()
                   << " / " << relocation.expected_dma_count
-                  << " bound; complete=yes\n";
+                  << " bound; complete=yes\n"
+                  << "Encoded HPU instructions: "
+                  << runtime_program.instructions.size() << '\n';
         if (print_asm) {
             std::cout << "\n--- generated HPU inline-assembly body ---\n"
                       << hpu_program;

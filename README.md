@@ -175,7 +175,9 @@ DMA ABI，并已把模表、Square、Relinearize 与 AddPlain 精确绑定到 im
 KeySwitch 的 ModUp/ModDown 多项式级常量和复用 workspace 由 image builder 在应用
 初始化阶段准备；Rescale 的 half、单源 BConv、`q_last^-1` 和 rounded/correction
 workspace 也已展开。当前 `x^2+1` 全计划的每条 DMA 都有精确 span，schedule 为
-complete。跨 step 的变换和 DDR 融合留作后续优化。
+complete。`lower_ckks_runtime_program` 再把 body 编码为固定 instruction words，
+逐条核对 custom1 与 schedule，并可生成带固定 span 表的 `hpu_run_*` 入口和 resolved
+CSV manifest。跨 step 的变换和 DDR 融合留作后续优化。
 `x^2+1` 示例的 Square→Relinearize→Rescale→AddPlain 已由该执行器
 真正执行，SEAL Evaluator 只提供独立逐字 oracle。
 

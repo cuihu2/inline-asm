@@ -293,6 +293,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
     add_library(hpu_seal_ckks_codegen STATIC
             src/hpu/seal/operation_codegen.cpp
             src/hpu/seal/operation_relocation.cpp
+            src/hpu/seal/operation_runtime.cpp
     )
     target_include_directories(hpu_seal_ckks_codegen
             PUBLIC
@@ -301,6 +302,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
     target_link_libraries(hpu_seal_ckks_codegen
             PUBLIC
             hpu_seal_ckks
+            hpu_encode
             hpu_fhe_codegen
     )
 

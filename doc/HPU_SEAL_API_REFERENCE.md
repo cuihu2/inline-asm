@@ -331,6 +331,24 @@ CkksRelocationSchedule schedule = build_ckks_relocation_schedule(
 - 只有 `unresolved_operations` 为空且绑定数等于 `expected_dma_count` 时，
   `schedule.complete()` 才返回 true。
 
+`include/hpu/seal/operation_runtime.hpp`
+
+```cpp
+CkksRuntimeProgram runtime = lower_ckks_runtime_program(lowered, schedule);
+CkksRuntimeArtifacts artifacts = render_ckks_runtime_artifacts(
+    "ckks_x2_plus_one", runtime, image_builder.image().capacity_lines());
+```
+
+- runtime lowering 通过公共 assembler 生成 `EncodedInstruction`，执行 object lifetime
+  校验，再把 encoder 识别出的每条 custom1 与 schedule 的方向、p 槽、type/release、
+  flag 和 DMA 序号逐项比较。
+- `runtime.spans()` 按 custom1 消费顺序返回 `{line_offset,line_count}`；两者分别在
+  指令前绑定到 `x10/x11`。
+- artifacts 包含声明 `hpu_run_<stem>()` 的 header、固定 instruction word 加 resolved
+  span 数组的 source，以及同时记录 operation/allocation provenance 和编码信息的 CSV。
+- renderer 要求每个 span 非零、落在给定 HPU_MEM 容量内，并符合当前
+  `hpu_dma_span_t` 的 uint32 地址 ABI。
+
 ### 2.7 软件执行器：仿 `seal::Evaluator`
 
 `include/hpu/seal/software_executor.hpp`，实现 `src/hpu/seal/software_executor.cpp`。

@@ -194,8 +194,10 @@ Rescale 也各自保持 canonical NTT 输入/输出。因此它比原专用复�
 
 生成流里的 DMA 指令使用 ABI 规定的 `x10/x11` offset/count 寄存器。
 `build_ckks_relocation_schedule` 已根据 HPU_MEM allocation manifest 为模表、Square、
-Relinearize 和 AddPlain 的每条 DMA 绑定具体 span；后续 runtime backend 消费这份
-有序调度。Rescale 的跨 level DMA 也已完整绑定。
+Relinearize、Rescale 和 AddPlain 的每条 DMA 绑定具体 span。
+`lower_ckks_runtime_program` 把 inline body 编成固定指令字，并将 encoder 识别出的
+custom1 与该调度逐条复核；artifact renderer 可输出 fixed-span `hpu_run_*` 包装和
+resolved CSV。Linux 驱动接入仍属于下一阶段。
 
 ## 7. 当前软件执行器边界
 
@@ -271,6 +273,6 @@ host/lowering 当作 no-op，不生成 KeySwitch。Negate 则始终停留在 can
 
 当前冻结的 SEAL 4.4.4 只产生单 special-prime KeySwitch，因此多 P 已移出近期主线，
 保留为未来脱离当前 SEAL 兼容范围后的独立扩展。多层软件执行验证已经覆盖
-Q4→Q3→Q2，slot-step Rotate/Conjugate/Negate 也已接入；近期顺序是：ModSwitch
-与自动 level/scale 管理，随后接入
-application lowering、DMA relocation 和 Linux runtime backend。
+Q4→Q3→Q2，slot-step Rotate/Conjugate/Negate 也已接入；显式 application lowering、
+完整 DMA relocation 和 fixed-span runtime artifact 已形成闭环。下一步是落盘交付
+artifact，并接入 Linux runtime/驱动完成真实 RISC-V/RTL 执行验证。
