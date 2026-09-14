@@ -167,7 +167,10 @@ scale，Multiply 计算 scale 乘积，Rescale 只走 `CkksLevelChain::next` 并
 `q_last`。image builder 与软件执行器消费同一套规则，但不会自动插入 Rescale。
 `CkksOperationPlan` 在同一个 application image 上显式串联 Square、Relinearize、
 Rescale 和 AddPlain，校验对象归属及 level 专属 key/constant，并记录后续
-codegen/runtime lowering 所需的有序 metadata 与资源清单。
+codegen/runtime lowering 所需的有序 metadata 与资源清单。当前
+`lower_ckks_operation_plan` 已能按每步 level 选择 CMULT、standalone
+Relinearize/Rescale 和 AddPlain body，保留 relocation manifest，并在整条程序外层
+只管理一次模表与 `psync`；跨 step 的变换和 DDR 融合留作后续优化。
 `x^2+1` 示例的 Square→Relinearize→Rescale→AddPlain 已由该执行器
 真正执行，SEAL Evaluator 只提供独立逐字 oracle。
 

@@ -1,6 +1,12 @@
 #include "hpu/seal/ckks_context.hpp"
+#include "hpu/seal/operation_codegen.hpp"
 #include "hpu/seal/operation_plan.hpp"
 #include "hpu/seal/software_executor.hpp"
+#include "poly/cmult.hpp"
+#include "scheme/ckks/basic_arithmetic.hpp"
+#include "scheme/ckks/relinearize.hpp"
+#include "scheme/ckks/rescale.hpp"
+#include "util/hpu_asm.hpp"
 
 #include <seal/seal.h>
 
@@ -18,6 +24,17 @@ void require(bool condition, const char* message)
     if (!condition) {
         throw std::runtime_error(message);
     }
+}
+
+std::size_t count_token(const std::string& text, const std::string& token)
+{
+    std::size_t result = 0;
+    std::size_t position = 0;
+    while ((position = text.find(token, position)) != std::string::npos) {
+        ++result;
+        position += token.size();
+    }
+    return result;
 }
 
 template <typename Function>
@@ -107,6 +124,13 @@ int main()
         const auto prepared_one = image_builder.add_plaintext(
             "constant/one/next", encoded_one);
 
+        hpu::seal_adapter::CkksOperationPlan empty_plan(image_builder);
+        require_invalid_argument(
+            [&] {
+                (void)hpu::seal_adapter::lower_ckks_operation_plan(
+                    empty_plan, *bundle.context);
+            },
+            "operation lowering accepted an empty plan");
         hpu::seal_adapter::CkksOperationPlan plan(image_builder);
         hpu::seal_adapter::CkksApplicationImageBuilder foreign_builder(
             *bundle.context, 64);
@@ -196,6 +220,61 @@ int main()
                 && steps[3].output.metadata.parms_id
                     == steps[2].output.metadata.parms_id,
             "operation plan recorded incorrect output metadata");
+
+        const auto lowered = hpu::seal_adapter::lower_ckks_operation_plan(
+            plan, *bundle.context);
+        const auto& next_level = level_chain.next(top.parms_id);
+        require(
+            lowered.operations.size() == steps.size()
+                && lowered.operations[0].operation.output.id
+                    == "intermediate/tensor"
+                && lowered.operations[3].operation.inputs[1].id
+                    == "constant/one/next",
+            "lowering lost the operation relocation manifest");
+        require(
+            lowered.operations[0].body_asm
+                == ::generate_hpu_cmult_body_asm(
+                    static_cast<int>(top.q_moduli.size()), false, false)
+                && lowered.operations[1].body_asm
+                    == hpu::scheme::ckks::generate_relinearize_ntt_body_asm(
+                        static_cast<int>(spec.poly_modulus_degree),
+                        top.rns_layout, false, false)
+                && lowered.operations[2].body_asm
+                    == hpu::scheme::ckks::generate_rescale_ntt_body_asm(
+                        static_cast<int>(spec.poly_modulus_degree),
+                        static_cast<int>(top.q_moduli.size()), false, false)
+                && lowered.operations[3].body_asm
+                    == hpu::scheme::ckks::generate_add_plain_body_asm(
+                        static_cast<int>(next_level.q_moduli.size()),
+                        false, false),
+            "operation lowering selected the wrong level-specific kernel");
+        require(
+            count_token(lowered.body_asm, hpu::dload(
+                4, hpu::DataType::mod_ctx,
+                hpu::DloadFlag::small_bank)) == 1
+                && count_token(lowered.body_asm, hpu::pfree(4)) == 1
+                && count_token(lowered.body_asm, hpu::psync()) == 1
+                && lowered.body_asm.rfind(hpu::psync())
+                    + hpu::psync().size() == lowered.body_asm.size(),
+            "operation lowering duplicated application lifecycle state");
+        for (const auto& operation : lowered.operations) {
+            require(
+                count_token(operation.body_asm, hpu::dload(
+                    4, hpu::DataType::mod_ctx,
+                    hpu::DloadFlag::small_bank)) == 0
+                    && count_token(operation.body_asm, hpu::pfree(4)) == 0
+                    && count_token(operation.body_asm, hpu::psync()) == 0,
+                "nested planned kernel owns application lifecycle state");
+        }
+        const auto nested = hpu::seal_adapter::lower_ckks_operation_plan(
+            plan, *bundle.context, false, false);
+        require(
+            count_token(nested.body_asm, hpu::dload(
+                4, hpu::DataType::mod_ctx,
+                hpu::DloadFlag::small_bank)) == 0
+                && count_token(nested.body_asm, hpu::pfree(4)) == 0
+                && count_token(nested.body_asm, hpu::psync()) == 0,
+            "nested operation plan emitted application lifecycle state");
 
         hpu::seal_adapter::CkksSoftwareExecutor executor(
             *bundle.context, image_builder.image());

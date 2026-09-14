@@ -48,7 +48,8 @@ bool valid_config(int N, int num_q, int num_p, int dnum)
 std::string generate_relinearize_ntt_body_asm(
     int N,
     const hpu::RnsDecompositionLayout& layout,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     std::ostringstream asm_code;
     if (!hpu::is_valid_rns_decomposition_layout(N, layout)) {
@@ -58,10 +59,12 @@ std::string generate_relinearize_ntt_body_asm(
 
     asm_code
         << "        /* CKKS RELINEARIZE NTT: tensor NTT/Q -> ciphertext NTT/Q */\n";
-    asm_code << hpu::dload(
-        kModulusTableObject,
-        hpu::DataType::mod_ctx,
-        hpu::DloadFlag::small_bank);
+    if (manage_modulus_table) {
+        asm_code << hpu::dload(
+            kModulusTableObject,
+            hpu::DataType::mod_ctx,
+            hpu::DloadFlag::small_bank);
+    }
     asm_code << transform(
         N, layout.q_mod_ids, 3, true,
         "Tensor t0/t1/t2: canonical HPU NTT -> coefficient domain");
@@ -70,7 +73,9 @@ std::string generate_relinearize_ntt_body_asm(
     asm_code << transform(
         N, layout.q_mod_ids, 2, false,
         "Relinearized c0/c1: coefficient domain -> canonical HPU NTT");
-    asm_code << hpu::pfree(kModulusTableObject);
+    if (manage_modulus_table) {
+        asm_code << hpu::pfree(kModulusTableObject);
+    }
     if (append_psync) {
         asm_code << hpu::psync();
     }
@@ -82,7 +87,8 @@ std::string generate_relinearize_ntt_body_asm(
     int num_q,
     int num_p,
     int dnum,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     if (!valid_config(N, num_q, num_p, dnum)) {
         return "        /* Invalid SEAL-facing CKKS Relinearize config */\n";
@@ -90,7 +96,7 @@ std::string generate_relinearize_ntt_body_asm(
     return generate_relinearize_ntt_body_asm(
         N,
         hpu::make_contiguous_rns_decomposition_layout(num_q, num_p, dnum),
-        append_psync);
+        append_psync, manage_modulus_table);
 }
 
 std::string generate_relinearize_ntt_asm(

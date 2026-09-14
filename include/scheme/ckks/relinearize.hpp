@@ -11,14 +11,16 @@ namespace hpu::scheme::ckks {
 std::string generate_relinearize_ntt_body_asm(
     int N,
     const hpu::RnsDecompositionLayout& layout,
-    bool append_psync = true);
+    bool append_psync = true,
+    bool manage_modulus_table = true);
 
 std::string generate_relinearize_ntt_body_asm(
     int N,
     int num_q,
     int num_p,
     int dnum,
-    bool append_psync = true);
+    bool append_psync = true,
+    bool manage_modulus_table = true);
 
 std::string generate_relinearize_ntt_asm(
     int N,

@@ -24,7 +24,8 @@ std::string generate_rescale_asm(
 std::string generate_rescale_ntt_body_asm(
     int N,
     int num_q,
-    bool append_psync = true);
+    bool append_psync = true,
+    bool manage_modulus_table = true);
 
 std::string generate_rescale_ntt_asm(
     int N,

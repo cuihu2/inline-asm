@@ -289,6 +289,23 @@ auto output = plan.append_add_plain(
   的 codegen/runtime lowering 使用。目前覆盖示例需要的 Square、Relinearize、
   Rescale、AddPlain。
 
+`include/hpu/seal/operation_codegen.hpp`
+
+```cpp
+CkksLoweredProgram lowered = lower_ckks_operation_plan(
+    plan, context, /* append_psync=*/true,
+    /* manage_modulus_table=*/true);
+```
+
+- lowering 按每个 step 的输入 level 选择已有 kernel：Square→CMULT、
+  Relinearize→standalone NTT Relinearize、Rescale→standalone NTT Rescale、
+  AddPlain→pointwise AddPlain。
+- `CkksLoweredProgram::operations` 保留 step 与各自 body 的一一映射，供后续 DMA
+  relocation backend 绑定对象和资源 ID；`body_asm` 是按原顺序拼接的完整程序。
+- 嵌套 kernel 不加载/释放模表也不发 `psync`，完整程序默认只在外层管理一次。
+- 当前不做跨 step 的 NTT/INTT 或 dstore/dload 融合，因此比专用复合 Multiply
+  kernel 更长；这是后续优化点，不影响显式计划和 CKKS 语义。
+
 ### 2.7 软件执行器：仿 `seal::Evaluator`
 
 `include/hpu/seal/software_executor.hpp`，实现 `src/hpu/seal/software_executor.cpp`。

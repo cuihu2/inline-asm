@@ -93,7 +93,8 @@ std::string generate_rescale_asm(
 std::string generate_rescale_ntt_body_asm(
     int N,
     int num_q,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     std::ostringstream asm_code;
     if (!valid_rescale_config(num_q, 2) || !hpu::is_valid_ntt_size(N)) {
@@ -104,10 +105,12 @@ std::string generate_rescale_ntt_body_asm(
     constexpr int modulus_table_object = 4;
     asm_code
         << "        /* CKKS RESCALE NTT: canonical input -> rounded drop-last -> canonical output */\n";
-    asm_code << hpu::dload(
-        modulus_table_object,
-        hpu::DataType::mod_ctx,
-        hpu::DloadFlag::small_bank);
+    if (manage_modulus_table) {
+        asm_code << hpu::dload(
+            modulus_table_object,
+            hpu::DataType::mod_ctx,
+            hpu::DloadFlag::small_bank);
+    }
     asm_code << transform_components(
         N, num_q, 2, true,
         "Input c0/c1: canonical HPU NTT -> coefficient domain");
@@ -115,7 +118,9 @@ std::string generate_rescale_ntt_body_asm(
     asm_code << transform_components(
         N, num_q - 1, 2, false,
         "Rescaled c0/c1: coefficient domain -> canonical HPU NTT");
-    asm_code << hpu::pfree(modulus_table_object);
+    if (manage_modulus_table) {
+        asm_code << hpu::pfree(modulus_table_object);
+    }
     if (append_psync) {
         asm_code << hpu::psync();
     }

@@ -1,10 +1,8 @@
 #include "hpu/seal/application_image.hpp"
 #include "hpu/seal/ckks_context.hpp"
+#include "hpu/seal/operation_codegen.hpp"
 #include "hpu/seal/operation_plan.hpp"
 #include "hpu/seal/software_executor.hpp"
-#include "scheme/ckks/basic_arithmetic.hpp"
-#include "scheme/ckks/ciphertext_multiply.hpp"
-#include "scheme/ckks/rescale.hpp"
 #include "util/hpu_asm.hpp"
 
 #include <seal/seal.h>
@@ -179,26 +177,17 @@ int main(int argc, char** argv)
             throw std::runtime_error("HPU software x^2+1 result exceeded tolerance");
         }
 
-        // Compose two kernel bodies under one application-owned modulus-table
-        // lifetime and one terminal psync. The generic multiply's left/right
-        // DMA operands both bind to input/x for Square. Intermediate
-        // dstore/dload remains in this first implementation; the future
-        // residency planner may elide it.
+        // Lower each explicit plan step through its existing kernel generator
+        // under one application-owned modulus-table lifetime and one terminal
+        // psync. Intermediate dstore/dload remains in this implementation; a
+        // future residency/fusion pass may elide it without changing the plan.
         constexpr int modulus_table_object = 4;
-        std::string hpu_program = hpu::dload(
-            modulus_table_object,
-            hpu::DataType::mod_ctx,
-            hpu::DloadFlag::small_bank);
-        hpu_program +=
-            hpu::scheme::ckks::generate_ciphertext_multiply_body_asm(
-                static_cast<int>(spec.poly_modulus_degree),
-                top.rns_layout, false, false);
-        hpu_program += hpu::scheme::ckks::generate_add_plain_body_asm(
-            static_cast<int>(after_rescale.q_moduli.size()), false, false);
-        hpu_program += hpu::pfree(modulus_table_object);
-        hpu_program += hpu::psync();
+        const auto lowered = hpu::seal_adapter::lower_ckks_operation_plan(
+            operation_plan, *bundle.context);
+        const std::string& hpu_program = lowered.body_asm;
 
-        if (count_token(hpu_program, hpu::psync()) != 1
+        if (lowered.operations.size() != operation_plan.steps().size()
+            || count_token(hpu_program, hpu::psync()) != 1
             || count_token(hpu_program, hpu::dload(
                 modulus_table_object,
                 hpu::DataType::mod_ctx,
@@ -206,9 +195,7 @@ int main(int argc, char** argv)
             throw std::logic_error("polynomial program lifecycle is not application-scoped");
         }
 
-        const double predicted_scale = hpu::scheme::ckks::rescale_scale(
-            hpu::scheme::ckks::multiply_scale(input_scale, input_scale),
-            top.q_last);
+        const double predicted_scale = rescaled.scale;
         std::cout << std::setprecision(8)
                   << "f(x)=x^2+1, N=" << spec.poly_modulus_degree
                   << ", Q" << top.q_moduli.size() << "|P"

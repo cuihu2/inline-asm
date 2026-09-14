@@ -135,27 +135,30 @@ twiddle 需求；它不会自动插入任何算子。
 
 ### 5.2 指令生成阶段
 
-示例把 Multiply/Relinearize/Rescale body 与 AddPlain body 组合在同一个应用级
-生命周期中：
+示例通过 `lower_ckks_operation_plan` 为每个显式 step 选择现有 kernel body，并把
+它们组合在同一个应用级生命周期中：
 
 ```text
 dload complete modulus table -> small-bank       # 一次
-CKKS Multiply + Relinearize + Rescale             # Q4 -> Q3
+CKKS Square                                       # Q4，输出三分量
+CKKS standalone Relinearize                       # Q4，回到两分量
+CKKS standalone Rescale                           # Q4 -> Q3
 CKKS AddPlain                                     # Q3，纯逐点
 dstore required output
 pfree modulus table
 psync                                             # 整个应用仅一次
 ```
 
-这里复用通用 CiphertextMultiply kernel，把它的左右输入 relocation 都绑定到同一个
-`input/x` span，从而得到 Square；不需要单独维护另一份相同密文。
+Square 复用通用 CMULT body；未来 relocation backend 会依据 lowering manifest，
+把它的左右输入都绑定到同一个 `input/x` span，不需要维护另一份相同密文。
 
 组合接口通过 `manage_modulus_table=false` 告诉嵌套 kernel：small-bank 表由外层应用
 管理，不要各自重复 dload/pfree；`append_psync=false` 则保证只有应用末尾发出 psync。
 
-第一版 codegen 仍会在两个 kernel 的边界物化 `x²`，即 dstore 后再 dload。它是正确
-但未优化的实现。后续 residency planner 可以在不超过五个活跃多项式的前提下保留
-对象并删除这组 DDR 往返，而不改变 CKKS 语义。
+第一版 plan lowering 会在每个 step 边界物化结果；standalone Relinearize 与
+Rescale 也各自保持 canonical NTT 输入/输出。因此它比原专用复合 Multiply body
+多一些 NTT/INTT 与 DDR 往返，是正确但未融合的实现。后续 residency/fusion pass
+可以在不超过五个活跃多项式的前提下删除这些往返，而不改变显式 plan 或 CKKS 语义。
 
 ## 6. 运行与查看结果
 

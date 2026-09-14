@@ -290,13 +290,25 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
             hpu_runtime_core
     )
 
+    add_library(hpu_seal_ckks_codegen STATIC
+            src/hpu/seal/operation_codegen.cpp
+    )
+    target_include_directories(hpu_seal_ckks_codegen
+            PUBLIC
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    target_link_libraries(hpu_seal_ckks_codegen
+            PUBLIC
+            hpu_seal_ckks
+            hpu_fhe_codegen
+    )
+
     add_executable(hpu_ckks_polynomial_example
             examples/ckks_polynomial_x2_plus_one.cpp
     )
     target_link_libraries(hpu_ckks_polynomial_example
             PRIVATE
-            hpu_seal_ckks
-            hpu_fhe_codegen
+            hpu_seal_ckks_codegen
     )
 
     if(BUILD_TESTING)
@@ -337,7 +349,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
         )
         target_link_libraries(hpu_seal_ckks_operation_plan_test
                 PRIVATE
-                hpu_seal_ckks
+                hpu_seal_ckks_codegen
         )
         add_test(
                 NAME hpu_seal_ckks_operation_plan_test
