@@ -145,6 +145,76 @@ CkksOperationPlan::CkksOperationPlan(
     : image_builder_(image_builder)
 {}
 
+PreparedRnsObject CkksOperationPlan::append_add(
+    std::string step_id,
+    const PreparedRnsObject& left,
+    const PreparedRnsObject& right,
+    std::string output_id)
+{
+    require_new_step(step_id);
+    validate_value(left, 2, "CKKS Add left input");
+    validate_value(right, 2, "CKKS Add right input");
+    const auto output_metadata = infer_ckks_add_sub_metadata(
+        image_builder_.level_chain(), left.metadata(), right.metadata());
+    auto output = image_builder_.reserve_ciphertext(
+        std::move(output_id), output_metadata, 2);
+
+    CkksOperationStep step;
+    step.id = std::move(step_id);
+    step.kind = CkksOperationKind::add;
+    step.inputs = {describe(left), describe(right)};
+    step.output = describe(output);
+    commit_step(std::move(step));
+    return output;
+}
+
+PreparedRnsObject CkksOperationPlan::append_subtract(
+    std::string step_id,
+    const PreparedRnsObject& left,
+    const PreparedRnsObject& right,
+    std::string output_id)
+{
+    require_new_step(step_id);
+    validate_value(left, 2, "CKKS Subtract left input");
+    validate_value(right, 2, "CKKS Subtract right input");
+    const auto output_metadata = infer_ckks_add_sub_metadata(
+        image_builder_.level_chain(), left.metadata(), right.metadata());
+    auto output = image_builder_.reserve_ciphertext(
+        std::move(output_id), output_metadata, 2);
+
+    CkksOperationStep step;
+    step.id = std::move(step_id);
+    step.kind = CkksOperationKind::subtract;
+    step.inputs = {describe(left), describe(right)};
+    step.output = describe(output);
+    commit_step(std::move(step));
+    return output;
+}
+
+PreparedRnsObject CkksOperationPlan::append_multiply_plain(
+    std::string step_id,
+    const PreparedRnsObject& ciphertext,
+    const PreparedRnsObject& plaintext,
+    std::string output_id)
+{
+    require_new_step(step_id);
+    validate_value(ciphertext, 2, "CKKS MultiplyPlain ciphertext");
+    validate_value(plaintext, 1, "CKKS MultiplyPlain plaintext");
+    const auto output_metadata = infer_ckks_multiply_metadata(
+        image_builder_.level_chain(),
+        ciphertext.metadata(), plaintext.metadata());
+    auto output = image_builder_.reserve_ciphertext(
+        std::move(output_id), output_metadata, 2);
+
+    CkksOperationStep step;
+    step.id = std::move(step_id);
+    step.kind = CkksOperationKind::multiply_plain;
+    step.inputs = {describe(ciphertext), describe(plaintext)};
+    step.output = describe(output);
+    commit_step(std::move(step));
+    return output;
+}
+
 PreparedRnsObject CkksOperationPlan::append_square(
     std::string step_id,
     const PreparedRnsObject& input,
@@ -277,6 +347,51 @@ PreparedRnsObject CkksOperationPlan::append_add_plain(
     step.id = std::move(step_id);
     step.kind = CkksOperationKind::add_plain;
     step.inputs = {describe(ciphertext), describe(plaintext)};
+    step.output = describe(output);
+    commit_step(std::move(step));
+    return output;
+}
+
+PreparedRnsObject CkksOperationPlan::append_subtract_plain(
+    std::string step_id,
+    const PreparedRnsObject& ciphertext,
+    const PreparedRnsObject& plaintext,
+    std::string output_id)
+{
+    require_new_step(step_id);
+    validate_value(ciphertext, 2, "CKKS SubtractPlain ciphertext");
+    validate_value(plaintext, 1, "CKKS SubtractPlain plaintext");
+    const auto output_metadata = infer_ckks_add_sub_metadata(
+        image_builder_.level_chain(),
+        ciphertext.metadata(), plaintext.metadata());
+    auto output = image_builder_.reserve_ciphertext(
+        std::move(output_id), output_metadata, 2);
+
+    CkksOperationStep step;
+    step.id = std::move(step_id);
+    step.kind = CkksOperationKind::subtract_plain;
+    step.inputs = {describe(ciphertext), describe(plaintext)};
+    step.output = describe(output);
+    commit_step(std::move(step));
+    return output;
+}
+
+PreparedRnsObject CkksOperationPlan::append_negate(
+    std::string step_id,
+    const PreparedRnsObject& ciphertext,
+    std::string output_id)
+{
+    require_new_step(step_id);
+    validate_value(ciphertext, 2, "CKKS Negate input");
+    const auto output_metadata = infer_ckks_preserving_metadata(
+        image_builder_.level_chain(), ciphertext.metadata());
+    auto output = image_builder_.reserve_ciphertext(
+        std::move(output_id), output_metadata, 2);
+
+    CkksOperationStep step;
+    step.id = std::move(step_id);
+    step.kind = CkksOperationKind::negate;
+    step.inputs = {describe(ciphertext)};
     step.output = describe(output);
     commit_step(std::move(step));
     return output;

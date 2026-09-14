@@ -11,10 +11,15 @@
 namespace hpu::seal_adapter {
 
 enum class CkksOperationKind {
+    add,
+    subtract,
+    multiply_plain,
     square,
     relinearize,
     rescale,
-    add_plain
+    add_plain,
+    subtract_plain,
+    negate
 };
 
 struct CkksPlannedValue {
@@ -48,6 +53,21 @@ class CkksOperationPlan {
 public:
     explicit CkksOperationPlan(CkksApplicationImageBuilder& image_builder);
 
+    PreparedRnsObject append_add(
+        std::string step_id,
+        const PreparedRnsObject& left,
+        const PreparedRnsObject& right,
+        std::string output_id);
+    PreparedRnsObject append_subtract(
+        std::string step_id,
+        const PreparedRnsObject& left,
+        const PreparedRnsObject& right,
+        std::string output_id);
+    PreparedRnsObject append_multiply_plain(
+        std::string step_id,
+        const PreparedRnsObject& ciphertext,
+        const PreparedRnsObject& plaintext,
+        std::string output_id);
     PreparedRnsObject append_square(
         std::string step_id,
         const PreparedRnsObject& input,
@@ -67,6 +87,15 @@ public:
         std::string step_id,
         const PreparedRnsObject& ciphertext,
         const PreparedRnsObject& plaintext,
+        std::string output_id);
+    PreparedRnsObject append_subtract_plain(
+        std::string step_id,
+        const PreparedRnsObject& ciphertext,
+        const PreparedRnsObject& plaintext,
+        std::string output_id);
+    PreparedRnsObject append_negate(
+        std::string step_id,
+        const PreparedRnsObject& ciphertext,
         std::string output_id);
 
     const std::vector<CkksOperationStep>& steps() const noexcept;

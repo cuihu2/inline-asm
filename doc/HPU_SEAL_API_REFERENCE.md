@@ -276,6 +276,11 @@ void register_rns_object(hpu::runtime::Application& application,
 
 ```cpp
 CkksOperationPlan plan(image_builder);
+auto sum = plan.append_add("add", left, right, "output/sum");
+auto difference = plan.append_subtract(
+    "subtract", left, right, "output/difference");
+auto scaled = plan.append_multiply_plain(
+    "multiply_plain", left, encoded_weight, "output/scaled");
 auto tensor = plan.append_square("square", input, "intermediate/tensor");
 auto relin = plan.append_relinearize(
     "relinearize", tensor, relinearization_key, keyswitch_constants,
@@ -284,6 +289,10 @@ auto rescaled = plan.append_rescale(
     "rescale", relin, rescale_constants, "intermediate/rescaled");
 auto output = plan.append_add_plain(
     "add_one", rescaled, encoded_one, "output/x2_plus_one");
+auto shifted = plan.append_subtract_plain(
+    "subtract_bias", output, encoded_bias, "output/shifted");
+auto negative = plan.append_negate(
+    "negate", shifted, "output/negative");
 ```
 
 - 每一步都显式给出，plan 不会自动插入 Relinearize 或 Rescale。
@@ -292,8 +301,8 @@ auto output = plan.append_add_plain(
 - Relinearize 会绑定并校验当前 level 的 evaluation key、KeySwitch 常量和
   canonical twiddle 需求；Rescale 会绑定相邻 level 的常量和 twiddle 需求。
 - `steps()` 保留有序的输入/输出 metadata、组件数、表示域和资源 ID，供下一阶段
-  的 codegen/runtime lowering 使用。目前覆盖示例需要的 Square、Relinearize、
-  Rescale、AddPlain。
+  的 codegen/runtime lowering 使用。目前覆盖 Add/Subtract、MultiplyPlain、
+  AddPlain/SubtractPlain、Negate、Square、Relinearize 和 Rescale。
 
 `include/hpu/seal/operation_codegen.hpp`
 
@@ -303,9 +312,9 @@ CkksLoweredProgram lowered = lower_ckks_operation_plan(
     /* manage_modulus_table=*/true);
 ```
 
-- lowering 按每个 step 的输入 level 选择已有 kernel：Square→CMULT、
-  Relinearize→standalone NTT Relinearize、Rescale→standalone NTT Rescale、
-  AddPlain→pointwise AddPlain。
+- lowering 按每个 step 的输入 level 选择已有 kernel：基础算术选择对应 pointwise
+  body，Square→CMULT，Relinearize→standalone NTT Relinearize，
+  Rescale→standalone NTT Rescale。
 - `CkksLoweredProgram::operations` 保留 step 与各自 body 的一一映射，供后续 DMA
   relocation backend 绑定对象和资源 ID；`body_asm` 是按原顺序拼接的完整程序。
 - 嵌套 kernel 不加载/释放模表也不发 `psync`，完整程序默认只在外层管理一次。
@@ -324,7 +333,7 @@ CkksRelocationSchedule schedule = build_ckks_relocation_schedule(
   `line_offset/line_count` 装入 `x10/x11`。
 - resolver 会解析实际生成的 assembly，并逐条核对方向、对象槽、load type/bank
   flag 或 store release；codegen 和 relocation 配方发生漂移时立即报错。
-- 当前模表、Square、Relinearize、Rescale 和 AddPlain 均已完整解析。Relinearize 覆盖前后
+- 当前模表及所有 planner operation 均已完整解析。Relinearize 覆盖前后
   NTT/INTT twiddle、逐 digit ModUp、evaluation-key 乘加、P→Q ModDown、base merge
   及所有 workspace；Rescale 覆盖 half、单源 BConv、inverse、跨 level 输出及前后
   transform。由标准 image builder 构造的当前 `x²+1` 计划满足 `schedule.complete()`。

@@ -239,7 +239,30 @@ void bind_square(
     bindings.finish();
 }
 
-void bind_add_plain(
+void bind_ciphertext_binary(
+    OperationBindingBuilder& bindings,
+    const CkksOperationStep& step,
+    const CkksLevelDescriptor& level)
+{
+    if (step.inputs.size() != 2 || step.inputs[0].component_count != 2
+        || step.inputs[1].component_count != 2
+        || step.output.component_count != 2) {
+        throw std::invalid_argument(
+            "invalid Add/Subtract relocation manifest");
+    }
+    const auto& left = step.inputs[0];
+    const auto& right = step.inputs[1];
+    for (std::size_t component = 0; component < 2; ++component) {
+        for (int modulus_id : level.rns_layout.q_mod_ids) {
+            bindings.load(0, limb_id(left, component, modulus_id));
+            bindings.load(1, limb_id(right, component, modulus_id));
+            bindings.store(2, limb_id(step.output, component, modulus_id));
+        }
+    }
+    bindings.finish();
+}
+
+void bind_plain_binary(
     OperationBindingBuilder& bindings,
     const CkksOperationStep& step,
     const CkksLevelDescriptor& level)
@@ -257,6 +280,48 @@ void bind_add_plain(
         bindings.store(2, limb_id(step.output, 0, modulus_id));
         bindings.load(0, limb_id(ciphertext, 1, modulus_id));
         bindings.store(0, limb_id(step.output, 1, modulus_id));
+    }
+    bindings.finish();
+}
+
+void bind_multiply_plain(
+    OperationBindingBuilder& bindings,
+    const CkksOperationStep& step,
+    const CkksLevelDescriptor& level)
+{
+    if (step.inputs.size() != 2 || step.inputs[0].component_count != 2
+        || step.inputs[1].component_count != 1
+        || step.output.component_count != 2) {
+        throw std::invalid_argument(
+            "invalid MultiplyPlain relocation manifest");
+    }
+    const auto& ciphertext = step.inputs[0];
+    const auto& plaintext = step.inputs[1];
+    for (int modulus_id : level.rns_layout.q_mod_ids) {
+        bindings.load(0, limb_id(ciphertext, 0, modulus_id));
+        bindings.load(1, limb_id(plaintext, 0, modulus_id));
+        bindings.store(2, limb_id(step.output, 0, modulus_id));
+        bindings.load(0, limb_id(ciphertext, 1, modulus_id));
+        bindings.store(2, limb_id(step.output, 1, modulus_id));
+    }
+    bindings.finish();
+}
+
+void bind_negate(
+    OperationBindingBuilder& bindings,
+    const CkksOperationStep& step,
+    const CkksLevelDescriptor& level)
+{
+    if (step.inputs.size() != 1 || step.inputs[0].component_count != 2
+        || step.output.component_count != 2) {
+        throw std::invalid_argument("invalid Negate relocation manifest");
+    }
+    const auto& input = step.inputs[0];
+    for (std::size_t component = 0; component < 2; ++component) {
+        for (int modulus_id : level.rns_layout.q_mod_ids) {
+            bindings.load(0, limb_id(input, component, modulus_id));
+            bindings.store(2, limb_id(step.output, component, modulus_id));
+        }
     }
     bindings.finish();
 }
@@ -692,6 +757,33 @@ CkksRelocationSchedule build_ckks_relocation_schedule(
 
         const auto& step = operation.operation;
         switch (step.kind) {
+        case CkksOperationKind::add:
+        case CkksOperationKind::subtract: {
+            if (step.inputs.empty()) {
+                throw std::invalid_argument(
+                    "Add/Subtract relocation manifest has no left input");
+            }
+            OperationBindingBuilder bindings(
+                result, image, operation, operation_index,
+                first_program_dma_index, degree, instructions);
+            bind_ciphertext_binary(
+                bindings, step,
+                level_chain.require(step.inputs[0].metadata.parms_id));
+            break;
+        }
+        case CkksOperationKind::multiply_plain: {
+            if (step.inputs.empty()) {
+                throw std::invalid_argument(
+                    "MultiplyPlain relocation manifest has no ciphertext input");
+            }
+            OperationBindingBuilder bindings(
+                result, image, operation, operation_index,
+                first_program_dma_index, degree, instructions);
+            bind_multiply_plain(
+                bindings, step,
+                level_chain.require(step.inputs[0].metadata.parms_id));
+            break;
+        }
         case CkksOperationKind::square: {
             if (step.inputs.empty()) {
                 throw std::invalid_argument(
@@ -704,7 +796,8 @@ CkksRelocationSchedule build_ckks_relocation_schedule(
                 bindings, step, level_chain.require(step.inputs[0].metadata.parms_id));
             break;
         }
-        case CkksOperationKind::add_plain: {
+        case CkksOperationKind::add_plain:
+        case CkksOperationKind::subtract_plain: {
             if (step.inputs.empty()) {
                 throw std::invalid_argument(
                     "AddPlain relocation manifest has no ciphertext input");
@@ -712,8 +805,21 @@ CkksRelocationSchedule build_ckks_relocation_schedule(
             OperationBindingBuilder bindings(
                 result, image, operation, operation_index,
                 first_program_dma_index, degree, instructions);
-            bind_add_plain(
+            bind_plain_binary(
                 bindings, step, level_chain.require(step.inputs[0].metadata.parms_id));
+            break;
+        }
+        case CkksOperationKind::negate: {
+            if (step.inputs.empty()) {
+                throw std::invalid_argument(
+                    "Negate relocation manifest has no input");
+            }
+            OperationBindingBuilder bindings(
+                result, image, operation, operation_index,
+                first_program_dma_index, degree, instructions);
+            bind_negate(
+                bindings, step,
+                level_chain.require(step.inputs[0].metadata.parms_id));
             break;
         }
         case CkksOperationKind::relinearize: {

@@ -64,6 +64,67 @@ std::string lower_step(
 {
     require_common_step_contract(step);
     switch (step.kind) {
+    case CkksOperationKind::add:
+    case CkksOperationKind::subtract: {
+        if (step.inputs.size() != 2
+            || step.resources.requires_canonical_twiddles
+            || !step.resources.evaluation_key_ids.empty()
+            || !step.resources.constant_ids.empty()) {
+            throw std::invalid_argument(
+                "invalid planned CKKS Add/Subtract resources");
+        }
+        require_value_shape(
+            level_chain, step.inputs[0], 2,
+            "planned CKKS Add/Subtract left input");
+        require_value_shape(
+            level_chain, step.inputs[1], 2,
+            "planned CKKS Add/Subtract right input");
+        require_value_shape(
+            level_chain, step.output, 2,
+            "planned CKKS Add/Subtract output");
+        require_ckks_metadata_matches(
+            level_chain,
+            infer_ckks_add_sub_metadata(
+                level_chain, step.inputs[0].metadata,
+                step.inputs[1].metadata),
+            step.output.metadata, "planned CKKS Add/Subtract output");
+        const auto& level = level_chain.require(
+            step.inputs[0].metadata.parms_id);
+        const int num_q = static_cast<int>(level.q_moduli.size());
+        return step.kind == CkksOperationKind::add
+            ? hpu::scheme::ckks::generate_add_body_asm(
+                num_q, false, false)
+            : hpu::scheme::ckks::generate_subtract_body_asm(
+                num_q, false, false);
+    }
+    case CkksOperationKind::multiply_plain: {
+        if (step.inputs.size() != 2
+            || step.resources.requires_canonical_twiddles
+            || !step.resources.evaluation_key_ids.empty()
+            || !step.resources.constant_ids.empty()) {
+            throw std::invalid_argument(
+                "invalid planned CKKS MultiplyPlain resources");
+        }
+        require_value_shape(
+            level_chain, step.inputs[0], 2,
+            "planned CKKS MultiplyPlain ciphertext");
+        require_value_shape(
+            level_chain, step.inputs[1], 1,
+            "planned CKKS MultiplyPlain plaintext");
+        require_value_shape(
+            level_chain, step.output, 2,
+            "planned CKKS MultiplyPlain output");
+        require_ckks_metadata_matches(
+            level_chain,
+            infer_ckks_multiply_metadata(
+                level_chain, step.inputs[0].metadata,
+                step.inputs[1].metadata),
+            step.output.metadata, "planned CKKS MultiplyPlain output");
+        const auto& level = level_chain.require(
+            step.inputs[0].metadata.parms_id);
+        return hpu::scheme::ckks::generate_multiply_plain_body_asm(
+            static_cast<int>(level.q_moduli.size()), false, false);
+    }
     case CkksOperationKind::square: {
         if (step.inputs.size() != 1
             || step.resources.requires_canonical_twiddles
@@ -148,31 +209,62 @@ std::string lower_step(
         return hpu::scheme::ckks::generate_rescale_ntt_body_asm(
             degree, static_cast<int>(level.q_moduli.size()), false, false);
     }
-    case CkksOperationKind::add_plain: {
+    case CkksOperationKind::add_plain:
+    case CkksOperationKind::subtract_plain: {
         if (step.inputs.size() != 2
             || step.resources.requires_canonical_twiddles
             || !step.resources.evaluation_key_ids.empty()
             || !step.resources.constant_ids.empty()) {
-            throw std::invalid_argument("invalid planned CKKS AddPlain resources");
+            throw std::invalid_argument(
+                "invalid planned CKKS AddPlain/SubtractPlain resources");
         }
         require_value_shape(
             level_chain, step.inputs[0], 2,
-            "planned CKKS AddPlain ciphertext");
+            "planned CKKS AddPlain/SubtractPlain ciphertext");
         require_value_shape(
             level_chain, step.inputs[1], 1,
-            "planned CKKS AddPlain plaintext");
+            "planned CKKS AddPlain/SubtractPlain plaintext");
         require_value_shape(
             level_chain, step.output, 2,
-            "planned CKKS AddPlain output");
+            "planned CKKS AddPlain/SubtractPlain output");
         require_ckks_metadata_matches(
             level_chain,
             infer_ckks_add_sub_metadata(
                 level_chain, step.inputs[0].metadata,
                 step.inputs[1].metadata),
-            step.output.metadata, "planned CKKS AddPlain output");
+            step.output.metadata,
+            "planned CKKS AddPlain/SubtractPlain output");
         const auto& level = level_chain.require(
             step.inputs[0].metadata.parms_id);
-        return hpu::scheme::ckks::generate_add_plain_body_asm(
+        const int num_q = static_cast<int>(level.q_moduli.size());
+        return step.kind == CkksOperationKind::add_plain
+            ? hpu::scheme::ckks::generate_add_plain_body_asm(
+                num_q, false, false)
+            : hpu::scheme::ckks::generate_subtract_plain_body_asm(
+                num_q, false, false);
+    }
+    case CkksOperationKind::negate: {
+        if (step.inputs.size() != 1
+            || step.resources.requires_canonical_twiddles
+            || !step.resources.evaluation_key_ids.empty()
+            || !step.resources.constant_ids.empty()) {
+            throw std::invalid_argument(
+                "invalid planned CKKS Negate resources");
+        }
+        require_value_shape(
+            level_chain, step.inputs[0], 2,
+            "planned CKKS Negate input");
+        require_value_shape(
+            level_chain, step.output, 2,
+            "planned CKKS Negate output");
+        require_ckks_metadata_matches(
+            level_chain,
+            infer_ckks_preserving_metadata(
+                level_chain, step.inputs[0].metadata),
+            step.output.metadata, "planned CKKS Negate output");
+        const auto& level = level_chain.require(
+            step.inputs[0].metadata.parms_id);
+        return hpu::scheme::ckks::generate_negate_body_asm(
             static_cast<int>(level.q_moduli.size()), false, false);
     }
     }

@@ -358,6 +358,17 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
                 NAME hpu_seal_ckks_operation_plan_test
                 COMMAND hpu_seal_ckks_operation_plan_test)
 
+        add_executable(hpu_seal_ckks_basic_operation_plan_test
+                test/seal_ckks_basic_operation_plan_test.cpp
+        )
+        target_link_libraries(hpu_seal_ckks_basic_operation_plan_test
+                PRIVATE
+                hpu_seal_ckks_codegen
+        )
+        add_test(
+                NAME hpu_seal_ckks_basic_operation_plan_test
+                COMMAND hpu_seal_ckks_basic_operation_plan_test)
+
         add_executable(hpu_seal_ckks_software_executor_test
                 test/seal_ckks_software_executor_test.cpp
         )
