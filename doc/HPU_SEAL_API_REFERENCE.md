@@ -306,6 +306,24 @@ CkksLoweredProgram lowered = lower_ckks_operation_plan(
 - 当前不做跨 step 的 NTT/INTT 或 dstore/dload 融合，因此比专用复合 Multiply
   kernel 更长；这是后续优化点，不影响显式计划和 CKKS 语义。
 
+`include/hpu/seal/operation_relocation.hpp`
+
+```cpp
+CkksRelocationSchedule schedule = build_ckks_relocation_schedule(
+    lowered, image_builder.image(), context);
+```
+
+- 每条已解析记录同时保存 program/operation 内 DMA 序号、DLOAD/DSTORE 参数、
+  allocation ID 和 `HpuMemSpan`；runtime 可按 `program_dma_index` 在发指令前把
+  `line_offset/line_count` 装入 `x10/x11`。
+- resolver 会解析实际生成的 assembly，并逐条核对方向、对象槽、load type/bank
+  flag 或 store release；codegen 和 relocation 配方发生漂移时立即报错。
+- 当前模表、Square 和 AddPlain 已完整解析。Relinearize 与 Rescale 需要的多项式级
+  BConv/标量常量及中间 workspace 尚未进入 application image，因此保留精确 DMA
+  区间并返回 `unresolved_operations`，不把现有紧凑软件常量错误绑定成 N-word 对象。
+- 只有 `unresolved_operations` 为空且绑定数等于 `expected_dma_count` 时，
+  `schedule.complete()` 才返回 true。
+
 ### 2.7 软件执行器：仿 `seal::Evaluator`
 
 `include/hpu/seal/software_executor.hpp`，实现 `src/hpu/seal/software_executor.cpp`。

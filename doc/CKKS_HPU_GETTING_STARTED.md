@@ -149,8 +149,10 @@ pfree modulus table
 psync                                             # 整个应用仅一次
 ```
 
-Square 复用通用 CMULT body；未来 relocation backend 会依据 lowering manifest，
-把它的左右输入都绑定到同一个 `input/x` span，不需要维护另一份相同密文。
+Square 复用通用 CMULT body；当前 `build_ckks_relocation_schedule` 已依据 lowering
+manifest，把它的左右输入都绑定到同一个 `input/x` span，不需要维护另一份相同
+密文。该调度同时完成模表与 AddPlain 的逐条 DMA 绑定；Relinearize/Rescale 会在
+所需硬件展开常量和 workspace 加入 image 前明确报告为 unresolved。
 
 组合接口通过 `manage_modulus_table=false` 告诉嵌套 kernel：small-bank 表由外层应用
 管理，不要各自重复 dload/pfree；`append_psync=false` 则保证只有应用末尾发出 psync。
