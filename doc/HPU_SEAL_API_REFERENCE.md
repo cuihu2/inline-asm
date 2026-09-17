@@ -9,7 +9,7 @@
 | 层次 | namespace | 职责 | 对应 SEAL 概念 |
 | --- | --- | --- | --- |
 | host 侧 SEAL-facing | `hpu::seal_adapter` | 从 `SEALContext`/`Ciphertext`/`Plaintext`/`RelinKeys`/`GaloisKeys` 派生 HPU 布局、HPU_MEM 镜像，并做软件执行 | `SEALContext`、`Evaluator`、`KeyGenerator`、`NTT` |
-| 指令生成（codegen） | `hpu::scheme::ckks` | 直接生成 HPU 汇编 body，内部复用 `operator`/`poly`/`util` 层 | `Evaluator::add/sub/multiply/rotate/rescale/...` |
+| 指令生成（codegen） | `hpu::scheme::{ckks,bfv}` | 直接生成 HPU 汇编 body，内部复用 `operator`/`poly`/`util` 层 | `Evaluator::add/sub/multiply/rotate/rescale/...` |
 
 ---
 
@@ -203,10 +203,37 @@ auto mul = builder.add_multiply_constants("constants/multiply/top", level);
   `add_add_subtract_plaintext` 生成与 SEAL scaling variant 完全相同的系数域
   `Delta*m`；`add_multiply_plaintext` 生成中心提升至 Q 后的 canonical HPU NTT 表示。
   因而实际算子执行期间不做 host plaintext lift、缩放或 NTT。
-- 当前 API 已完成参数、输入/输出对象、预制 plaintext、评估密钥与预计算常量镜像；
-  BFV planner/codegen 属于下一层接口。
+- 当前 API 已完成参数、输入/输出对象、预制 plaintext、评估密钥与预计算常量镜像。
 
-#### 2.2.3 CKKS 操作元数据规则
+#### 2.2.3 BFV 基础算子 Planner 与重定位
+
+`include/hpu/seal/bfv_operation_plan.hpp`、
+`include/hpu/seal/bfv_operation_codegen.hpp`、
+`include/hpu/seal/bfv_operation_relocation.hpp`
+
+```cpp
+BfvOperationPlan plan(builder);
+auto sum = plan.append_add("add", left, right, "output/sum");
+auto with_plain = plan.append_add_plain(
+    "add_plain", sum, prepared_add_plain, "output/result");
+auto program = lower_bfv_operation_plan(plan, context);
+auto relocation = build_bfv_relocation_schedule(
+    program, builder.image(), context);
+```
+
+- 首层 planner 支持 Ciphertext Add/Subtract、Negate 与 AddPlain/SubtractPlain。
+  所有输入与输出都必须是同一 `parms_id` 的二分量系数域 Q 密文；算子保持 level、
+  component 数、domain 和 `key_domain=1`，不会隐式插入 NTT 或 ModSwitch。
+- AddPlain/SubtractPlain 只接受 builder 生成的只读系数域 `Delta*m` 对象；为
+  MultiplyPlain 准备的 NTT plaintext 会被明确拒绝。运行时仅执行 `padd/psub`，不做
+  host plaintext 缩放或系数计算。
+- lowering 为整个计划只装载一次 small-bank 模表、在末尾只发出一次 `psync`。
+  relocation 按生成汇编中每条 `dload/dstore` 的顺序绑定具体 HPU_MEM limb，并拒绝
+  shape、level、domain、只读属性或 DMA ABI 不匹配的对象。
+- MultiplyPlain 尚未并入此基础 planner：BFV 密文在系数域，而其预制 plaintext 在
+  canonical HPU NTT 域，后续实现需要显式的 ciphertext NTT、逐点乘和 INTT 流程。
+
+#### 2.2.4 CKKS 操作元数据规则
 
 `include/hpu/seal/ckks_metadata.hpp`
 

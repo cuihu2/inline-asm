@@ -1,0 +1,134 @@
+#include "hpu/seal/bfv_operation_codegen.hpp"
+
+#include "scheme/bfv/basic_arithmetic.hpp"
+#include "util/hpu_asm.hpp"
+#include "util/validation.hpp"
+
+#include <limits>
+#include <stdexcept>
+#include <utility>
+
+namespace hpu::seal_adapter {
+namespace {
+
+constexpr int kModulusTableObject = 4;
+
+const BfvLevelDescriptor& require_value_shape(const BfvLevelChain& level_chain,
+                                              const BfvPlannedValue& value, std::size_t components,
+                                              const char* role)
+{
+    const auto& level = level_chain.require(value.metadata.parms_id);
+    if (value.id.empty() || value.metadata.chain_index != level.chain_index ||
+        value.component_count != components ||
+        value.domain != hpu::runtime::PolynomialDomain::coefficient || value.key_domain != 1) {
+        throw std::invalid_argument(std::string(role) +
+                                    " has an incompatible shape or representation");
+    }
+    return level;
+}
+
+void require_same_level(const BfvPlannedValue& left, const BfvPlannedValue& right, const char* role)
+{
+    if (left.metadata.parms_id != right.metadata.parms_id ||
+        left.metadata.chain_index != right.metadata.chain_index) {
+        throw std::invalid_argument(std::string(role) + " operands use different BFV levels");
+    }
+}
+
+std::string lower_step(const BfvOperationStep& step, const BfvLevelChain& level_chain)
+{
+    if (step.id.empty() || !step.resources.requires_modulus_table) {
+        throw std::invalid_argument("lowered BFV step lacks its id or modulus-table requirement");
+    }
+    switch (step.kind) {
+    case BfvOperationKind::add:
+    case BfvOperationKind::subtract: {
+        if (step.inputs.size() != 2) {
+            throw std::invalid_argument("invalid planned BFV Add/Subtract inputs");
+        }
+        const auto& level = require_value_shape(level_chain, step.inputs[0], 2,
+                                                "planned BFV Add/Subtract left input");
+        require_value_shape(level_chain, step.inputs[1], 2, "planned BFV Add/Subtract right input");
+        require_value_shape(level_chain, step.output, 2, "planned BFV Add/Subtract output");
+        require_same_level(step.inputs[0], step.inputs[1], "planned BFV Add/Subtract");
+        require_same_level(step.inputs[0], step.output, "planned BFV Add/Subtract output");
+        const int num_q = static_cast<int>(level.q_moduli.size());
+        return step.kind == BfvOperationKind::add
+                   ? hpu::scheme::bfv::generate_add_body_asm(num_q, false, false)
+                   : hpu::scheme::bfv::generate_subtract_body_asm(num_q, false, false);
+    }
+    case BfvOperationKind::add_plain:
+    case BfvOperationKind::subtract_plain: {
+        if (step.inputs.size() != 2) {
+            throw std::invalid_argument("invalid planned BFV AddPlain/SubtractPlain inputs");
+        }
+        const auto& level = require_value_shape(level_chain, step.inputs[0], 2,
+                                                "planned BFV AddPlain/SubtractPlain ciphertext");
+        require_value_shape(level_chain, step.inputs[1], 1,
+                            "planned BFV AddPlain/SubtractPlain plaintext");
+        require_value_shape(level_chain, step.output, 2,
+                            "planned BFV AddPlain/SubtractPlain output");
+        require_same_level(step.inputs[0], step.inputs[1], "planned BFV AddPlain/SubtractPlain");
+        require_same_level(step.inputs[0], step.output,
+                           "planned BFV AddPlain/SubtractPlain output");
+        const int num_q = static_cast<int>(level.q_moduli.size());
+        return step.kind == BfvOperationKind::add_plain
+                   ? hpu::scheme::bfv::generate_add_plain_body_asm(num_q, false, false)
+                   : hpu::scheme::bfv::generate_subtract_plain_body_asm(num_q, false, false);
+    }
+    case BfvOperationKind::negate: {
+        if (step.inputs.size() != 1) {
+            throw std::invalid_argument("invalid planned BFV Negate inputs");
+        }
+        const auto& level =
+            require_value_shape(level_chain, step.inputs.front(), 2, "planned BFV Negate input");
+        require_value_shape(level_chain, step.output, 2, "planned BFV Negate output");
+        require_same_level(step.inputs.front(), step.output, "planned BFV Negate output");
+        return hpu::scheme::bfv::generate_negate_body_asm(static_cast<int>(level.q_moduli.size()),
+                                                          false, false);
+    }
+    }
+    throw std::invalid_argument("unknown planned BFV operation kind");
+}
+
+} // namespace
+
+BfvLoweredProgram lower_bfv_operation_plan(const BfvOperationPlan& plan,
+                                           const ::seal::SEALContext& context, bool append_psync,
+                                           bool manage_modulus_table)
+{
+    const auto key_data = context.key_context_data();
+    if (!key_data || key_data->parms().scheme() != ::seal::scheme_type::bfv ||
+        key_data->parms().poly_modulus_degree() >
+            static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        !hpu::is_valid_ntt_size(static_cast<int>(key_data->parms().poly_modulus_degree()))) {
+        throw std::invalid_argument("BFV operation lowering requires a valid HPU BFV context");
+    }
+    if (plan.steps().empty()) {
+        throw std::invalid_argument("cannot lower an empty BFV operation plan");
+    }
+
+    const BfvLevelChain level_chain(context);
+    BfvLoweredProgram result;
+    result.operations.reserve(plan.steps().size());
+    if (manage_modulus_table) {
+        result.body_asm +=
+            hpu::dload(kModulusTableObject, hpu::DataType::mod_ctx, hpu::DloadFlag::small_bank);
+    }
+    for (const auto& step : plan.steps()) {
+        BfvLoweredOperation lowered;
+        lowered.operation = step;
+        lowered.body_asm = lower_step(step, level_chain);
+        result.body_asm += lowered.body_asm;
+        result.operations.push_back(std::move(lowered));
+    }
+    if (manage_modulus_table) {
+        result.body_asm += hpu::pfree(kModulusTableObject);
+    }
+    if (append_psync) {
+        result.body_asm += hpu::psync();
+    }
+    return result;
+}
+
+} // namespace hpu::seal_adapter

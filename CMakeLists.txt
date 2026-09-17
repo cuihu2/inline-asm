@@ -112,6 +112,7 @@ add_library(hpu_fhe_codegen STATIC
         src/scheme/ckks/rotate.cpp
         src/scheme/bgv/ciphertext_multiply.cpp
         src/scheme/bgv/modswitch.cpp
+        src/scheme/bfv/basic_arithmetic.cpp
         src/scheme/bfv/ciphertext_multiply.cpp
         src/scheme/bfv/modswitch.cpp
 )
@@ -317,6 +318,9 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
     )
 
     add_library(hpu_seal_ckks_codegen STATIC
+            src/hpu/seal/bfv_operation_codegen.cpp
+            src/hpu/seal/bfv_operation_plan.cpp
+            src/hpu/seal/bfv_operation_relocation.cpp
             src/hpu/seal/operation_codegen.cpp
             src/hpu/seal/operation_relocation.cpp
             src/hpu/seal/operation_runtime.cpp
@@ -383,6 +387,17 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
         add_test(
                 NAME hpu_seal_bfv_application_image_test
                 COMMAND hpu_seal_bfv_application_image_test)
+
+        add_executable(hpu_seal_bfv_basic_operation_plan_test
+                test/seal_bfv_basic_operation_plan_test.cpp
+        )
+        target_link_libraries(hpu_seal_bfv_basic_operation_plan_test
+                PRIVATE
+                hpu_seal_ckks_codegen
+        )
+        add_test(
+                NAME hpu_seal_bfv_basic_operation_plan_test
+                COMMAND hpu_seal_bfv_basic_operation_plan_test)
 
         add_executable(hpu_seal_ckks_application_image_test
                 test/seal_ckks_application_image_test.cpp
