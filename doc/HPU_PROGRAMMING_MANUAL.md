@@ -935,8 +935,14 @@ comparison-free BEHZ 常量序列化到 HPU_MEM。`floor(P/2)` residue、P→Q�
 B→Q/`m_sk`、`B^{-1} mod m_sk`、`m_sk`→Q 与 `-B mod Q` 均为预计算只读对象，
 运行时不需要 CPU 数值计算或系数比较；B→Q 与 B→`m_sk` 共享同一组 B-source inverse。
 
-生产密钥生成、安全参数选择、随机数接口、密文/预制 plaintext 对象绑定、BFV planner/
-codegen 以及噪声预算仍属于后续 host runtime/compiler 工作。Encode/Decode 是自包含的功能实现，
+同一 builder 还按 level 打包系数域 BFV Ciphertext、预留输出，并把 plaintext 显式
+预制成两种不可混用的对象：Add/SubPlain 使用 SEAL scaling variant 的系数域
+`Delta*m`，MultiplyPlain 使用中心提升到 Q 后的 canonical HPU NTT 表示。对象注册保留
+level、MOD_ID、domain、key-domain 和 required-output 元数据，因此算子执行期间不需要
+host plaintext lift、缩放或 NTT。
+
+生产密钥生成、安全参数选择、随机数接口、BFV planner/codegen 以及噪声预算仍属于后续
+host runtime/compiler 工作。Encode/Decode 是自包含的功能实现，
 不承担生产参数选择或密文元数据持久化。当前主硬件测试使用确定性零噪声、P 可整除的功能 fixture，必须标记为
 `TEST_VECTOR_SCOPE=FUNCTIONAL_ONLY`。
 

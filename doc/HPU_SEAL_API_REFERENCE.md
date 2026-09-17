@@ -173,6 +173,12 @@ BfvApplicationImageBuilder builder(context, capacity_lines);
 auto moduli = builder.add_modulus_table();
 auto twiddles = builder.add_canonical_twiddles();
 const auto &level = builder.level_chain().top();
+auto input = builder.add_ciphertext("input/a", ciphertext);
+auto add_plain = builder.add_add_subtract_plaintext(
+    "plain/add", plaintext, level);
+auto multiply_plain = builder.add_multiply_plaintext(
+    "plain/multiply", plaintext, level);
+auto output = builder.reserve_ciphertext("output/result", level);
 auto relin = builder.add_relinearization_key("relin/top", keys, level);
 auto ks = builder.add_keyswitch_constants("constants/keyswitch/top", level);
 auto mul = builder.add_multiply_constants("constants/multiply/top", level);
@@ -190,8 +196,15 @@ auto mul = builder.add_multiply_constants("constants/multiply/top", level);
   同一 B 基的 qhat inverse 在 B→Q 与 B→`m_sk` 之间共享，不重复占用 HPU_MEM。
 - builder 不接收 legacy `bfv_num_b/dnum`。未知 `parms_id` 会被拒绝；SecretKey
   从 API 和镜像中均不可见。
-- 当前 API 完成 BFV 的不可变参数、评估密钥和预计算常量镜像。密文/预制 plaintext
-  的对象绑定以及算子 planner/codegen 属于下一层接口。
+- BFV Ciphertext 保持 SEAL 的系数域 Q 表示并按 limb 打包；`reserve_ciphertext` 可为
+  指定 level、分量数和域预留输出或中间对象。`register_bfv_rns_object` 将每个 limb
+  的 level、MOD_ID、domain、key-domain 和 required-output 状态交给 runtime。
+- plaintext 必须在建镜像时预制，且两种表示不能混用：
+  `add_add_subtract_plaintext` 生成与 SEAL scaling variant 完全相同的系数域
+  `Delta*m`；`add_multiply_plaintext` 生成中心提升至 Q 后的 canonical HPU NTT 表示。
+  因而实际算子执行期间不做 host plaintext lift、缩放或 NTT。
+- 当前 API 已完成参数、输入/输出对象、预制 plaintext、评估密钥与预计算常量镜像；
+  BFV planner/codegen 属于下一层接口。
 
 #### 2.2.3 CKKS 操作元数据规则
 

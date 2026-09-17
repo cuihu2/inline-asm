@@ -55,6 +55,16 @@ std::uint32_t first_word(const hpu::runtime::HpuMemImage& image, const std::stri
                          hpu::runtime::kHpuMemLineWords];
 }
 
+std::vector<std::uint32_t> allocation_words(const hpu::runtime::HpuMemImage& image,
+                                            const std::string& id)
+{
+    const auto& allocation = image.allocation(id);
+    const auto first =
+        image.words().begin() +
+        static_cast<std::ptrdiff_t>(allocation.span.line_offset * hpu::runtime::kHpuMemLineWords);
+    return {first, first + static_cast<std::ptrdiff_t>(allocation.word_count)};
+}
+
 } // namespace
 
 int main()
@@ -67,13 +77,36 @@ int main()
         const auto bundle = hpu::seal_adapter::create_bfv_context(spec);
 
         ::seal::KeyGenerator key_generator(*bundle.context);
+        ::seal::PublicKey public_key;
         ::seal::RelinKeys relin_keys;
+        key_generator.create_public_key(public_key);
         key_generator.create_relin_keys(relin_keys);
+
+        ::seal::BatchEncoder encoder(*bundle.context);
+        std::vector<std::uint64_t> slots(encoder.slot_count());
+        for (std::size_t index = 0; index < slots.size(); ++index) {
+            slots[index] =
+                index % 3 == 0 ? bundle.plain_modulus - 1 : static_cast<std::uint64_t>(index + 1);
+        }
+        ::seal::Plaintext plaintext;
+        encoder.encode(slots, plaintext);
+        ::seal::Encryptor encryptor(*bundle.context, public_key);
+        ::seal::Ciphertext ciphertext;
+        encryptor.encrypt(plaintext, ciphertext);
 
         hpu::seal_adapter::BfvApplicationImageBuilder builder(*bundle.context, 4096);
         const auto modulus_table = builder.add_modulus_table();
         const auto canonical = builder.add_canonical_twiddles();
         const auto& level = builder.level_chain().top();
+        const auto prepared_ciphertext = builder.add_ciphertext("input/ciphertext", ciphertext);
+        const auto add_plaintext =
+            builder.add_add_subtract_plaintext("plain/add_subtract", plaintext, level);
+        const auto multiply_plaintext =
+            builder.add_multiply_plaintext("plain/multiply", plaintext, level);
+        const auto& next_level = builder.level_chain().next(level.parms_id);
+        const auto next_add_plaintext =
+            builder.add_add_subtract_plaintext("plain/add_subtract_next", plaintext, next_level);
+        const auto output = builder.reserve_ciphertext("output/ciphertext", level);
         const auto prepared_relin = builder.add_relinearization_key("relin/top", relin_keys, level);
         const auto keyswitch = builder.add_keyswitch_constants("constants/keyswitch/top", level);
         const auto multiply = builder.add_multiply_constants("constants/multiply/top", level);
@@ -97,6 +130,62 @@ int main()
                                         static_cast<std::uint8_t>(level.plaintext_mod_id);
                              }),
                 "plaintext modulus incorrectly received evaluator NTT twiddles");
+
+        require(prepared_ciphertext.parms_id == level.parms_id &&
+                    prepared_ciphertext.chain_index == level.chain_index &&
+                    prepared_ciphertext.domain == hpu::runtime::PolynomialDomain::coefficient &&
+                    prepared_ciphertext.components.size() == 2 &&
+                    add_plaintext.domain == hpu::runtime::PolynomialDomain::coefficient &&
+                    multiply_plaintext.domain ==
+                        hpu::runtime::PolynomialDomain::canonical_ntt_physical &&
+                    next_add_plaintext.parms_id == next_level.parms_id &&
+                    next_add_plaintext.components.front().modulus_ids.size() + 1 ==
+                        add_plaintext.components.front().modulus_ids.size() &&
+                    output.components.size() == 2,
+                "BFV ciphertext/plaintext/output object metadata is incorrect");
+        for (std::size_t basis = 0; basis < level.q_moduli.size(); ++basis) {
+            const std::string suffix = "/mod" + std::to_string(basis);
+            const std::vector<std::uint32_t> input_words =
+                allocation_words(builder.image(), "input/ciphertext/c0" + suffix);
+            std::vector<std::uint32_t> expected_input(spec.poly_modulus_degree);
+            for (std::size_t index = 0; index < spec.poly_modulus_degree; ++index) {
+                expected_input[index] = static_cast<std::uint32_t>(
+                    ciphertext.data(0)[basis * spec.poly_modulus_degree + index]);
+            }
+            require(input_words == expected_input,
+                    "BFV coefficient-domain ciphertext image differs from SEAL");
+        }
+
+        ::seal::Evaluator evaluator(*bundle.context);
+        ::seal::Ciphertext expected_add = ciphertext;
+        evaluator.add_plain_inplace(expected_add, plaintext);
+        for (std::size_t basis = 0; basis < level.q_moduli.size(); ++basis) {
+            const std::uint32_t q = level.q_moduli[basis];
+            std::vector<std::uint32_t> expected_delta(spec.poly_modulus_degree);
+            for (std::size_t index = 0; index < spec.poly_modulus_degree; ++index) {
+                const std::uint64_t before =
+                    ciphertext.data(0)[basis * spec.poly_modulus_degree + index];
+                const std::uint64_t after =
+                    expected_add.data(0)[basis * spec.poly_modulus_degree + index];
+                expected_delta[index] = static_cast<std::uint32_t>((after + q - before) % q);
+            }
+            require(allocation_words(builder.image(), "plain/add_subtract/c0/mod" +
+                                                          std::to_string(basis)) == expected_delta,
+                    "prepared BFV Add/Sub plaintext differs from SEAL Delta*m");
+        }
+
+        ::seal::Plaintext expected_multiply_plaintext = plaintext;
+        evaluator.transform_to_ntt_inplace(expected_multiply_plaintext, level.parms_id);
+        const auto expected_multiply_hpu =
+            hpu::seal_adapter::plaintext_to_hpu(expected_multiply_plaintext, *bundle.context);
+        for (std::size_t basis = 0; basis < level.q_moduli.size(); ++basis) {
+            const auto first = expected_multiply_hpu.words.begin() +
+                               static_cast<std::ptrdiff_t>(basis * spec.poly_modulus_degree);
+            const std::vector<std::uint32_t> expected_limb(first, first + spec.poly_modulus_degree);
+            require(allocation_words(builder.image(), "plain/multiply/c0/mod" +
+                                                          std::to_string(basis)) == expected_limb,
+                    "prepared BFV MultiplyPlain plaintext differs from SEAL");
+        }
 
         std::vector<std::uint8_t> expected_key_ids;
         for (int id : level.keyswitch_layout.q_mod_ids) {
@@ -187,6 +276,19 @@ int main()
                     "secret-key material appeared in BFV HPU_MEM metadata");
             expected_offset += allocation.span.line_count;
         }
+
+        hpu::runtime::Application application;
+        application.load_modulus_table(modulus_table);
+        hpu::seal_adapter::register_bfv_rns_object(application, prepared_ciphertext, false);
+        hpu::seal_adapter::register_bfv_rns_object(application, add_plaintext, false);
+        hpu::seal_adapter::register_bfv_rns_object(application, multiply_plaintext, false);
+        hpu::seal_adapter::register_bfv_rns_object(application, output, true);
+        require(application.object("input/ciphertext/c0/mod0").domain ==
+                        hpu::runtime::PolynomialDomain::coefficient &&
+                    application.object("plain/multiply/c0/mod0").domain ==
+                        hpu::runtime::PolynomialDomain::canonical_ntt_physical &&
+                    application.object("output/ciphertext/c0/mod0").required_output,
+                "BFV runtime object registration lost representation metadata");
 
         std::cout << "SEAL-derived BFV application image preparation passed\n";
         return 0;

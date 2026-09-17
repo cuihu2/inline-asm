@@ -135,8 +135,12 @@ comparison-free BEHZ multiply constants. In particular, `floor(P/2)`, the
 P-to-Q inverses, Q-to-Bsk inverses, B-to-Q/m_sk constants, the B inverse modulo
 m_sk, and negative-B residues are immutable HPU_MEM objects; no CPU arithmetic
 or coefficient comparison is part of their runtime use. B-source inverses are
-shared between the B-to-Q and B-to-m_sk conversions. Ciphertext/prepared-
-plaintext object binding and BFV planner/codegen remain later layers.
+shared between the B-to-Q and B-to-m_sk conversions. The same builder now
+packs coefficient-domain BFV ciphertext limbs, reserves level-aware outputs,
+and prepares two deliberately distinct plaintext forms: coefficient-domain
+Delta-scaled data for Add/SubPlain and centered-lift canonical HPU NTT data for
+MultiplyPlain. Runtime execution therefore performs no host plaintext lift,
+scaling, or NTT. BFV planner/codegen remains the next layer.
 
 ## First CKKS application stream
 

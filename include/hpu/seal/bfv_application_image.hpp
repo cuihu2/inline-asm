@@ -12,6 +12,25 @@
 
 namespace hpu::seal_adapter {
 
+struct BfvValueMetadata {
+    ::seal::parms_id_type parms_id{};
+    std::size_t chain_index = 0;
+};
+
+struct PreparedBfvRnsObject {
+    std::string id;
+    ::seal::parms_id_type parms_id{};
+    std::size_t chain_index = 0;
+    hpu::runtime::PolynomialDomain domain = hpu::runtime::PolynomialDomain::coefficient;
+    std::uint64_t key_domain = 1;
+    std::vector<PreparedPolynomial> components;
+
+    BfvValueMetadata metadata() const noexcept
+    {
+        return {parms_id, chain_index};
+    }
+};
+
 struct PreparedBfvMultiplyConstants {
     std::string id;
     ::seal::parms_id_type data_parms_id{};
@@ -25,21 +44,31 @@ struct PreparedBfvMultiplyConstants {
     std::size_t hardware_constant_polynomial_count = 0;
 };
 
-// Builds the immutable BFV parameter/key/constant portion of one HPU_MEM
-// application image. Its modulus identities and per-level B base come only
-// from modified-SEAL; legacy bfv_num_b/dnum configuration is not accepted.
+// Builds a BFV HPU_MEM application image. Parameters, per-level bases, input
+// objects, prepared plaintexts, outputs, keys, and constants all use identities
+// derived from modified-SEAL; legacy bfv_num_b/dnum configuration is rejected.
 class BfvApplicationImageBuilder {
 public:
     BfvApplicationImageBuilder(const ::seal::SEALContext& context, std::uint64_t capacity_lines);
 
     hpu::runtime::HpuMemSpan add_modulus_table();
     std::vector<PreparedCanonicalTwiddles> add_canonical_twiddles();
+    PreparedBfvRnsObject add_ciphertext(std::string id, const ::seal::Ciphertext& ciphertext);
+    PreparedBfvRnsObject add_add_subtract_plaintext(std::string id,
+                                                    const ::seal::Plaintext& plaintext,
+                                                    const BfvLevelDescriptor& level);
+    PreparedBfvRnsObject add_multiply_plaintext(std::string id, const ::seal::Plaintext& plaintext,
+                                                const BfvLevelDescriptor& level);
     PreparedEvaluationKey add_relinearization_key(std::string id, const ::seal::RelinKeys& keys,
                                                   const BfvLevelDescriptor& level);
     PreparedKeySwitchConstants add_keyswitch_constants(std::string id,
                                                        const BfvLevelDescriptor& level);
     PreparedBfvMultiplyConstants add_multiply_constants(std::string id,
                                                         const BfvLevelDescriptor& level);
+    PreparedBfvRnsObject reserve_ciphertext(
+        std::string id, const BfvLevelDescriptor& level, std::size_t component_count = 2,
+        hpu::runtime::PolynomialDomain domain = hpu::runtime::PolynomialDomain::coefficient,
+        std::uint64_t key_domain = 1);
 
     const hpu::runtime::HpuMemImage& image() const noexcept;
     const BfvLevelChain& level_chain() const noexcept;
@@ -60,5 +89,8 @@ private:
     bool modulus_table_added_ = false;
     bool canonical_twiddles_added_ = false;
 };
+
+void register_bfv_rns_object(hpu::runtime::Application& application,
+                             const PreparedBfvRnsObject& object, bool required_output);
 
 } // namespace hpu::seal_adapter

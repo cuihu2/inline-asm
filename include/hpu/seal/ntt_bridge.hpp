@@ -13,10 +13,30 @@ struct HpuRnsPolynomial {
     std::vector<std::uint32_t> moduli;
     std::vector<std::uint8_t> modulus_ids;
 
-    // Logical shape [modulus][coefficient], with each coefficient axis stored
-    // in the HPU P-network physical NTT order.
+    // Logical shape [modulus][coefficient]. The owning prepared object records
+    // whether words use coefficient order or HPU canonical physical NTT order.
     std::vector<std::uint32_t> words;
 };
+
+// Copies one coefficient-domain BFV ciphertext component into the HPU uint32
+// ABI without changing its RNS-Q coefficient order.
+HpuRnsPolynomial bfv_ciphertext_component_to_hpu(
+    const ::seal::Ciphertext& ciphertext,
+    std::size_t component,
+    const ::seal::SEALContext& context);
+
+// Prepares the two distinct BFV plaintext representations. Add/Sub uses the
+// exact SEAL scaling-variant Delta*m residues in coefficient order. Multiply
+// uses centered plaintext lift followed by canonical HPU NTT physical order.
+HpuRnsPolynomial bfv_add_subtract_plaintext_to_hpu(
+    const ::seal::Plaintext& plaintext,
+    ::seal::parms_id_type parms_id,
+    const ::seal::SEALContext& context);
+
+HpuRnsPolynomial bfv_multiply_plaintext_to_hpu(
+    const ::seal::Plaintext& plaintext,
+    ::seal::parms_id_type parms_id,
+    const ::seal::SEALContext& context);
 
 // Converts one CKKS ciphertext component from SEAL's NTT representation to the
 // HPU canonical physical NTT representation. Conversion intentionally goes via

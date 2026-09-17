@@ -33,6 +33,152 @@ std::uint32_t narrow(std::uint64_t value, const char* role)
 
 } // namespace
 
+HpuRnsPolynomial bfv_ciphertext_component_to_hpu(
+    const ::seal::Ciphertext& ciphertext,
+    std::size_t component,
+    const ::seal::SEALContext& context)
+{
+    if (!::seal::is_valid_for(ciphertext, context)
+        || ciphertext.is_ntt_form()) {
+        throw std::invalid_argument(
+            "BFV ciphertext must be a valid coefficient-domain SEAL object");
+    }
+    if (component >= ciphertext.size()) {
+        throw std::out_of_range("BFV ciphertext component is out of range");
+    }
+    const auto context_data = require_context_data(ciphertext.parms_id(), context);
+    const auto& parameters = context_data->parms();
+    if (parameters.scheme() != ::seal::scheme_type::bfv) {
+        throw std::invalid_argument("ciphertext context is not BFV");
+    }
+    const std::size_t degree = parameters.poly_modulus_degree();
+    const auto& moduli = parameters.coeff_modulus();
+
+    HpuRnsPolynomial result;
+    result.degree = degree;
+    result.moduli.reserve(moduli.size());
+    result.modulus_ids.reserve(moduli.size());
+    result.words.reserve(degree * moduli.size());
+    const std::uint64_t* component_data = ciphertext.data(component);
+    for (std::size_t basis = 0; basis < moduli.size(); ++basis) {
+        const std::uint32_t modulus = narrow(
+            moduli[basis].value(), "SEAL BFV modulus");
+        result.moduli.push_back(modulus);
+        result.modulus_ids.push_back(static_cast<std::uint8_t>(basis));
+        for (std::size_t index = 0; index < degree; ++index) {
+            const std::uint64_t coefficient =
+                component_data[basis * degree + index];
+            if (coefficient >= modulus) {
+                throw std::invalid_argument(
+                    "SEAL BFV ciphertext coefficient is not reduced");
+            }
+            result.words.push_back(static_cast<std::uint32_t>(coefficient));
+        }
+    }
+    return result;
+}
+
+HpuRnsPolynomial bfv_add_subtract_plaintext_to_hpu(
+    const ::seal::Plaintext& plaintext,
+    ::seal::parms_id_type parms_id,
+    const ::seal::SEALContext& context)
+{
+    if (!::seal::is_valid_for(plaintext, context)
+        || plaintext.is_ntt_form()) {
+        throw std::invalid_argument(
+            "BFV Add/Sub plaintext must be a valid coefficient-domain SEAL plaintext");
+    }
+    const auto context_data = require_context_data(parms_id, context);
+    const auto& parameters = context_data->parms();
+    if (parameters.scheme() != ::seal::scheme_type::bfv) {
+        throw std::invalid_argument("plaintext target context is not BFV");
+    }
+    const std::size_t degree = parameters.poly_modulus_degree();
+    const auto& moduli = parameters.coeff_modulus();
+    const std::uint64_t t = parameters.plain_modulus().value();
+    const std::uint64_t q_mod_t =
+        context_data->coeff_modulus_mod_plain_modulus();
+    const std::uint64_t rounding =
+        context_data->plain_upper_half_threshold();
+    const auto* delta_mod_q = context_data->coeff_div_plain_modulus();
+
+    HpuRnsPolynomial result;
+    result.degree = degree;
+    result.moduli.reserve(moduli.size());
+    result.modulus_ids.reserve(moduli.size());
+    result.words.reserve(degree * moduli.size());
+    for (std::size_t basis = 0; basis < moduli.size(); ++basis) {
+        const std::uint32_t q = narrow(
+            moduli[basis].value(), "SEAL BFV modulus");
+        result.moduli.push_back(q);
+        result.modulus_ids.push_back(static_cast<std::uint8_t>(basis));
+        for (std::size_t index = 0; index < degree; ++index) {
+            const std::uint64_t value = index < plaintext.coeff_count()
+                ? plaintext[index] : 0;
+            const std::uint64_t correction =
+                (q_mod_t * value + rounding) / t;
+            result.words.push_back(static_cast<std::uint32_t>(
+                (value * delta_mod_q[basis].operand + correction) % q));
+        }
+    }
+    return result;
+}
+
+HpuRnsPolynomial bfv_multiply_plaintext_to_hpu(
+    const ::seal::Plaintext& plaintext,
+    ::seal::parms_id_type parms_id,
+    const ::seal::SEALContext& context)
+{
+    if (!::seal::is_valid_for(plaintext, context)
+        || plaintext.is_ntt_form()) {
+        throw std::invalid_argument(
+            "BFV MultiplyPlain plaintext must be a valid coefficient-domain SEAL plaintext");
+    }
+    const auto context_data = require_context_data(parms_id, context);
+    const auto& parameters = context_data->parms();
+    if (parameters.scheme() != ::seal::scheme_type::bfv) {
+        throw std::invalid_argument("plaintext target context is not BFV");
+    }
+    const std::size_t degree = parameters.poly_modulus_degree();
+    const auto& moduli = parameters.coeff_modulus();
+    const std::uint64_t t = parameters.plain_modulus().value();
+    const std::uint64_t upper_half =
+        context_data->plain_upper_half_threshold();
+    const ::seal::util::NTTTables* seal_tables =
+        context_data->small_ntt_tables();
+
+    HpuRnsPolynomial result;
+    result.degree = degree;
+    result.moduli.reserve(moduli.size());
+    result.modulus_ids.reserve(moduli.size());
+    result.words.reserve(degree * moduli.size());
+    for (std::size_t basis = 0; basis < moduli.size(); ++basis) {
+        const std::uint32_t q = narrow(
+            moduli[basis].value(), "SEAL BFV modulus");
+        result.moduli.push_back(q);
+        result.modulus_ids.push_back(static_cast<std::uint8_t>(basis));
+        std::vector<std::uint32_t> coefficients(degree, 0);
+        for (std::size_t index = 0;
+             index < plaintext.coeff_count(); ++index) {
+            const std::uint64_t value = plaintext[index];
+            if (value < upper_half) {
+                coefficients[index] = static_cast<std::uint32_t>(value % q);
+            } else {
+                const std::uint32_t magnitude = static_cast<std::uint32_t>(
+                    (t - value) % q);
+                coefficients[index] = magnitude == 0 ? 0 : q - magnitude;
+            }
+        }
+        const std::uint32_t psi = narrow(
+            seal_tables[basis].get_root(), "SEAL BFV NTT root");
+        const auto physical = hpu::model::negacyclic_forward(
+            coefficients, q, psi);
+        result.words.insert(
+            result.words.end(), physical.begin(), physical.end());
+    }
+    return result;
+}
+
 HpuRnsPolynomial ciphertext_component_to_hpu(
     const ::seal::Ciphertext& ciphertext,
     std::size_t component,

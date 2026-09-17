@@ -251,6 +251,56 @@ PreparedPolynomial BfvApplicationImageBuilder::add_polynomial(std::string id,
     return result;
 }
 
+PreparedBfvRnsObject
+BfvApplicationImageBuilder::add_ciphertext(std::string id, const ::seal::Ciphertext& ciphertext)
+{
+    const BfvLevelDescriptor& level = require_level(ciphertext.parms_id());
+    PreparedBfvRnsObject result;
+    result.id = std::move(id);
+    result.parms_id = level.parms_id;
+    result.chain_index = level.chain_index;
+    result.domain = hpu::runtime::PolynomialDomain::coefficient;
+    for (std::size_t component = 0; component < ciphertext.size(); ++component) {
+        result.components.push_back(
+            add_polynomial(result.id + "/c" + std::to_string(component),
+                           bfv_ciphertext_component_to_hpu(ciphertext, component, context_),
+                           hpu::runtime::AllocationKind::ciphertext, true));
+    }
+    return result;
+}
+
+PreparedBfvRnsObject BfvApplicationImageBuilder::add_add_subtract_plaintext(
+    std::string id, const ::seal::Plaintext& plaintext, const BfvLevelDescriptor& level)
+{
+    const BfvLevelDescriptor& authoritative = require_level(level.parms_id);
+    PreparedBfvRnsObject result;
+    result.id = std::move(id);
+    result.parms_id = authoritative.parms_id;
+    result.chain_index = authoritative.chain_index;
+    result.domain = hpu::runtime::PolynomialDomain::coefficient;
+    result.components.push_back(add_polynomial(
+        result.id + "/c0",
+        bfv_add_subtract_plaintext_to_hpu(plaintext, authoritative.parms_id, context_),
+        hpu::runtime::AllocationKind::plaintext, true));
+    return result;
+}
+
+PreparedBfvRnsObject BfvApplicationImageBuilder::add_multiply_plaintext(
+    std::string id, const ::seal::Plaintext& plaintext, const BfvLevelDescriptor& level)
+{
+    const BfvLevelDescriptor& authoritative = require_level(level.parms_id);
+    PreparedBfvRnsObject result;
+    result.id = std::move(id);
+    result.parms_id = authoritative.parms_id;
+    result.chain_index = authoritative.chain_index;
+    result.domain = hpu::runtime::PolynomialDomain::canonical_ntt_physical;
+    result.components.push_back(
+        add_polynomial(result.id + "/c0",
+                       bfv_multiply_plaintext_to_hpu(plaintext, authoritative.parms_id, context_),
+                       hpu::runtime::AllocationKind::plaintext, true));
+    return result;
+}
+
 PreparedEvaluationKey BfvApplicationImageBuilder::add_evaluation_key(
     std::string id, const std::vector<HpuKeySwitchDigit>& digits, const BfvLevelDescriptor& level)
 {
@@ -267,6 +317,37 @@ PreparedEvaluationKey BfvApplicationImageBuilder::add_evaluation_key(
         result.digits[digit].push_back(add_polynomial(
             result.id + "/d" + std::to_string(digit) + "/c1", digits[digit].key_component_1,
             hpu::runtime::AllocationKind::evaluation_key, true));
+    }
+    return result;
+}
+
+PreparedBfvRnsObject BfvApplicationImageBuilder::reserve_ciphertext(
+    std::string id, const BfvLevelDescriptor& level, std::size_t component_count,
+    hpu::runtime::PolynomialDomain domain, std::uint64_t key_domain)
+{
+    const BfvLevelDescriptor& authoritative = require_level(level.parms_id);
+    if (component_count == 0) {
+        throw std::invalid_argument("invalid reserved BFV ciphertext shape");
+    }
+    PreparedBfvRnsObject result;
+    result.id = std::move(id);
+    result.parms_id = authoritative.parms_id;
+    result.chain_index = authoritative.chain_index;
+    result.domain = domain;
+    result.key_domain = key_domain;
+    const std::size_t degree = registry().poly_modulus_degree;
+    for (std::size_t component = 0; component < component_count; ++component) {
+        PreparedPolynomial polynomial;
+        polynomial.id = result.id + "/c" + std::to_string(component);
+        polynomial.degree = degree;
+        for (int mod_id : authoritative.keyswitch_layout.q_mod_ids) {
+            polynomial.modulus_ids.push_back(static_cast<std::uint8_t>(mod_id));
+            polynomial.limbs.push_back(image_
+                                           .reserve(polynomial.id + "/mod" + std::to_string(mod_id),
+                                                    degree, hpu::runtime::AllocationKind::output)
+                                           .span);
+        }
+        result.components.push_back(std::move(polynomial));
     }
     return result;
 }
@@ -472,6 +553,28 @@ const BfvLevelDescriptor&
 BfvApplicationImageBuilder::require_level(::seal::parms_id_type parms_id) const
 {
     return level_chain_.require(parms_id);
+}
+
+void register_bfv_rns_object(hpu::runtime::Application& application,
+                             const PreparedBfvRnsObject& object, bool required_output)
+{
+    for (const PreparedPolynomial& component : object.components) {
+        if (component.modulus_ids.size() != component.limbs.size()) {
+            throw std::invalid_argument("prepared BFV RNS object has inconsistent limbs");
+        }
+        for (std::size_t basis = 0; basis < component.limbs.size(); ++basis) {
+            hpu::runtime::ObjectState state;
+            state.backing = component.limbs[basis];
+            state.level = object.chain_index;
+            state.modulus_ids = {component.modulus_ids[basis]};
+            state.domain = object.domain;
+            state.key_domain = object.key_domain;
+            state.required_output = required_output;
+            application.register_object(component.id + "/mod" +
+                                            std::to_string(component.modulus_ids[basis]),
+                                        std::move(state));
+        }
+    }
 }
 
 } // namespace hpu::seal_adapter
