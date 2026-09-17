@@ -204,6 +204,17 @@ if(BUILD_TESTING)
             NAME hpu_ckks_multilevel_codegen_test
             COMMAND hpu_ckks_multilevel_codegen_test)
 
+    add_executable(hpu_bfv_rounded_moddown_codegen_test
+            test/bfv_rounded_moddown_codegen_test.cpp
+    )
+    target_link_libraries(hpu_bfv_rounded_moddown_codegen_test
+            PRIVATE
+            hpu_fhe_codegen
+    )
+    add_test(
+            NAME hpu_bfv_rounded_moddown_codegen_test
+            COMMAND hpu_bfv_rounded_moddown_codegen_test)
+
     foreach(INVALID_CONFIG
             invalid_context_overflow
             invalid_num_q
