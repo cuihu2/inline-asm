@@ -162,9 +162,38 @@ struct BfvLevelRegistry {
 - 每层 KeySwitch 固定为 single-P、每个 active-Q 对应一个 singleton digit；P 在
   降 level 后不重新编号。
 - `BfvLevelChain` 提供 `top/bottom/at/require/next/has_next`，未知或越界 level 直接
-  拒绝。此阶段只建立可部署的 level/layout 描述，还未打包 BFV 应用镜像常量。
+  拒绝。
 
-#### 2.2.2 CKKS 操作元数据规则
+#### 2.2.2 BFV 应用镜像
+
+`include/hpu/seal/bfv_application_image.hpp`
+
+```cpp
+BfvApplicationImageBuilder builder(context, capacity_lines);
+auto moduli = builder.add_modulus_table();
+auto twiddles = builder.add_canonical_twiddles();
+const auto &level = builder.level_chain().top();
+auto relin = builder.add_relinearization_key("relin/top", keys, level);
+auto ks = builder.add_keyswitch_constants("constants/keyswitch/top", level);
+auto mul = builder.add_multiply_constants("constants/multiply/top", level);
+```
+
+- 模表直接使用 `BfvLevelRegistry` 的全局 Q/P/B/`m_sk`/t MOD_ID；t 不生成 evaluator
+  NTT twiddle。
+- level-specific RelinKeys 只保留 active Q 与固定 P limb，每个 active-Q singleton
+  digit 的顺序由 descriptor 决定。
+- KeySwitch 镜像展开 Q→Q|P ModUp、Q|P 上的 `floor(P/2)` residue、P→Q BConv、
+  `P^{-1} mod q` 和所需工作区。舍入数据全是只读 HPU 常量，不需要运行时比较或
+  CPU 数值计算。
+- Multiply 镜像展开 comparison-free BEHZ 所需的 Q→Bsk、t residue、
+  `Q^{-1} mod Bsk`、B→Q/`m_sk`、`B^{-1} mod m_sk`、`m_sk`→Q 与 `-B mod Q`。
+  同一 B 基的 qhat inverse 在 B→Q 与 B→`m_sk` 之间共享，不重复占用 HPU_MEM。
+- builder 不接收 legacy `bfv_num_b/dnum`。未知 `parms_id` 会被拒绝；SecretKey
+  从 API 和镜像中均不可见。
+- 当前 API 完成 BFV 的不可变参数、评估密钥和预计算常量镜像。密文/预制 plaintext
+  的对象绑定以及算子 planner/codegen 属于下一层接口。
+
+#### 2.2.3 CKKS 操作元数据规则
 
 `include/hpu/seal/ckks_metadata.hpp`
 

@@ -929,9 +929,14 @@ SEAL-facing BFV context/level 路径以仓库内 `third_party/modified-SEAL` 为
 总数不得超过 64。每个 level descriptor 记录 active Q、固定 single-P、singleton-Q
 KeySwitch digits、B、`m_sk`、t 及对应 MOD_ID，不再从 legacy `bfv_num_b/dnum` 推断。
 
-生产密钥生成、安全参数选择、随机数接口、BFV 多 level 应用镜像以及噪声/精度预算
-仍属于后续 host runtime/compiler 工作。当前已能从 SEALContext 建立多 level 描述，
-但尚未把每层 BEHZ/KeySwitch 常量序列化到应用镜像。Encode/Decode 是自包含的功能实现，
+当前 `BfvApplicationImageBuilder` 已把全局 Q/P/B/`m_sk`/t 模表、canonical evaluator
+twiddle、指定 level 的 RelinKeys Q|P limbs、rounded single-P KeySwitch 常量和
+comparison-free BEHZ 常量序列化到 HPU_MEM。`floor(P/2)` residue、P→Q、Q→Bsk、
+B→Q/`m_sk`、`B^{-1} mod m_sk`、`m_sk`→Q 与 `-B mod Q` 均为预计算只读对象，
+运行时不需要 CPU 数值计算或系数比较；B→Q 与 B→`m_sk` 共享同一组 B-source inverse。
+
+生产密钥生成、安全参数选择、随机数接口、密文/预制 plaintext 对象绑定、BFV planner/
+codegen 以及噪声预算仍属于后续 host runtime/compiler 工作。Encode/Decode 是自包含的功能实现，
 不承担生产参数选择或密文元数据持久化。当前主硬件测试使用确定性零噪声、P 可整除的功能 fixture，必须标记为
 `TEST_VECTOR_SCOPE=FUNCTIONAL_ONLY`。
 

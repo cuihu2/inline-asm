@@ -33,24 +33,27 @@ std::vector<HpuKeySwitchDigit> key_digits_to_hpu(
     const std::vector<::seal::PublicKey>& seal_digits,
     ::seal::parms_id_type key_parms_id,
     const ::seal::SEALContext& context,
-    const CkksLevelDescriptor& level,
+    ::seal::parms_id_type data_parms_id,
+    const std::vector<std::size_t>& evaluation_key_digit_indices,
+    const std::vector<int>& q_mod_ids,
+    const std::vector<int>& p_mod_ids,
     const char* role)
 {
-    if (!context.get_context_data(level.parms_id)
-        || level.evaluation_key_digit_indices.empty()) {
+    if (!context.get_context_data(data_parms_id)
+        || evaluation_key_digit_indices.empty()) {
         throw std::invalid_argument(std::string(role) + " level is not in SEALContext");
     }
     std::vector<std::size_t> modulus_indices;
-    for (int id : level.rns_layout.q_mod_ids) {
+    for (int id : q_mod_ids) {
         modulus_indices.push_back(static_cast<std::size_t>(id));
     }
-    for (int id : level.rns_layout.p_mod_ids) {
+    for (int id : p_mod_ids) {
         modulus_indices.push_back(static_cast<std::size_t>(id));
     }
 
     std::vector<HpuKeySwitchDigit> result;
-    result.reserve(level.evaluation_key_digit_indices.size());
-    for (std::size_t digit_index : level.evaluation_key_digit_indices) {
+    result.reserve(evaluation_key_digit_indices.size());
+    for (std::size_t digit_index : evaluation_key_digit_indices) {
         if (digit_index >= seal_digits.size()) {
             throw std::invalid_argument(std::string(role) + " lacks an active level digit");
         }
@@ -91,8 +94,26 @@ std::vector<HpuKeySwitchDigit> relinearization_key_to_hpu(
         throw std::invalid_argument("SEAL RelinKeys does not contain the s^2 key");
     }
     return key_digits_to_hpu(
-        keys.key(2), keys.parms_id(), context, level,
+        keys.key(2), keys.parms_id(), context, level.parms_id,
+        level.evaluation_key_digit_indices,
+        level.rns_layout.q_mod_ids, level.rns_layout.p_mod_ids,
         "SEAL level relinearization-key");
+}
+
+std::vector<HpuKeySwitchDigit> relinearization_key_to_hpu(
+    const ::seal::RelinKeys& keys,
+    const ::seal::SEALContext& context,
+    const BfvLevelDescriptor& level)
+{
+    if (!keys.has_key(2)) {
+        throw std::invalid_argument("SEAL RelinKeys does not contain the s^2 key");
+    }
+    return key_digits_to_hpu(
+        keys.key(2), keys.parms_id(), context, level.parms_id,
+        level.evaluation_key_digit_indices,
+        level.keyswitch_layout.q_mod_ids,
+        level.keyswitch_layout.p_mod_ids,
+        "SEAL BFV level relinearization-key");
 }
 
 std::vector<HpuKeySwitchDigit> galois_key_to_hpu(
@@ -120,7 +141,9 @@ std::vector<HpuKeySwitchDigit> galois_key_to_hpu(
         throw std::invalid_argument("SEAL GaloisKeys does not contain the requested element");
     }
     return key_digits_to_hpu(
-        keys.key(galois_element), keys.parms_id(), context, level,
+        keys.key(galois_element), keys.parms_id(), context, level.parms_id,
+        level.evaluation_key_digit_indices,
+        level.rns_layout.q_mod_ids, level.rns_layout.p_mod_ids,
         "SEAL level Galois-key");
 }
 

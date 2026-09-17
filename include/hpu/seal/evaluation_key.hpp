@@ -1,5 +1,6 @@
 #pragma once
 
+#include "hpu/seal/bfv_level.hpp"
 #include "hpu/seal/ckks_level.hpp"
 #include "hpu/seal/ntt_bridge.hpp"
 
@@ -25,6 +26,11 @@ std::vector<HpuKeySwitchDigit> relinearization_key_to_hpu(
     const ::seal::RelinKeys& keys,
     const ::seal::SEALContext& context,
     const CkksLevelDescriptor& level);
+
+std::vector<HpuKeySwitchDigit> relinearization_key_to_hpu(
+    const ::seal::RelinKeys& keys,
+    const ::seal::SEALContext& context,
+    const BfvLevelDescriptor& level);
 
 // Converts one SEAL Galois key selected by its odd element modulo 2N. The
 // returned digit count and Q|P shape remain SEALContext-authoritative.

@@ -293,6 +293,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
 
     add_library(hpu_seal_ckks STATIC
             src/hpu/seal/application_image.cpp
+            src/hpu/seal/bfv_application_image.cpp
             src/hpu/seal/bfv_context.cpp
             src/hpu/seal/bfv_level.cpp
             src/hpu/seal/ckks_context.cpp
@@ -371,6 +372,17 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
                 hpu_fhe_codegen
         )
         add_test(NAME hpu_seal_bfv_context_test COMMAND hpu_seal_bfv_context_test)
+
+        add_executable(hpu_seal_bfv_application_image_test
+                test/seal_bfv_application_image_test.cpp
+        )
+        target_link_libraries(hpu_seal_bfv_application_image_test
+                PRIVATE
+                hpu_seal_ckks
+        )
+        add_test(
+                NAME hpu_seal_bfv_application_image_test
+                COMMAND hpu_seal_bfv_application_image_test)
 
         add_executable(hpu_seal_ckks_application_image_test
                 test/seal_ckks_application_image_test.cpp

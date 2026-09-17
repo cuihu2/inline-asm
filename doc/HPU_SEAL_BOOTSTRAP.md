@@ -128,8 +128,15 @@ value is used to infer this shape.
 For this first HPU BFV profile, Q, P, and t are restricted to at most 31 bits;
 SEAL's BFV auxiliary primes use the reserved 32-bit width. This makes the
 SEAL-selected auxiliary base disjoint from Q/P without runtime prime repair.
-The registry is parameter/level metadata only: serialization of all BEHZ and
-KeySwitch constants into a BFV application image remains a later step.
+`BfvApplicationImageBuilder` now consumes this registry and serializes the
+global modulus table, canonical evaluator twiddles, level-specific
+relinearization-key Q|P limbs, rounded single-P KeySwitch constants and all
+comparison-free BEHZ multiply constants. In particular, `floor(P/2)`, the
+P-to-Q inverses, Q-to-Bsk inverses, B-to-Q/m_sk constants, the B inverse modulo
+m_sk, and negative-B residues are immutable HPU_MEM objects; no CPU arithmetic
+or coefficient comparison is part of their runtime use. B-source inverses are
+shared between the B-to-Q and B-to-m_sk conversions. Ciphertext/prepared-
+plaintext object binding and BFV planner/codegen remain later layers.
 
 ## First CKKS application stream
 
