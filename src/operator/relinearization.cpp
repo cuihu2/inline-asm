@@ -72,6 +72,32 @@ std::string generate_hpu_relinearization_body_asm(
     return asm_code.str();
 }
 
+std::string generate_hpu_bfv_relinearization_body_asm(
+    int N,
+    const hpu::RnsDecompositionLayout& layout,
+    bool append_psync,
+    bool manage_modulus_table)
+{
+    std::ostringstream asm_code;
+
+    if (!hpu::is_seal_single_p_rns_decomposition_layout(N, layout)) {
+        asm_code << "        // Invalid SEAL BFV Relinearization layout: require one P and one ordered singleton digit per active Q\n";
+        return asm_code.str();
+    }
+
+    asm_code << "        /* --- BFV Relinearization: coefficient-domain KeySwitch(t2, rlk) with base=t0 --- */\n";
+    asm_code << generate_hpu_bfv_keyswitch_body_asm(
+        N, layout, false, manage_modulus_table);
+    asm_code << "        /* --- Compose BFV ciphertext: out0=t0+ks0, out1=t1+ks1 --- */\n";
+    asm_code << generate_add_second_component_body_asm(
+        layout.q_mod_ids, manage_modulus_table);
+
+    if (append_psync) {
+        asm_code << hpu::psync();
+    }
+    return asm_code.str();
+}
+
 std::string generate_hpu_relinearization_body_asm(
     int N,
     int num_q,

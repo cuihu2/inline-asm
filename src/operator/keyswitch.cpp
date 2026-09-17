@@ -1,5 +1,6 @@
 #include "operator/keyswitch.hpp"
 
+#include "operator/rounded_drop_last.hpp"
 #include "poly/modup.hpp"
 #include "poly/moddown.hpp"
 #include "util/hpu_asm.hpp"
@@ -10,9 +11,12 @@
 #include <sstream>
 #include <string>
 
-std::string generate_hpu_keyswitch_body_asm(
+namespace {
+
+std::string generate_hpu_keyswitch_body_asm_impl(
     int N,
     const hpu::RnsDecompositionLayout& layout,
+    bool rounded_single_p,
     bool append_psync,
     bool manage_modulus_table)
 {
@@ -20,6 +24,11 @@ std::string generate_hpu_keyswitch_body_asm(
 
     if (!hpu::is_valid_rns_decomposition_layout(N, layout)) {
         asm_code << "        // Invalid explicit KeySwitch RNS layout\n";
+        return asm_code.str();
+    }
+    if (rounded_single_p
+        && !hpu::is_seal_single_p_rns_decomposition_layout(N, layout)) {
+        asm_code << "        // Invalid SEAL BFV KeySwitch layout: require one P and one ordered singleton digit per active Q\n";
         return asm_code.str();
     }
 
@@ -34,7 +43,9 @@ std::string generate_hpu_keyswitch_body_asm(
     const int TWIDDLE = 3;
     const int POBJ_TMP_A = 0;
 
-    asm_code << "        /* KEYSWITCH BODY: (base, switching_component) -> (base + ks0, ks1) */\n";
+    asm_code << "        /* "
+             << (rounded_single_p ? "BFV " : "")
+             << "KEYSWITCH BODY: (base, switching_component) -> (base + ks0, ks1) */\n";
     asm_code << "        /* Application-global MOD_IDs; fixed P survives Q level drops. */\n";
     asm_code << "        /* --- Active SEAL key digits loop (dnum = " << dnum << ") --- */\n";
     for (int d = 0; d < dnum; ++d) {
@@ -118,11 +129,17 @@ std::string generate_hpu_keyswitch_body_asm(
     }
 
     // 5. ModDown
-    asm_code << "        /* --- Step 5: ModDown for both parts --- */\n";
-    for (int v = 0; v < 2; ++v) {
-        asm_code << "        /* ModDown for out" << v << " */\n";
-        asm_code << generate_hpu_moddown_contexts_body_asm(
-            q_contexts, p_contexts, false, manage_modulus_table);
+    if (rounded_single_p) {
+        asm_code << "        /* --- Step 5: BFV rounded coefficient-domain ModDown for both parts --- */\n";
+        asm_code << generate_hpu_rounded_single_p_moddown_contexts_body_asm(
+            q_contexts, p_contexts.front(), 2, false, manage_modulus_table);
+    } else {
+        asm_code << "        /* --- Step 5: ModDown for both parts --- */\n";
+        for (int v = 0; v < 2; ++v) {
+            asm_code << "        /* ModDown for out" << v << " */\n";
+            asm_code << generate_hpu_moddown_contexts_body_asm(
+                q_contexts, p_contexts, false, manage_modulus_table);
+        }
     }
     asm_code << "        /* --- Step 6: Add base component to out0 --- */\n";
     const int POBJ_MOD_CTX_S6 = 4;
@@ -157,6 +174,28 @@ std::string generate_hpu_keyswitch_body_asm(
     }
 
     return asm_code.str();
+}
+
+} // namespace
+
+std::string generate_hpu_keyswitch_body_asm(
+    int N,
+    const hpu::RnsDecompositionLayout& layout,
+    bool append_psync,
+    bool manage_modulus_table)
+{
+    return generate_hpu_keyswitch_body_asm_impl(
+        N, layout, false, append_psync, manage_modulus_table);
+}
+
+std::string generate_hpu_bfv_keyswitch_body_asm(
+    int N,
+    const hpu::RnsDecompositionLayout& layout,
+    bool append_psync,
+    bool manage_modulus_table)
+{
+    return generate_hpu_keyswitch_body_asm_impl(
+        N, layout, true, append_psync, manage_modulus_table);
 }
 
 std::string generate_hpu_keyswitch_body_asm(

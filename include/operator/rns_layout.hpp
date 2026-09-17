@@ -73,6 +73,26 @@ inline bool is_valid_rns_decomposition_layout(
     return true;
 }
 
+// Microsoft SEAL 4.4.x decomposes a switching component one active Q limb at
+// a time and uses one final key-context modulus as the special prime.
+inline bool is_seal_single_p_rns_decomposition_layout(
+    int N,
+    const RnsDecompositionLayout& layout)
+{
+    if (!is_valid_rns_decomposition_layout(N, layout)
+        || layout.p_mod_ids.size() != 1
+        || layout.key_digits.size() != layout.q_mod_ids.size()) {
+        return false;
+    }
+    for (std::size_t index = 0; index < layout.q_mod_ids.size(); ++index) {
+        if (layout.key_digits[index].size() != 1
+            || layout.key_digits[index].front() != layout.q_mod_ids[index]) {
+            return false;
+        }
+    }
+    return true;
+}
+
 inline RnsDecompositionLayout make_contiguous_rns_decomposition_layout(
     int num_q,
     int num_p,

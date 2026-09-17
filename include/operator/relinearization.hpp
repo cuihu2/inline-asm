@@ -12,6 +12,14 @@ std::string generate_hpu_relinearization_body_asm(
     bool append_psync = false,
     bool manage_modulus_table = true);
 
+// BFV coefficient-domain relinearization with SEAL singleton key digits and
+// rounded single-P KeySwitch finalization.
+std::string generate_hpu_bfv_relinearization_body_asm(
+    int N,
+    const hpu::RnsDecompositionLayout& layout,
+    bool append_psync = false,
+    bool manage_modulus_table = true);
+
 std::string generate_hpu_relinearization_body_asm(
     int N,
     int num_q,

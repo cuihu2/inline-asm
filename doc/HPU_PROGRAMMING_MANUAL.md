@@ -914,6 +914,12 @@ level 减一；BFV 没有 CKKS scale 或 BGV correction factor 元数据。主�
 `outputs/bfv_ciphertext_multiply/test_data/host/noise_smoke/` 另用确定性非零误差完成
 Encode、Multiply、Relinearization、ModSwitch、Decrypt、Decode 闭环。
 
+面向 SEAL 4.4 的 BFV KeySwitch 另有严格路径：只接受一个固定 special prime，且
+每个 active-Q limb 对应一个有序 singleton key digit。两个 Q|P accumulator 完成
+INTT 后，先在 Q 与 P 各 limb 加载预计算的 `floor(P/2)` residue，再执行 P→Q
+ModDown。因此舍入只使用 `padd`、BConv、`psub` 和 `pmul`，不需要系数比较或 CPU
+数值计算。legacy `Pks=3,dnum=2` 功能包不冒充该 SEAL key layout。
+
 算法实现以 `/home/songyexin/fhe/SEAL` 中同时启用
 `SEAL_EXPERIMENTAL_BFV_NO_SMRQ` 和
 `SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK` 的修改流程为差分依据；正常构建不依赖 SEAL。
@@ -1121,12 +1127,17 @@ KeySwitch 接口语义是
 | 2. NTT | `p0=QP digit limb,p3=pre/stage twiddle` | NTT 域 QP digit |
 | 3. EVK 乘加 | `p0=digit NTT,p1=evk[d][v][basis]`；非首 digit 另加载 `p2=previous accumulator` | `p2=accumulator[v][basis]` |
 | 4. INTT | `p0=accumulator,p3=stage/post twiddle,p4=Q|P table` | 系数域 QP accumulator |
-| 5. ModDown | 两个 accumulator 分别按 C.2 执行 | Q 基 `ks0/ks1` |
+| 5. ModDown | 通用路径按 C.2；BFV/SEAL 路径先在 Q∪P 加 `floor(P/2)` 再做 single-P ModDown | Q 基 `ks0/ks1` |
 | 6. 合并 base | `p0=ks0,p1=base,p4=Q table` | `p2=base+ks0` |
 
 Relinearization 把 `t0` 绑定为 base、`t2` 绑定为 switching component、`rlk` 绑定为
 EVK。KeySwitch 输出第一分量后，对每个 `q_i` 再加载 `p0=t1`、`p1=ks1`，以
 `p2=t1+ks1` 写回第二分量。
+
+`generate_hpu_bfv_keyswitch_body_asm` 和
+`generate_hpu_bfv_relinearization_body_asm` 强制 SEAL 的 singleton-Q digit 与
+single-P layout，并保持 BFV coefficient-domain 输入输出。无效的 grouped digit 或
+multi-P layout 在 codegen 阶段直接拒绝，不回退到 host 或通用 KeySwitch。
 
 完整 CiphertextMultiply 的外存阶段顺序是：
 

@@ -12,6 +12,15 @@ std::string generate_hpu_keyswitch_body_asm(
     bool append_psync = false,
     bool manage_modulus_table = true);
 
+// SEAL BFV KeySwitch specialization. Inputs and outputs are in coefficient
+// form. Evaluation-key products accumulate in NTT form, cross back through
+// INTT, and use rounded single-P ModDown before the base component is added.
+std::string generate_hpu_bfv_keyswitch_body_asm(
+    int N,
+    const hpu::RnsDecompositionLayout& layout,
+    bool append_psync = false,
+    bool manage_modulus_table = true);
+
 std::string generate_hpu_keyswitch_body_asm(
     int N,
     int num_q,
