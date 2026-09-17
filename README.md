@@ -166,10 +166,11 @@ Rescale 同样从 HPU_MEM 取得 `q_last/2` 与 `q_last^-1 mod q_i`，并迁移�
 scale，Multiply 计算 scale 乘积，Rescale 只走 `CkksLevelChain::next` 并除以
 `q_last`。image builder 与软件执行器消费同一套规则，但不会自动插入 Rescale。
 `CkksOperationPlan` 在同一个 application image 上显式串联 Add/Subtract、
-MultiplyPlain、AddPlain/SubtractPlain、Negate、Square、Relinearize 和 Rescale，
+Multiply/MultiplyPlain、AddPlain/SubtractPlain、Negate、Square、Relinearize 和 Rescale，
 校验对象归属及 level 专属 key/constant，并记录后续
 codegen/runtime lowering 所需的有序 metadata 与资源清单。当前
-`lower_ckks_operation_plan` 已能按每步 level 选择上述 pointwise kernel、CMULT 和
+`lower_ckks_operation_plan` 已能按每步 level 选择上述 pointwise kernel、通用
+Multiply/Square 共用的 CMULT tensor kernel，以及
 standalone Relinearize/Rescale body，保留 relocation manifest，并在整条程序外层
 只管理一次模表与 `psync`。`build_ckks_relocation_schedule` 进一步逐条校验生成的
 DMA ABI，并已把模表及全部已规划算子精确绑定到 image span。

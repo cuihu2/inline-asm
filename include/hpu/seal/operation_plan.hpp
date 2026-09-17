@@ -13,6 +13,7 @@ namespace hpu::seal_adapter {
 enum class CkksOperationKind {
     add,
     subtract,
+    multiply,
     multiply_plain,
     square,
     relinearize,
@@ -59,6 +60,11 @@ public:
         const PreparedRnsObject& right,
         std::string output_id);
     PreparedRnsObject append_subtract(
+        std::string step_id,
+        const PreparedRnsObject& left,
+        const PreparedRnsObject& right,
+        std::string output_id);
+    PreparedRnsObject append_multiply(
         std::string step_id,
         const PreparedRnsObject& left,
         const PreparedRnsObject& right,

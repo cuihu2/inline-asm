@@ -239,6 +239,36 @@ void bind_square(
     bindings.finish();
 }
 
+void bind_multiply(
+    OperationBindingBuilder& bindings,
+    const CkksOperationStep& step,
+    const CkksLevelDescriptor& level)
+{
+    if (step.inputs.size() != 2 || step.inputs[0].component_count != 2
+        || step.inputs[1].component_count != 2
+        || step.output.component_count != 3) {
+        throw std::invalid_argument("invalid Multiply relocation manifest");
+    }
+    const auto& left = step.inputs[0];
+    const auto& right = step.inputs[1];
+    for (int modulus_id : level.rns_layout.q_mod_ids) {
+        bindings.load(0, limb_id(left, 0, modulus_id));
+        bindings.load(1, limb_id(right, 0, modulus_id));
+        bindings.store(2, limb_id(step.output, 0, modulus_id));
+
+        bindings.load(0, limb_id(left, 0, modulus_id));
+        bindings.load(1, limb_id(right, 1, modulus_id));
+        bindings.load(0, limb_id(left, 1, modulus_id));
+        bindings.load(1, limb_id(right, 0, modulus_id));
+        bindings.store(2, limb_id(step.output, 1, modulus_id));
+
+        bindings.load(0, limb_id(left, 1, modulus_id));
+        bindings.load(1, limb_id(right, 1, modulus_id));
+        bindings.store(2, limb_id(step.output, 2, modulus_id));
+    }
+    bindings.finish();
+}
+
 void bind_ciphertext_binary(
     OperationBindingBuilder& bindings,
     const CkksOperationStep& step,
@@ -767,6 +797,19 @@ CkksRelocationSchedule build_ckks_relocation_schedule(
                 result, image, operation, operation_index,
                 first_program_dma_index, degree, instructions);
             bind_ciphertext_binary(
+                bindings, step,
+                level_chain.require(step.inputs[0].metadata.parms_id));
+            break;
+        }
+        case CkksOperationKind::multiply: {
+            if (step.inputs.empty()) {
+                throw std::invalid_argument(
+                    "Multiply relocation manifest has no left input");
+            }
+            OperationBindingBuilder bindings(
+                result, image, operation, operation_index,
+                first_program_dma_index, degree, instructions);
+            bind_multiply(
                 bindings, step,
                 level_chain.require(step.inputs[0].metadata.parms_id));
             break;

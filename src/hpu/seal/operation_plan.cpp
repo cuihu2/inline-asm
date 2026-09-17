@@ -191,6 +191,29 @@ PreparedRnsObject CkksOperationPlan::append_subtract(
     return output;
 }
 
+PreparedRnsObject CkksOperationPlan::append_multiply(
+    std::string step_id,
+    const PreparedRnsObject& left,
+    const PreparedRnsObject& right,
+    std::string output_id)
+{
+    require_new_step(step_id);
+    validate_value(left, 2, "CKKS Multiply left input");
+    validate_value(right, 2, "CKKS Multiply right input");
+    const auto output_metadata = infer_ckks_multiply_metadata(
+        image_builder_.level_chain(), left.metadata(), right.metadata());
+    auto output = image_builder_.reserve_ciphertext(
+        std::move(output_id), output_metadata, 3);
+
+    CkksOperationStep step;
+    step.id = std::move(step_id);
+    step.kind = CkksOperationKind::multiply;
+    step.inputs = {describe(left), describe(right)};
+    step.output = describe(output);
+    commit_step(std::move(step));
+    return output;
+}
+
 PreparedRnsObject CkksOperationPlan::append_multiply_plain(
     std::string step_id,
     const PreparedRnsObject& ciphertext,

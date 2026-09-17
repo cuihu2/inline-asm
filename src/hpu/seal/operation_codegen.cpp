@@ -97,6 +97,34 @@ std::string lower_step(
             : hpu::scheme::ckks::generate_subtract_body_asm(
                 num_q, false, false);
     }
+    case CkksOperationKind::multiply: {
+        if (step.inputs.size() != 2
+            || step.resources.requires_canonical_twiddles
+            || !step.resources.evaluation_key_ids.empty()
+            || !step.resources.constant_ids.empty()) {
+            throw std::invalid_argument(
+                "invalid planned CKKS Multiply resources");
+        }
+        require_value_shape(
+            level_chain, step.inputs[0], 2,
+            "planned CKKS Multiply left input");
+        require_value_shape(
+            level_chain, step.inputs[1], 2,
+            "planned CKKS Multiply right input");
+        require_value_shape(
+            level_chain, step.output, 3,
+            "planned CKKS Multiply output");
+        require_ckks_metadata_matches(
+            level_chain,
+            infer_ckks_multiply_metadata(
+                level_chain, step.inputs[0].metadata,
+                step.inputs[1].metadata),
+            step.output.metadata, "planned CKKS Multiply output");
+        const auto& level = level_chain.require(
+            step.inputs[0].metadata.parms_id);
+        return ::generate_hpu_cmult_body_asm(
+            static_cast<int>(level.q_moduli.size()), false, false);
+    }
     case CkksOperationKind::multiply_plain: {
         if (step.inputs.size() != 2
             || step.resources.requires_canonical_twiddles

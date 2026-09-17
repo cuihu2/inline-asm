@@ -129,6 +129,10 @@ scale 重新编码。这样 AddPlain 的 level、RNS basis 和 scale 都匹配�
 确实属于当前 image，并记录 evaluation key、KeySwitch/Rescale 常量以及 canonical
 twiddle 需求；它不会自动插入任何算子。
 
+同一个 planner 也支持通用 `append_multiply(left, right)`。它显式生成三分量
+tensor，调用方随后追加 Relinearize 和 Rescale；因此 `x*y` 与本例的 `x²` 共用
+后两段 level/scale 管理链路，而不会被隐藏成一个不可检查的复合步骤。
+
 每个 RNS limb 都是独立、256B 对齐的 allocation。对 N=65536，每个 limb 的
 `line_count` 必须恰好为 1024。allocation 名称和 span 构成未来 Linux backend
 执行 dload/dstore relocation 的依据。

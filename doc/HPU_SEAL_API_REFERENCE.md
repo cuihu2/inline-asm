@@ -279,6 +279,8 @@ CkksOperationPlan plan(image_builder);
 auto sum = plan.append_add("add", left, right, "output/sum");
 auto difference = plan.append_subtract(
     "subtract", left, right, "output/difference");
+auto product_tensor = plan.append_multiply(
+    "multiply", left, right, "intermediate/product_tensor");
 auto scaled = plan.append_multiply_plain(
     "multiply_plain", left, encoded_weight, "output/scaled");
 auto tensor = plan.append_square("square", input, "intermediate/tensor");
@@ -295,13 +297,14 @@ auto negative = plan.append_negate(
     "negate", shifted, "output/negative");
 ```
 
-- 每一步都显式给出，plan 不会自动插入 Relinearize 或 Rescale。
+- 每一步都显式给出；`append_multiply` 只生成三分量 tensor，plan 不会自动插入
+  Relinearize 或 Rescale。
 - 输出由前一步 metadata 推导后直接在同一个 `HpuMemImage` 中分配；输入对象的
   allocation ID/span 也必须属于该 image。
 - Relinearize 会绑定并校验当前 level 的 evaluation key、KeySwitch 常量和
   canonical twiddle 需求；Rescale 会绑定相邻 level 的常量和 twiddle 需求。
 - `steps()` 保留有序的输入/输出 metadata、组件数、表示域和资源 ID，供下一阶段
-  的 codegen/runtime lowering 使用。目前覆盖 Add/Subtract、MultiplyPlain、
+  的 codegen/runtime lowering 使用。目前覆盖 Add/Subtract、Multiply/MultiplyPlain、
   AddPlain/SubtractPlain、Negate、Square、Relinearize 和 Rescale。
 
 `include/hpu/seal/operation_codegen.hpp`
@@ -313,7 +316,7 @@ CkksLoweredProgram lowered = lower_ckks_operation_plan(
 ```
 
 - lowering 按每个 step 的输入 level 选择已有 kernel：基础算术选择对应 pointwise
-  body，Square→CMULT，Relinearize→standalone NTT Relinearize，
+  body，Multiply/Square→CMULT tensor，Relinearize→standalone NTT Relinearize，
   Rescale→standalone NTT Rescale。
 - `CkksLoweredProgram::operations` 保留 step 与各自 body 的一一映射，供后续 DMA
   relocation backend 绑定对象和资源 ID；`body_asm` 是按原顺序拼接的完整程序。
