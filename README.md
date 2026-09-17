@@ -151,6 +151,11 @@ ctest --test-dir build-seal -R hpu_seal_ckks_context_test --output-on-failure
 从工程搭建开始的简明介绍，以及 `f(x)=x^2+1` 的可运行 CKKS/HPU 示例见
 `doc/CKKS_HPU_GETTING_STARTED.md`。
 
+面向顶层应用开发者的多分支 planner 示例见
+`doc/CKKS_COMPOSED_APPLICATION_EXAMPLE.md`。它实现
+`x*(RotateLeft(x,1)+Conjugate(x))+1`，覆盖 Galois key/workspace、分支合并、
+Multiply→Relinearize→Rescale、完整 DMA relocation 和 runtime artifacts。
+
 当前 HPU_MEM 软件执行器已经对 CKKS Add/Subtract/MultiplyPlain/AddPlain/
 SubtractPlain、Negate、通用密文 Multiply、Square、KeySwitch、Relinearize、Rescale、
 raw/slot-step Rotate 和 Conjugate

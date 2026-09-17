@@ -71,6 +71,7 @@ cmake -S . -B build \
   -DHPU_ENABLE_SEAL_INTEGRATION=ON \
   -DHPU_ENABLE_LEGACY_FIXED_PROFILE_TESTS=OFF
 cmake --build build -j --target hpu_ckks_polynomial_example
+cmake --build build -j --target hpu_ckks_composed_application_example
 ```
 
 完整默认测试可以运行：
@@ -181,7 +182,15 @@ Rescale 也各自保持 canonical NTT 输入/输出。因此它比原专用复�
 ./build/hpu_ckks_polynomial_example
 ```
 
-程序会打印：
+需要学习多分支应用、Rotate/Conjugate 和通用 Multiply 的顶层调用方式时运行：
+
+```bash
+./build/hpu_ckks_composed_application_example
+```
+
+完整讲解见 `doc/CKKS_COMPOSED_APPLICATION_EXAMPLE.md`。
+
+`hpu_ckks_polynomial_example` 会打印：
 
 - Q4/P1 到 Q3 的 level 变化；
 - HPU_MEM 实际使用的 line 数；
@@ -195,6 +204,10 @@ Rescale 也各自保持 canonical NTT 输入/输出。因此它比原专用复�
 逐字比较，再解密和 Decode。因此 SEAL Evaluator 在示例中只生成 oracle，不承担
 被测计算。
 
+`hpu_ckks_composed_application_example` 会额外打印 plan step 数、Q3→Q2 变化、
+1774 条 DMA 的完整绑定、编码指令数，以及生成的 C header/source/manifest 大小；
+它同样先做 SEAL NTT 逐字比较，再检查解码误差。
+
 如果希望查看完整 inline-assembly body：
 
 ```bash
@@ -202,8 +215,8 @@ Rescale 也各自保持 canonical NTT 输入/输出。因此它比原专用复�
 ```
 
 生成流里的 DMA 指令使用 ABI 规定的 `x10/x11` offset/count 寄存器。
-`build_ckks_relocation_schedule` 已根据 HPU_MEM allocation manifest 为模表、Square、
-Relinearize、Rescale 和 AddPlain 的每条 DMA 绑定具体 span。
+`build_ckks_relocation_schedule` 已根据 HPU_MEM allocation manifest 为模表及所有
+planner operation 的每条 DMA 绑定具体 span。
 `lower_ckks_runtime_program` 把 inline body 编成固定指令字，并将 encoder 识别出的
 custom1 与该调度逐条复核；artifact renderer 可输出 fixed-span `hpu_run_*` 包装和
 resolved CSV。Linux 驱动接入仍属于下一阶段。

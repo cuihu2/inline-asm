@@ -600,3 +600,9 @@ SEALContext → Encrypt(x) → HPU_MEM 镜像 → Square → Relinearize → Res
 
 SEAL 仅作为逐字 oracle 与最终解密验证；HPU 软件执行器运行整条计算链。
 运行 `./build-seal/hpu_ckks_polynomial_example`，`--print-asm` 可输出完整 HPU 指令 body。
+
+多分支顶层应用参考 `examples/ckks_composed_application.cpp`，运行
+`./build-seal/hpu_ckks_composed_application_example`。它演示
+Rotate/Conjugate→Add→Multiply→Relinearize→Rescale→AddPlain 的完整 planner、
+relocation 和 runtime artifact 流程；详细说明见
+`doc/CKKS_COMPOSED_APPLICATION_EXAMPLE.md`。

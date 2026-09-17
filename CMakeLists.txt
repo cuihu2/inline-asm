@@ -314,7 +314,19 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
             hpu_seal_ckks_codegen
     )
 
+    add_executable(hpu_ckks_composed_application_example
+            examples/ckks_composed_application.cpp
+    )
+    target_link_libraries(hpu_ckks_composed_application_example
+            PRIVATE
+            hpu_seal_ckks_codegen
+    )
+
     if(BUILD_TESTING)
+        add_test(
+                NAME hpu_ckks_composed_application_example
+                COMMAND hpu_ckks_composed_application_example)
+
         add_executable(hpu_seal_ckks_context_test
                 test/seal_ckks_context_test.cpp
         )
