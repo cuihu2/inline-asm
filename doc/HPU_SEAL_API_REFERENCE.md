@@ -60,6 +60,28 @@ CkksContextBundle create_ckks_context(const CkksContextSpec& spec);
 - 约束：每个 q/P 素数必须能装入一个 uint32；`sec_level_type::none` 为功能路径。
 - Q/P 划分不在此冻结，由 `SEALContext` 的 key/data context 链决定。
 
+BFV 使用独立的 modified-SEAL context 工厂：
+
+```cpp
+struct BfvContextSpec {
+    std::size_t poly_modulus_degree = 65536;
+    std::vector<int> coeff_modulus_bits;   // data Q + 恰好一个 special P
+    int plain_modulus_bits = 17;
+};
+struct BfvContextBundle {
+    std::shared_ptr<::seal::SEALContext> context;
+    std::vector<std::uint32_t> data_moduli;
+    std::uint32_t special_modulus;
+    std::uint32_t plain_modulus;
+};
+BfvContextBundle create_bfv_context(const BfvContextSpec& spec);
+```
+
+- 当前 HPU BFV profile 要求 Q/P/t 不超过 31 bit；32-bit 素数宽度保留给
+  modified-SEAL 自动选择的 `B/m_sk` 辅助基。
+- 要求 batching 可用，并以 `sec_level_type::none` 构造功能验证 context；这里不作
+  生产安全性声明。
+
 ### 2.2 Level 描述：仿 SEAL 模数链
 
 `include/hpu/seal/ckks_level.hpp`
@@ -108,7 +130,41 @@ public:
   导航，不应依赖裸 `levels[i]`。
 - 未知 `parms_id`、未知 `chain_index` 和越过 top/bottom 的迁移都会被拒绝。
 
-#### 2.2.1 CKKS 操作元数据规则
+#### 2.2.1 BFV Level 与全局模表
+
+`include/hpu/seal/bfv_level.hpp`
+
+```cpp
+struct BfvLevelDescriptor {
+    ::seal::parms_id_type parms_id;
+    std::size_t chain_index;
+    std::vector<std::uint32_t> q_moduli;
+    std::uint32_t special_modulus;
+    std::vector<std::uint32_t> b_moduli;
+    std::uint32_t m_sk, plaintext_modulus;
+    hpu::RnsDecompositionLayout keyswitch_layout;
+    std::vector<int> b_mod_ids;
+    int m_sk_mod_id, plaintext_mod_id;
+    std::vector<std::size_t> evaluation_key_digit_indices;
+    std::uint32_t q_last;
+};
+struct BfvLevelRegistry {
+    std::size_t poly_modulus_degree;
+    std::vector<std::uint32_t> modulus_table;
+    std::vector<BfvLevelDescriptor> levels;
+};
+```
+
+- `create_bfv_level_registry` 逐层读取 modified-SEAL 的真实 Q、`RNSTool::base_B()`、
+  `m_sk` 和 t，不接收手工 `num_b/dnum`。
+- 全局 MOD_ID 表以前缀 `Qmax|P` 开始，再追加所有 level 的 B/m_sk 并复用相同素数，
+  t 最后登记；完整 union 必须不超过 64 项。
+- 每层 KeySwitch 固定为 single-P、每个 active-Q 对应一个 singleton digit；P 在
+  降 level 后不重新编号。
+- `BfvLevelChain` 提供 `top/bottom/at/require/next/has_next`，未知或越界 level 直接
+  拒绝。此阶段只建立可部署的 level/layout 描述，还未打包 BFV 应用镜像常量。
+
+#### 2.2.2 CKKS 操作元数据规则
 
 `include/hpu/seal/ckks_metadata.hpp`
 

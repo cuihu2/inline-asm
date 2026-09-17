@@ -35,8 +35,12 @@ This is the `hpu-bfv-comparison-free-v1` local variant, not an unmodified SEAL
 snapshot. `HPU_MODIFICATIONS.md` lists every HPU-specific implementation and
 validation entry point. The parent build forces
 `SEAL_EXPERIMENTAL_BFV_NO_SMRQ=ON` and
-`SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK=ON`; direct standalone SEAL builds retain
-the upstream-compatible OFF defaults unless these options are requested.
+`SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK=ON`, plus
+`SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX=ON`. The third option makes BFV's
+SEAL-selected `B`, `m_sk`, and `gamma` primes fit the HPU uint32 modulus ABI and
+recomputes the auxiliary-base size using the 31-bit guaranteed capacity of each
+32-bit prime. Direct standalone SEAL builds retain the upstream-compatible OFF
+defaults unless these options are requested.
 
 ## Hardware NTT authority
 
@@ -111,6 +115,21 @@ Multiply/Relinearize/Rescale, Q3 fused Rotate, and Q3
 Multiply/Relinearize/Rescale. Every intermediate and the final Q2 result must
 match SEAL NTT words exactly; the Q3 evaluation key is restricted to MOD_IDs
 `{0,1,2,4}`.
+
+The BFV adapter has a separate SEAL-derived registry. Its fixed prefix is the
+maximum data base `Qmax` followed by exactly one special key modulus `P`; the
+union of every data level's actual `RNSTool::base_B()` and `m_sk()` values is
+appended, and plaintext modulus `t` is registered last. Equal auxiliary primes
+are shared between levels and the complete union must fit 64 MOD_IDs. Each
+level records its `parms_id`, active-Q prefix, fixed-P singleton KeySwitch
+layout, `B`, `m_sk`, `t`, and all global MOD_IDs. No legacy `num_b` or `dnum`
+value is used to infer this shape.
+
+For this first HPU BFV profile, Q, P, and t are restricted to at most 31 bits;
+SEAL's BFV auxiliary primes use the reserved 32-bit width. This makes the
+SEAL-selected auxiliary base disjoint from Q/P without runtime prime repair.
+The registry is parameter/level metadata only: serialization of all BEHZ and
+KeySwitch constants into a BFV application image remains a later step.
 
 ## First CKKS application stream
 

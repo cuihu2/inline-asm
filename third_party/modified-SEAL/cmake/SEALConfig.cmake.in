@@ -33,6 +33,8 @@
 #       omits SmMRq.
 #   SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK : Set to non-zero value if BFV uses an enlarged auxiliary base
 #       and a comparison-free Shenoy-Kumaresan conversion.
+#   SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX : Set to non-zero value if BFV RNSTool uses 32-bit auxiliary
+#       primes and recomputes the enlarged-base bound for the HPU modulus-table ABI.
 #   SEAL_DEFAULT_PRNG : The default choice of PRNG (e.g., "Blake2xb" or "Shake256")
 #
 #   SEAL_USE_MSGSL : Set to non-zero value if library is compiled with Microsoft GSL support
@@ -86,6 +88,7 @@ set(SEAL_USE_GAUSSIAN_NOISE @SEAL_USE_GAUSSIAN_NOISE@)
 set(SEAL_AVOID_BRANCHING @SEAL_AVOID_BRANCHING@)
 set(SEAL_EXPERIMENTAL_BFV_NO_SMRQ @SEAL_EXPERIMENTAL_BFV_NO_SMRQ@)
 set(SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK @SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK@)
+set(SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX @SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX@)
 set(SEAL_DEFAULT_PRNG @SEAL_DEFAULT_PRNG@)
 
 set(SEAL_USE_MSGSL @SEAL_USE_MSGSL@)

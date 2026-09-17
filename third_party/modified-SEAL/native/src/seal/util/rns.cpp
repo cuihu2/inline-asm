@@ -604,6 +604,16 @@ namespace seal
             // SEAL_INTERNAL_MOD_BIT_COUNT (61) bits.
             int total_coeff_bit_count = get_significant_bit_count_uint(q.base_prod(), q.size());
 
+            int auxiliary_prime_bit_count = SEAL_INTERNAL_MOD_BIT_COUNT;
+#ifdef SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX
+            // Only BFV has a nonzero plaintext modulus. Keep the upstream
+            // internal width for CKKS/BGV RNSTool instances in the same build.
+            if (!t_.is_zero())
+            {
+                auxiliary_prime_bit_count = 32;
+            }
+#endif
+
             size_t base_B_size = base_q_size;
 #if defined(SEAL_EXPERIMENTAL_BFV_NO_SMRQ) || defined(SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK)
             int no_smrq_extra_bit_count = 0;
@@ -630,7 +640,7 @@ namespace seal
             int required_signed_base_bit_count = add_safe(required_base_bit_count, 1);
             // Every generated auxiliary prime is strictly larger than 2^(bit_count-1). Use this lower bound rather
             // than the nominal prime bit count so the signed-range guarantee does not depend on the exact primes.
-            constexpr int guaranteed_auxiliary_prime_bit_count = SEAL_INTERNAL_MOD_BIT_COUNT - 1;
+            int guaranteed_auxiliary_prime_bit_count = auxiliary_prime_bit_count - 1;
             while (required_signed_base_bit_count >=
                    guaranteed_auxiliary_prime_bit_count * safe_cast<int>(base_B_size))
             {
@@ -638,14 +648,14 @@ namespace seal
             }
 #else
             while (required_base_bit_count >=
-                   SEAL_INTERNAL_MOD_BIT_COUNT * safe_cast<int>(base_B_size) + SEAL_INTERNAL_MOD_BIT_COUNT)
+                   auxiliary_prime_bit_count * safe_cast<int>(base_B_size) + auxiliary_prime_bit_count)
             {
                 base_B_size++;
             }
 #endif
 #else
             if (32 + t_.bit_count() + total_coeff_bit_count >=
-                SEAL_INTERNAL_MOD_BIT_COUNT * safe_cast<int>(base_q_size) + SEAL_INTERNAL_MOD_BIT_COUNT)
+                auxiliary_prime_bit_count * safe_cast<int>(base_q_size) + auxiliary_prime_bit_count)
             {
                 base_B_size++;
             }
@@ -663,8 +673,38 @@ namespace seal
             }
 
             // Sample primes for B and two more primes: m_sk and gamma
-            auto baseconv_primes =
-                get_primes(mul_safe(size_t(2), coeff_count_), SEAL_INTERNAL_MOD_BIT_COUNT, base_Bsk_m_tilde_size);
+            vector<Modulus> baseconv_primes;
+#ifdef SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX
+            if (!t_.is_zero())
+            {
+                // CoeffModulus::Create can also return 32-bit NTT primes. Ask
+                // for enough candidates and exclude Q/t so Q union Bsk stays
+                // pairwise coprime even when both bases use the HPU width.
+                auto candidates = get_primes(
+                    mul_safe(size_t(2), coeff_count_), auxiliary_prime_bit_count,
+                    add_safe(base_Bsk_m_tilde_size, q.size(), size_t(1)));
+                for (const Modulus &candidate : candidates)
+                {
+                    if (!q.contains(candidate) && candidate != t_)
+                    {
+                        baseconv_primes.push_back(candidate);
+                        if (baseconv_primes.size() == base_Bsk_m_tilde_size)
+                        {
+                            break;
+                        }
+                    }
+                }
+                if (baseconv_primes.size() != base_Bsk_m_tilde_size)
+                {
+                    throw logic_error("failed to find disjoint HPU BFV auxiliary primes");
+                }
+            }
+            else
+#endif
+            {
+                baseconv_primes =
+                    get_primes(mul_safe(size_t(2), coeff_count_), auxiliary_prime_bit_count, base_Bsk_m_tilde_size);
+            }
             auto baseconv_primes_iter = baseconv_primes.cbegin();
             m_sk_ = *baseconv_primes_iter++;
             gamma_ = *baseconv_primes_iter++;

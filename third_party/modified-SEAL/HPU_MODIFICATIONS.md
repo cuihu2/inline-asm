@@ -6,15 +6,18 @@ Git submodule and is versioned by the parent Inline-asm repository.
 
 ## BFV comparison-free variant
 
-The local variant adds two independent, opt-in SEAL build options:
+The local variant adds two independent algorithm options and one HPU ABI option:
 
 - `SEAL_EXPERIMENTAL_BFV_NO_SMRQ`: replaces the BFV input conversion through
   `m_tilde` and `SmMRq` with an unreduced `q -> Bsk` fast conversion.
 - `SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK`: enlarges the auxiliary base and uses
   a comparison-free Shenoy-Kumaresan correction.
+- `SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX`: generates BFV `B`, `m_sk`, and
+  `gamma` as 32-bit primes and recomputes the enlarged-base bound with the
+  smaller guaranteed prime width. It requires both algorithm options.
 
-Inline-asm enables both options when `HPU_ENABLE_SEAL_INTEGRATION=ON`. A direct
-build of this vendored SEAL tree leaves both options OFF unless they are
+Inline-asm enables all three options when `HPU_ENABLE_SEAL_INTEGRATION=ON`. A direct
+build of this vendored SEAL tree leaves all options OFF unless they are
 explicitly requested, preserving the upstream default behavior.
 
 ## Changed implementation and validation files
@@ -44,7 +47,8 @@ cmake -S third_party/modified-SEAL -B build-modified-seal-self \
   -DSEAL_BUILD_TESTS=ON \
   -DSEAL_BUILD_BFV_NO_SMRQ_DIAGNOSTICS=ON \
   -DSEAL_EXPERIMENTAL_BFV_NO_SMRQ=ON \
-  -DSEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK=ON
+  -DSEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK=ON \
+  -DSEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX=ON
 cmake --build build-modified-seal-self -j
 ./build-modified-seal-self/bin/sealtest --gtest_color=no
 

@@ -574,11 +574,25 @@ namespace sealtest
             RNSBase coeff_base(
                 get_primes(poly_modulus_degree * 2, 60, coeff_base_count), pool);
 
-            // Four 60-bit coefficient primes and a 32-bit plaintext modulus fit in four B primes under the default
-            // bound. The extra ceil(log2(4^2)) bits required by unreduced conversion products force a fifth B prime.
             Modulus plain_t(0xFFFFFFFBULL);
             RNSTool rns_tool(poly_modulus_degree, coeff_base, plain_t, pool);
-            ASSERT_EQ(coeff_base_count + size_t(1), rns_tool.base_B()->size());
+            int auxiliary_prime_bit_count = SEAL_INTERNAL_MOD_BIT_COUNT;
+#ifdef SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX
+            auxiliary_prime_bit_count = 32;
+#endif
+            int required_base_bit_count = add_safe(
+                32, plain_t.bit_count(),
+                get_significant_bit_count_uint(coeff_base.base_prod(), coeff_base.size()),
+                get_significant_bit_count(
+                    safe_cast<uint64_t>(coeff_base_count * coeff_base_count - 1)));
+            size_t expected_base_B_size = coeff_base_count;
+            while (required_base_bit_count >=
+                   auxiliary_prime_bit_count * safe_cast<int>(expected_base_B_size) +
+                       auxiliary_prime_bit_count)
+            {
+                expected_base_B_size++;
+            }
+            ASSERT_EQ(expected_base_B_size, rns_tool.base_B()->size());
         }
 #endif
 #endif
@@ -629,7 +643,10 @@ namespace sealtest
                 33, plain_t.bit_count(),
                 get_significant_bit_count_uint(coeff_base.base_prod(), coeff_base.size()),
                 no_smrq_extra_bit_count);
-            constexpr int guaranteed_auxiliary_prime_bit_count = SEAL_INTERNAL_MOD_BIT_COUNT - 1;
+            int guaranteed_auxiliary_prime_bit_count = SEAL_INTERNAL_MOD_BIT_COUNT - 1;
+#ifdef SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX
+            guaranteed_auxiliary_prime_bit_count = 31;
+#endif
             size_t expected_base_B_size = coeff_base_count;
             while (required_signed_base_bit_count >=
                    guaranteed_auxiliary_prime_bit_count * safe_cast<int>(expected_base_B_size))
@@ -650,7 +667,12 @@ namespace sealtest
             size_t coeff_base_count = 6;
             RNSBase coeff_base(
                 get_primes(poly_modulus_degree * 2, 51, coeff_base_count), pool);
-            Modulus plain_t = get_prime(poly_modulus_degree * 2, 17);
+            int plain_modulus_bit_count = 17;
+#ifdef SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX
+            // Keep the no-SMRQ growth term across a 31-bit auxiliary-base boundary.
+            plain_modulus_bit_count = 27;
+#endif
+            Modulus plain_t = get_prime(poly_modulus_degree * 2, plain_modulus_bit_count);
             RNSTool rns_tool(poly_modulus_degree, coeff_base, plain_t, pool);
 
             int total_coeff_bit_count =
@@ -658,7 +680,10 @@ namespace sealtest
             size_t fastbconv_product_growth = mul_safe(coeff_base_count, coeff_base_count);
             int no_smrq_extra_bit_count = get_significant_bit_count(
                 safe_cast<uint64_t>(fastbconv_product_growth - size_t(1)));
-            constexpr int guaranteed_auxiliary_prime_bit_count = SEAL_INTERNAL_MOD_BIT_COUNT - 1;
+            int guaranteed_auxiliary_prime_bit_count = SEAL_INTERNAL_MOD_BIT_COUNT - 1;
+#ifdef SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX
+            guaranteed_auxiliary_prime_bit_count = 31;
+#endif
 
             auto required_base_size = [&](int extra_bit_count) {
                 int required_signed_base_bit_count =
@@ -676,6 +701,28 @@ namespace sealtest
             size_t combined_growth = required_base_size(no_smrq_extra_bit_count);
             ASSERT_GT(combined_growth, without_no_smrq_growth);
             ASSERT_EQ(combined_growth, rns_tool.base_B()->size());
+        }
+#endif
+
+#ifdef SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX
+        TEST(RNSToolTest, HpuAuxiliaryBaseFitsUint32AndExcludesQ)
+        {
+            auto pool = MemoryManager::GetPool();
+            size_t poly_modulus_degree = 4096;
+            auto q_primes = get_primes(poly_modulus_degree * 2, 30, 4);
+            RNSBase coeff_base(q_primes, pool);
+            Modulus plain_t = get_prime(poly_modulus_degree * 2, 17);
+            RNSTool rns_tool(poly_modulus_degree, coeff_base, plain_t, pool);
+
+            ASSERT_LE(rns_tool.m_sk().bit_count(), 32);
+            ASSERT_FALSE(coeff_base.contains(rns_tool.m_sk()));
+            for (size_t index = 0; index < rns_tool.base_B()->size(); index++)
+            {
+                const Modulus &modulus = (*rns_tool.base_B())[index];
+                ASSERT_LE(modulus.bit_count(), 32);
+                ASSERT_FALSE(coeff_base.contains(modulus));
+                ASSERT_NE(plain_t, modulus);
+            }
         }
 #endif
 

@@ -280,6 +280,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
     set(HPU_SEAL_WORKTREE_STATE "VENDORED_IN_PARENT")
     set(SEAL_EXPERIMENTAL_BFV_NO_SMRQ ON CACHE BOOL "" FORCE)
     set(SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK ON CACHE BOOL "" FORCE)
+    set(SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX ON CACHE BOOL "" FORCE)
     set(SEAL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(SEAL_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(SEAL_BUILD_BENCH OFF CACHE BOOL "" FORCE)
@@ -292,6 +293,8 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
 
     add_library(hpu_seal_ckks STATIC
             src/hpu/seal/application_image.cpp
+            src/hpu/seal/bfv_context.cpp
+            src/hpu/seal/bfv_level.cpp
             src/hpu/seal/ckks_context.cpp
             src/hpu/seal/ckks_level.cpp
             src/hpu/seal/ckks_metadata.cpp
@@ -358,6 +361,16 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
                 hpu_fhe_codegen
         )
         add_test(NAME hpu_seal_ckks_context_test COMMAND hpu_seal_ckks_context_test)
+
+        add_executable(hpu_seal_bfv_context_test
+                test/seal_bfv_context_test.cpp
+        )
+        target_link_libraries(hpu_seal_bfv_context_test
+                PRIVATE
+                hpu_seal_ckks
+                hpu_fhe_codegen
+        )
+        add_test(NAME hpu_seal_bfv_context_test COMMAND hpu_seal_bfv_context_test)
 
         add_executable(hpu_seal_ckks_application_image_test
                 test/seal_ckks_application_image_test.cpp

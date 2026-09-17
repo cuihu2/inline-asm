@@ -359,6 +359,28 @@ if(SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK)
     endif()
 endif()
 
+# [option] SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX (default: OFF)
+# Generate BFV BEHZ auxiliary primes B, m_sk, and gamma at 32 bits so they fit
+# the HPU modulus-table ABI. The base-size proof is recomputed with the smaller
+# guaranteed prime width; upstream/default builds retain 61-bit auxiliaries.
+set(SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX_STR
+    "Use 32-bit BFV auxiliary primes for the HPU ABI (experimental)")
+option(SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX
+    ${SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX_STR} OFF)
+message(STATUS
+    "SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX: ${SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX}")
+mark_as_advanced(FORCE SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX)
+if(SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX)
+    if(NOT SEAL_EXPERIMENTAL_BFV_NO_SMRQ OR
+       NOT SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK)
+        message(FATAL_ERROR
+            "SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX requires NO_SMRQ and BRANCHLESS_SK")
+    endif()
+    message(WARNING
+        "SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX changes BFV RNSTool auxiliary moduli. "
+        "It is intended for HPU correctness evaluation only.")
+endif()
+
 # [option] SEAL_USE_INTRIN (default: ON)
 set(SEAL_USE_INTRIN_OPTION_STR "Use intrinsics")
 option(SEAL_USE_INTRIN ${SEAL_USE_INTRIN_OPTION_STR} ON)

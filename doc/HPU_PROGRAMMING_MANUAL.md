@@ -860,7 +860,7 @@ correction_factor_out = correction_factor_in * q_last^-1 mod t
 | BFV BEHZ Multiply / Relinearization / ModSwitch | 已实现 | no-SMRQ + branchless-SK 单 kernel 乘法功能通路 |
 
 BFV 使用修改版 SEAL 对应的 `NO_SMRQ + BRANCHLESS_SK` 关系，不生成 `m_tilde`，
-也不执行依赖阈值判断的 centered correction。模上下文固定为：
+也不执行依赖阈值判断的 centered correction。legacy 功能包的模上下文固定为：
 
 ```text
 Q    = MOD_ID [0, num_q)
@@ -920,13 +920,19 @@ INTT 后，先在 Q 与 P 各 limb 加载预计算的 `floor(P/2)` residue，再
 ModDown。因此舍入只使用 `padd`、BConv、`psub` 和 `pmul`，不需要系数比较或 CPU
 数值计算。legacy `Pks=3,dnum=2` 功能包不冒充该 SEAL key layout。
 
-算法实现以 `/home/songyexin/fhe/SEAL` 中同时启用
-`SEAL_EXPERIMENTAL_BFV_NO_SMRQ` 和
-`SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK` 的修改流程为差分依据；正常构建不依赖 SEAL。
+SEAL-facing BFV context/level 路径以仓库内 `third_party/modified-SEAL` 为唯一参数
+权威，并同时启用 `SEAL_EXPERIMENTAL_BFV_NO_SMRQ`、
+`SEAL_EXPERIMENTAL_BFV_BRANCHLESS_SK` 和
+`SEAL_EXPERIMENTAL_BFV_HPU_32BIT_AUX`。当前 profile 限制 Q/P/t 至多 31 bit，B 与
+`m_sk` 使用 modified-SEAL 选择的 32-bit 素数。全局模表以 `Qmax|P` 为固定前缀，
+随后登记所有 level 实际 `B/m_sk` 的 union，最后登记 t；相同辅助素数跨 level 复用，
+总数不得超过 64。每个 level descriptor 记录 active Q、固定 single-P、singleton-Q
+KeySwitch digits、B、`m_sk`、t 及对应 MOD_ID，不再从 legacy `bfv_num_b/dnum` 推断。
 
-生产密钥生成、安全参数选择、随机数接口、多 level 模数链以及噪声/精度预算仍属于
-后续 host runtime/compiler 工作。当前 Encode/Decode 是自包含的功能实现，但不承担
-生产参数选择或密文元数据持久化。当前主硬件测试使用确定性零噪声、P 可整除的功能 fixture，必须标记为
+生产密钥生成、安全参数选择、随机数接口、BFV 多 level 应用镜像以及噪声/精度预算
+仍属于后续 host runtime/compiler 工作。当前已能从 SEALContext 建立多 level 描述，
+但尚未把每层 BEHZ/KeySwitch 常量序列化到应用镜像。Encode/Decode 是自包含的功能实现，
+不承担生产参数选择或密文元数据持久化。当前主硬件测试使用确定性零噪声、P 可整除的功能 fixture，必须标记为
 `TEST_VECTOR_SCOPE=FUNCTIONAL_ONLY`。
 
 ## 9. 汇编器检查和错误
