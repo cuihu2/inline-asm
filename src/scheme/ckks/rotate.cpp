@@ -89,7 +89,8 @@ std::string generate_rotate_body_asm(
     int N,
     const hpu::RnsDecompositionLayout& layout,
     std::uint32_t galois_element,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     std::ostringstream asm_code;
     if (!valid_config(N, layout, galois_element)) {
@@ -100,10 +101,12 @@ std::string generate_rotate_body_asm(
     asm_code
         << "        /* CKKS ROTATE: fused automorphism + Galois KeySwitch */\n"
         << "        /* Input/output: canonical HPU NTT; no coefficient permutation. */\n";
-    asm_code << hpu::dload(
-        kModulusTableObject,
-        hpu::DataType::mod_ctx,
-        hpu::DloadFlag::small_bank);
+    if (manage_modulus_table) {
+        asm_code << hpu::dload(
+            kModulusTableObject,
+            hpu::DataType::mod_ctx,
+            hpu::DloadFlag::small_bank);
+    }
 
     // Completing the modified-root INTT leaves ordinary coefficient data in
     // key domain sigma_k(s). Only {domain=coefficient,key_domain=k} needs to
@@ -116,7 +119,9 @@ std::string generate_rotate_body_asm(
         N, layout, false, false);
     asm_code << generate_output_ntt_body_asm(N, layout.q_mod_ids);
 
-    asm_code << hpu::pfree(kModulusTableObject);
+    if (manage_modulus_table) {
+        asm_code << hpu::pfree(kModulusTableObject);
+    }
     if (append_psync) {
         asm_code << hpu::psync();
     }
@@ -127,7 +132,8 @@ std::string generate_rotate_steps_body_asm(
     int N,
     const hpu::RnsDecompositionLayout& layout,
     int steps,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     try {
         const auto element = rotation_galois_element(
@@ -136,7 +142,7 @@ std::string generate_rotate_steps_body_asm(
         asm_code << "        /* CKKS ROTATE_SLOTS: steps=" << steps
                  << ", Galois element=" << element << " */\n";
         asm_code << generate_rotate_body_asm(
-            N, layout, element, append_psync);
+            N, layout, element, append_psync, manage_modulus_table);
         return asm_code.str();
     } catch (const std::invalid_argument&) {
         return "        /* Invalid CKKS RotateSteps config */\n";
@@ -146,7 +152,8 @@ std::string generate_rotate_steps_body_asm(
 std::string generate_conjugate_body_asm(
     int N,
     const hpu::RnsDecompositionLayout& layout,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     try {
         const auto element = conjugation_galois_element(
@@ -155,7 +162,7 @@ std::string generate_conjugate_body_asm(
         asm_code << "        /* CKKS CONJUGATE: Galois element="
                  << element << " */\n";
         asm_code << generate_rotate_body_asm(
-            N, layout, element, append_psync);
+            N, layout, element, append_psync, manage_modulus_table);
         return asm_code.str();
     } catch (const std::invalid_argument&) {
         return "        /* Invalid CKKS Conjugate config */\n";
@@ -168,7 +175,8 @@ std::string generate_rotate_body_asm(
     int num_p,
     int dnum,
     std::uint32_t galois_element,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     const auto layout = hpu::make_contiguous_rns_decomposition_layout(
         num_q, num_p, dnum);
@@ -176,7 +184,7 @@ std::string generate_rotate_body_asm(
         return "        /* Invalid CKKS Rotate config */\n";
     }
     return generate_rotate_body_asm(
-        N, layout, galois_element, append_psync);
+        N, layout, galois_element, append_psync, manage_modulus_table);
 }
 
 std::string generate_rotate_steps_body_asm(
@@ -185,13 +193,14 @@ std::string generate_rotate_steps_body_asm(
     int num_p,
     int dnum,
     int steps,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     return generate_rotate_steps_body_asm(
         N,
         hpu::make_contiguous_rns_decomposition_layout(
             num_q, num_p, dnum),
-        steps, append_psync);
+        steps, append_psync, manage_modulus_table);
 }
 
 std::string generate_conjugate_body_asm(
@@ -199,13 +208,14 @@ std::string generate_conjugate_body_asm(
     int num_q,
     int num_p,
     int dnum,
-    bool append_psync)
+    bool append_psync,
+    bool manage_modulus_table)
 {
     return generate_conjugate_body_asm(
         N,
         hpu::make_contiguous_rns_decomposition_layout(
             num_q, num_p, dnum),
-        append_psync);
+        append_psync, manage_modulus_table);
 }
 
 std::string generate_rotate_asm(

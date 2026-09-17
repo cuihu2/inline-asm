@@ -80,6 +80,7 @@ struct PreparedCanonicalTwiddles {
 };
 
 struct PreparedFusedAutomorphismTwiddles {
+    std::string id;
     std::uint8_t modulus_id = 0;
     std::uint32_t modulus = 0;
     std::uint32_t canonical_psi = 0;

@@ -295,6 +295,12 @@ auto shifted = plan.append_subtract_plain(
     "subtract_bias", output, encoded_bias, "output/shifted");
 auto negative = plan.append_negate(
     "negate", shifted, "output/negative");
+auto rotated = plan.append_rotate_slots(
+    "rotate_left_2", input, 2, rotation_key, keyswitch_constants,
+    rotation_twiddles, rotation_workspace, "output/rotate_left_2");
+auto conjugated = plan.append_conjugate(
+    "conjugate", input, conjugation_key, keyswitch_constants,
+    conjugation_twiddles, conjugation_workspace, "output/conjugate");
 ```
 
 - 每一步都显式给出；`append_multiply` 只生成三分量 tensor，plan 不会自动插入
@@ -303,9 +309,12 @@ auto negative = plan.append_negate(
   allocation ID/span 也必须属于该 image。
 - Relinearize 会绑定并校验当前 level 的 evaluation key、KeySwitch 常量和
   canonical twiddle 需求；Rescale 会绑定相邻 level 的常量和 twiddle 需求。
+- Rotate/Conjugate 会验证 Galois element、对应 evaluation key、modified-root fused
+  INTT 表、canonical NTT 表以及 `{domain=coefficient,key_domain=k}` workspace；不同
+  Galois element 的 key、twiddle 或 workspace 不能混用。
 - `steps()` 保留有序的输入/输出 metadata、组件数、表示域和资源 ID，供下一阶段
   的 codegen/runtime lowering 使用。目前覆盖 Add/Subtract、Multiply/MultiplyPlain、
-  AddPlain/SubtractPlain、Negate、Square、Relinearize 和 Rescale。
+  AddPlain/SubtractPlain、Negate、Square、Relinearize、Rescale、Rotate 和 Conjugate。
 
 `include/hpu/seal/operation_codegen.hpp`
 
@@ -317,7 +326,8 @@ CkksLoweredProgram lowered = lower_ckks_operation_plan(
 
 - lowering 按每个 step 的输入 level 选择已有 kernel：基础算术选择对应 pointwise
   body，Multiply/Square→CMULT tensor，Relinearize→standalone NTT Relinearize，
-  Rescale→standalone NTT Rescale。
+  Rescale→standalone NTT Rescale，Rotate/Conjugate→fused automorphism + Galois
+  KeySwitch + canonical output NTT。
 - `CkksLoweredProgram::operations` 保留 step 与各自 body 的一一映射，供后续 DMA
   relocation backend 绑定对象和资源 ID；`body_asm` 是按原顺序拼接的完整程序。
 - 嵌套 kernel 不加载/释放模表也不发 `psync`，完整程序默认只在外层管理一次。
@@ -339,7 +349,9 @@ CkksRelocationSchedule schedule = build_ckks_relocation_schedule(
 - 当前模表及所有 planner operation 均已完整解析。Relinearize 覆盖前后
   NTT/INTT twiddle、逐 digit ModUp、evaluation-key 乘加、P→Q ModDown、base merge
   及所有 workspace；Rescale 覆盖 half、单源 BConv、inverse、跨 level 输出及前后
-  transform。由标准 image builder 构造的当前 `x²+1` 计划满足 `schedule.complete()`。
+  transform；Rotate/Conjugate 覆盖 fused INTT、coefficient workspace、Galois key、
+  KeySwitch workspace 和输出 NTT。由标准 image builder 构造的计划满足
+  `schedule.complete()`。
 - 只有 `unresolved_operations` 为空且绑定数等于 `expected_dma_count` 时，
   `schedule.complete()` 才返回 true。
 

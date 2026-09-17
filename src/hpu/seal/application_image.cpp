@@ -635,6 +635,7 @@ CkksApplicationImageBuilder::add_fused_automorphism_twiddles(
         prepared.modified_psi = tables[basis].modified_psi;
         const std::string prefix = "constants/twiddle/" + id + "/mod"
             + std::to_string(prepared.modulus_id) + "/intt";
+        prepared.id = prefix;
         for (std::size_t stage = 0; stage < tables[basis].stages.size(); ++stage) {
             prepared.inverse_stages.push_back(image_.add(
                 stage_id(prefix, stage), tables[basis].stages[stage],

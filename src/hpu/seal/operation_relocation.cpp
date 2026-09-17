@@ -414,38 +414,42 @@ void bind_transform_limb(
     bindings.store(0, data_id);
 }
 
-void bind_relinearize(
+void bind_fused_inverse_limb(
     OperationBindingBuilder& bindings,
-    const CkksOperationStep& step,
-    const CkksLevelDescriptor& level,
+    const std::string& input_id,
+    const std::string& output_id,
+    const std::string& twiddle_prefix,
     std::size_t degree)
 {
-    if (step.inputs.size() != 1 || step.inputs[0].component_count != 3
-        || step.output.component_count != 2
-        || step.resources.evaluation_key_ids.size() != 1
-        || step.resources.constant_ids.size() != 1
-        || !step.resources.requires_canonical_twiddles) {
-        throw std::invalid_argument(
-            "invalid Relinearize relocation manifest");
+    bindings.load(0, input_id);
+    const std::size_t stages = ntt_stage_count(degree);
+    for (std::size_t stage = 0; stage < stages; ++stage) {
+        bindings.load_words(
+            3, twiddle_prefix + "/stage" + std::to_string(stage),
+            degree / 2);
     }
-    const auto& tensor = step.inputs[0];
-    const auto& layout = level.rns_layout;
-    const std::string& evaluation_key_id =
-        step.resources.evaluation_key_ids[0];
-    const std::string hardware_prefix =
-        step.resources.constant_ids[0] + "/hardware";
+    bindings.load_words(
+        3, twiddle_prefix + "/post_untwist_scale", degree);
+    bindings.store(0, output_id);
+}
+
+void bind_keyswitch_core(
+    OperationBindingBuilder& bindings,
+    const CkksPlannedValue& switching,
+    std::size_t switching_component,
+    const CkksPlannedValue& base,
+    std::size_t base_component,
+    const CkksPlannedValue& output,
+    const hpu::RnsDecompositionLayout& layout,
+    const std::string& evaluation_key_id,
+    const std::string& hardware_prefix,
+    std::size_t degree,
+    bool direct_second_output)
+{
     std::vector<int> full_contexts = layout.q_mod_ids;
     full_contexts.insert(
         full_contexts.end(), layout.p_mod_ids.begin(),
         layout.p_mod_ids.end());
-
-    for (std::size_t component = 0; component < 3; ++component) {
-        for (int context : layout.q_mod_ids) {
-            bind_transform_limb(
-                bindings, limb_id(tensor, component, context),
-                context, degree, true);
-        }
-    }
 
     for (std::size_t digit = 0; digit < layout.key_digits.size(); ++digit) {
         const auto& sources = layout.key_digits[digit];
@@ -462,7 +466,8 @@ void bind_relinearize(
             + "/modup/d" + std::to_string(digit);
 
         for (int source : sources) {
-            bindings.load(0, limb_id(tensor, 2, source));
+            bindings.load(
+                0, limb_id(switching, switching_component, source));
             bindings.store(
                 0, workspace_mod_id(
                     hardware_prefix, "modup", source));
@@ -470,7 +475,8 @@ void bind_relinearize(
         for (std::size_t source_index = 0;
              source_index < sources.size(); ++source_index) {
             const int source = sources[source_index];
-            bindings.load(0, limb_id(tensor, 2, source));
+            bindings.load(
+                0, limb_id(switching, switching_component, source));
             bindings.load(
                 1, digit_prefix + "/qhat_inv/mod"
                     + std::to_string(source));
@@ -580,7 +586,10 @@ void bind_relinearize(
             bindings.load(
                 2, moddown_prefix + "/p_inverse/mod"
                     + std::to_string(context));
-            bindings.store(0, accumulator);
+            bindings.store(
+                0, direct_second_output && component == 1
+                    ? limb_id(output, 1, context)
+                    : accumulator);
         }
     }
 
@@ -588,9 +597,44 @@ void bind_relinearize(
         bindings.load(
             0, workspace_mod_id(
                 hardware_prefix, "accumulator/c0", context));
-        bindings.load(1, limb_id(tensor, 0, context));
-        bindings.store(2, limb_id(step.output, 0, context));
+        bindings.load(1, limb_id(base, base_component, context));
+        bindings.store(2, limb_id(output, 0, context));
     }
+}
+
+void bind_relinearize(
+    OperationBindingBuilder& bindings,
+    const CkksOperationStep& step,
+    const CkksLevelDescriptor& level,
+    std::size_t degree)
+{
+    if (step.inputs.size() != 1 || step.inputs[0].component_count != 3
+        || !step.workspaces.empty()
+        || step.output.component_count != 2
+        || step.resources.evaluation_key_ids.size() != 1
+        || step.resources.constant_ids.size() != 1
+        || !step.resources.requires_canonical_twiddles) {
+        throw std::invalid_argument(
+            "invalid Relinearize relocation manifest");
+    }
+    const auto& tensor = step.inputs[0];
+    const auto& layout = level.rns_layout;
+    const std::string hardware_prefix =
+        step.resources.constant_ids[0] + "/hardware";
+
+    for (std::size_t component = 0; component < 3; ++component) {
+        for (int context : layout.q_mod_ids) {
+            bind_transform_limb(
+                bindings, limb_id(tensor, component, context),
+                context, degree, true);
+        }
+    }
+
+    bind_keyswitch_core(
+        bindings, tensor, 2, tensor, 0, step.output, layout,
+        step.resources.evaluation_key_ids[0], hardware_prefix,
+        degree, false);
+
     for (int context : layout.q_mod_ids) {
         bindings.load(0, limb_id(tensor, 1, context));
         bindings.load(
@@ -598,6 +642,61 @@ void bind_relinearize(
                 hardware_prefix, "accumulator/c1", context));
         bindings.store(2, limb_id(step.output, 1, context));
     }
+
+    for (std::size_t component = 0; component < 2; ++component) {
+        for (int context : layout.q_mod_ids) {
+            bind_transform_limb(
+                bindings, limb_id(step.output, component, context),
+                context, degree, false);
+        }
+    }
+    bindings.finish();
+}
+
+void bind_galois(
+    OperationBindingBuilder& bindings,
+    const CkksOperationStep& step,
+    const CkksLevelDescriptor& level,
+    std::size_t degree)
+{
+    if (step.inputs.size() != 1 || step.inputs[0].component_count != 2
+        || step.workspaces.size() != 1
+        || step.workspaces[0].component_count != 2
+        || step.workspaces[0].domain
+            != hpu::runtime::PolynomialDomain::coefficient
+        || step.workspaces[0].key_domain
+            != step.resources.galois_element
+        || step.output.component_count != 2
+        || step.resources.evaluation_key_ids.size() != 1
+        || step.resources.constant_ids.size() != 1
+        || step.resources.fused_twiddle_ids.size()
+            != level.rns_layout.q_mod_ids.size()
+        || !step.resources.requires_canonical_twiddles) {
+        throw std::invalid_argument(
+            "invalid Rotate/Conjugate relocation manifest");
+    }
+    const auto& input = step.inputs[0];
+    const auto& workspace = step.workspaces[0];
+    const auto& layout = level.rns_layout;
+    const std::string hardware_prefix =
+        step.resources.constant_ids[0] + "/hardware";
+
+    for (std::size_t component = 0; component < 2; ++component) {
+        for (std::size_t basis = 0;
+             basis < layout.q_mod_ids.size(); ++basis) {
+            const int context = layout.q_mod_ids[basis];
+            bind_fused_inverse_limb(
+                bindings,
+                limb_id(input, component, context),
+                limb_id(workspace, component, context),
+                step.resources.fused_twiddle_ids[basis], degree);
+        }
+    }
+
+    bind_keyswitch_core(
+        bindings, workspace, 1, workspace, 0, step.output, layout,
+        step.resources.evaluation_key_ids[0], hardware_prefix,
+        degree, true);
 
     for (std::size_t component = 0; component < 2; ++component) {
         for (int context : layout.q_mod_ids) {
@@ -863,6 +962,21 @@ CkksRelocationSchedule build_ckks_relocation_schedule(
             bind_negate(
                 bindings, step,
                 level_chain.require(step.inputs[0].metadata.parms_id));
+            break;
+        }
+        case CkksOperationKind::rotate:
+        case CkksOperationKind::conjugate: {
+            if (step.inputs.empty()) {
+                throw std::invalid_argument(
+                    "Rotate/Conjugate relocation manifest has no input");
+            }
+            OperationBindingBuilder bindings(
+                result, image, operation, operation_index,
+                first_program_dma_index, degree, instructions);
+            bind_galois(
+                bindings, step,
+                level_chain.require(step.inputs[0].metadata.parms_id),
+                degree);
             break;
         }
         case CkksOperationKind::relinearize: {

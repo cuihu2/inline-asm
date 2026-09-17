@@ -20,7 +20,9 @@ enum class CkksOperationKind {
     rescale,
     add_plain,
     subtract_plain,
-    negate
+    negate,
+    rotate,
+    conjugate
 };
 
 struct CkksPlannedValue {
@@ -35,14 +37,17 @@ struct CkksPlannedValue {
 struct CkksOperationResources {
     bool requires_modulus_table = true;
     bool requires_canonical_twiddles = false;
+    std::uint32_t galois_element = 0;
     std::vector<std::string> evaluation_key_ids;
     std::vector<std::string> constant_ids;
+    std::vector<std::string> fused_twiddle_ids;
 };
 
 struct CkksOperationStep {
     std::string id;
     CkksOperationKind kind = CkksOperationKind::square;
     std::vector<CkksPlannedValue> inputs;
+    std::vector<CkksPlannedValue> workspaces;
     CkksPlannedValue output;
     CkksOperationResources resources;
 };
@@ -103,6 +108,32 @@ public:
         std::string step_id,
         const PreparedRnsObject& ciphertext,
         std::string output_id);
+    PreparedRnsObject append_rotate(
+        std::string step_id,
+        const PreparedRnsObject& input,
+        std::uint32_t galois_element,
+        const PreparedEvaluationKey& galois_key,
+        const PreparedKeySwitchConstants& constants,
+        const std::vector<PreparedFusedAutomorphismTwiddles>& fused_twiddles,
+        const PreparedRnsObject& coefficient_workspace,
+        std::string output_id);
+    PreparedRnsObject append_rotate_slots(
+        std::string step_id,
+        const PreparedRnsObject& input,
+        int steps,
+        const PreparedEvaluationKey& galois_key,
+        const PreparedKeySwitchConstants& constants,
+        const std::vector<PreparedFusedAutomorphismTwiddles>& fused_twiddles,
+        const PreparedRnsObject& coefficient_workspace,
+        std::string output_id);
+    PreparedRnsObject append_conjugate(
+        std::string step_id,
+        const PreparedRnsObject& input,
+        const PreparedEvaluationKey& galois_key,
+        const PreparedKeySwitchConstants& constants,
+        const std::vector<PreparedFusedAutomorphismTwiddles>& fused_twiddles,
+        const PreparedRnsObject& coefficient_workspace,
+        std::string output_id);
 
     const std::vector<CkksOperationStep>& steps() const noexcept;
 
@@ -114,6 +145,22 @@ private:
         const PreparedRnsObject& object,
         std::size_t component_count,
         const char* role) const;
+    void validate_value_representation(
+        const PreparedRnsObject& object,
+        std::size_t component_count,
+        hpu::runtime::PolynomialDomain domain,
+        std::uint64_t key_domain,
+        const char* role) const;
+    PreparedRnsObject append_galois(
+        CkksOperationKind kind,
+        std::string step_id,
+        const PreparedRnsObject& input,
+        std::uint32_t galois_element,
+        const PreparedEvaluationKey& galois_key,
+        const PreparedKeySwitchConstants& constants,
+        const std::vector<PreparedFusedAutomorphismTwiddles>& fused_twiddles,
+        const PreparedRnsObject& coefficient_workspace,
+        std::string output_id);
 
     CkksApplicationImageBuilder& image_builder_;
     std::vector<CkksOperationStep> steps_;

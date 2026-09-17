@@ -14,7 +14,8 @@ std::string generate_rotate_body_asm(
     int N,
     const hpu::RnsDecompositionLayout& layout,
     std::uint32_t galois_element,
-    bool append_psync = true);
+    bool append_psync = true,
+    bool manage_modulus_table = true);
 
 // High-level CKKS entry points. Positive slot steps rotate left, negative
 // steps rotate right. They map to a raw Galois element and reuse the same
@@ -23,12 +24,14 @@ std::string generate_rotate_steps_body_asm(
     int N,
     const hpu::RnsDecompositionLayout& layout,
     int steps,
-    bool append_psync = true);
+    bool append_psync = true,
+    bool manage_modulus_table = true);
 
 std::string generate_conjugate_body_asm(
     int N,
     const hpu::RnsDecompositionLayout& layout,
-    bool append_psync = true);
+    bool append_psync = true,
+    bool manage_modulus_table = true);
 
 std::string generate_rotate_body_asm(
     int N,
@@ -36,7 +39,8 @@ std::string generate_rotate_body_asm(
     int num_p,
     int dnum,
     std::uint32_t galois_element,
-    bool append_psync = true);
+    bool append_psync = true,
+    bool manage_modulus_table = true);
 
 std::string generate_rotate_steps_body_asm(
     int N,
@@ -44,14 +48,16 @@ std::string generate_rotate_steps_body_asm(
     int num_p,
     int dnum,
     int steps,
-    bool append_psync = true);
+    bool append_psync = true,
+    bool manage_modulus_table = true);
 
 std::string generate_conjugate_body_asm(
     int N,
     int num_q,
     int num_p,
     int dnum,
-    bool append_psync = true);
+    bool append_psync = true,
+    bool manage_modulus_table = true);
 
 std::string generate_rotate_asm(
     int N,

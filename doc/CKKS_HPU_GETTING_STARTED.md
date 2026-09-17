@@ -133,6 +133,11 @@ twiddle 需求；它不会自动插入任何算子。
 tensor，调用方随后追加 Relinearize 和 Rescale；因此 `x*y` 与本例的 `x²` 共用
 后两段 level/scale 管理链路，而不会被隐藏成一个不可检查的复合步骤。
 
+Rotate 和 Conjugate 也可通过 `append_rotate_slots` / `append_conjugate` 加入同一
+计划。调用方先由 image builder 准备对应 Galois key、fused automorphism twiddle
+和 coefficient-domain workspace；planner 会验证这些资源的 Galois element 与当前
+level，并把完整 DMA 依赖保留到 runtime relocation manifest。
+
 每个 RNS limb 都是独立、256B 对齐的 allocation。对 N=65536，每个 limb 的
 `line_count` 必须恰好为 1024。allocation 名称和 span 构成未来 Linux backend
 执行 dload/dstore relocation 的依据。

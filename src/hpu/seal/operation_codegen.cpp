@@ -2,8 +2,10 @@
 
 #include "poly/cmult.hpp"
 #include "scheme/ckks/basic_arithmetic.hpp"
+#include "scheme/ckks/galois.hpp"
 #include "scheme/ckks/relinearize.hpp"
 #include "scheme/ckks/rescale.hpp"
+#include "scheme/ckks/rotate.hpp"
 #include "util/hpu_asm.hpp"
 #include "util/validation.hpp"
 
@@ -294,6 +296,62 @@ std::string lower_step(
             step.inputs[0].metadata.parms_id);
         return hpu::scheme::ckks::generate_negate_body_asm(
             static_cast<int>(level.q_moduli.size()), false, false);
+    }
+    case CkksOperationKind::rotate:
+    case CkksOperationKind::conjugate: {
+        if (step.inputs.size() != 1 || step.workspaces.size() != 1
+            || !step.resources.requires_canonical_twiddles
+            || step.resources.galois_element == 0
+            || step.resources.evaluation_key_ids.size() != 1
+            || step.resources.constant_ids.size() != 1) {
+            throw std::invalid_argument(
+                "invalid planned CKKS Rotate/Conjugate resources");
+        }
+        require_value_shape(
+            level_chain, step.inputs[0], 2,
+            "planned CKKS Rotate/Conjugate input");
+        require_value_shape(
+            level_chain, step.output, 2,
+            "planned CKKS Rotate/Conjugate output");
+        const auto& workspace = step.workspaces[0];
+        validate_ckks_metadata(
+            level_chain, workspace.metadata,
+            "planned CKKS Rotate/Conjugate workspace");
+        if (workspace.id.empty() || workspace.component_count != 2
+            || workspace.domain
+                != hpu::runtime::PolynomialDomain::coefficient
+            || workspace.key_domain != step.resources.galois_element) {
+            throw std::invalid_argument(
+                "planned CKKS Rotate/Conjugate workspace has an incompatible representation");
+        }
+        require_ckks_metadata_matches(
+            level_chain, step.inputs[0].metadata, workspace.metadata,
+            "planned CKKS Rotate/Conjugate workspace");
+        require_ckks_metadata_matches(
+            level_chain,
+            infer_ckks_preserving_metadata(
+                level_chain, step.inputs[0].metadata),
+            step.output.metadata,
+            "planned CKKS Rotate/Conjugate output");
+        const auto& level = level_chain.require(
+            step.inputs[0].metadata.parms_id);
+        if (step.resources.fused_twiddle_ids.size()
+            != level.rns_layout.q_mod_ids.size()) {
+            throw std::invalid_argument(
+                "planned CKKS Rotate/Conjugate has incomplete fused twiddles");
+        }
+        if (step.kind == CkksOperationKind::conjugate) {
+            if (step.resources.galois_element
+                != hpu::scheme::ckks::conjugation_galois_element(degree)) {
+                throw std::invalid_argument(
+                    "planned CKKS Conjugate has the wrong Galois element");
+            }
+            return hpu::scheme::ckks::generate_conjugate_body_asm(
+                degree, level.rns_layout, false, false);
+        }
+        return hpu::scheme::ckks::generate_rotate_body_asm(
+            degree, level.rns_layout,
+            step.resources.galois_element, false, false);
     }
     }
     throw std::invalid_argument("unknown planned CKKS operation kind");

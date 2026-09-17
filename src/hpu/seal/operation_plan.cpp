@@ -1,6 +1,10 @@
 #include "hpu/seal/operation_plan.hpp"
 
+#include "hpu/model/hardware_ntt.hpp"
+#include "scheme/ckks/galois.hpp"
+
 #include <algorithm>
+#include <numeric>
 #include <stdexcept>
 #include <utility>
 
@@ -136,6 +140,38 @@ void validate_constant_resource(
         throw std::invalid_argument(
             std::string(role) + " is absent from this HPU_MEM image");
     }
+}
+
+void validate_twiddle_resource(
+    const hpu::runtime::HpuMemImage& image,
+    const std::string& id,
+    const hpu::runtime::HpuMemSpan& span,
+    std::size_t word_count,
+    const char* role)
+{
+    require_resource_id(id, role);
+    try {
+        const auto& allocation = image.allocation(id);
+        if (!same_span(allocation.span, span)
+            || allocation.word_count != word_count
+            || allocation.kind != hpu::runtime::AllocationKind::twiddle
+            || !allocation.read_only) {
+            throw std::invalid_argument(
+                std::string(role) + " does not match its HPU_MEM allocation");
+        }
+    } catch (const std::out_of_range&) {
+        throw std::invalid_argument(
+            std::string(role) + " is absent from this HPU_MEM image");
+    }
+}
+
+std::size_t ntt_stage_count(std::size_t degree)
+{
+    std::size_t stages = 0;
+    for (std::size_t remaining = degree; remaining > 1; remaining >>= 1U) {
+        ++stages;
+    }
+    return stages;
 }
 
 } // namespace
@@ -420,6 +456,169 @@ PreparedRnsObject CkksOperationPlan::append_negate(
     return output;
 }
 
+PreparedRnsObject CkksOperationPlan::append_rotate(
+    std::string step_id,
+    const PreparedRnsObject& input,
+    std::uint32_t galois_element,
+    const PreparedEvaluationKey& galois_key,
+    const PreparedKeySwitchConstants& constants,
+    const std::vector<PreparedFusedAutomorphismTwiddles>& fused_twiddles,
+    const PreparedRnsObject& coefficient_workspace,
+    std::string output_id)
+{
+    return append_galois(
+        CkksOperationKind::rotate, std::move(step_id), input,
+        galois_element, galois_key, constants, fused_twiddles,
+        coefficient_workspace, std::move(output_id));
+}
+
+PreparedRnsObject CkksOperationPlan::append_rotate_slots(
+    std::string step_id,
+    const PreparedRnsObject& input,
+    int steps,
+    const PreparedEvaluationKey& galois_key,
+    const PreparedKeySwitchConstants& constants,
+    const std::vector<PreparedFusedAutomorphismTwiddles>& fused_twiddles,
+    const PreparedRnsObject& coefficient_workspace,
+    std::string output_id)
+{
+    const std::size_t degree = input.components.empty()
+        ? 0 : input.components.front().degree;
+    return append_rotate(
+        std::move(step_id), input,
+        hpu::scheme::ckks::rotation_galois_element(degree, steps),
+        galois_key, constants, fused_twiddles, coefficient_workspace,
+        std::move(output_id));
+}
+
+PreparedRnsObject CkksOperationPlan::append_conjugate(
+    std::string step_id,
+    const PreparedRnsObject& input,
+    const PreparedEvaluationKey& galois_key,
+    const PreparedKeySwitchConstants& constants,
+    const std::vector<PreparedFusedAutomorphismTwiddles>& fused_twiddles,
+    const PreparedRnsObject& coefficient_workspace,
+    std::string output_id)
+{
+    const std::size_t degree = input.components.empty()
+        ? 0 : input.components.front().degree;
+    return append_galois(
+        CkksOperationKind::conjugate, std::move(step_id), input,
+        hpu::scheme::ckks::conjugation_galois_element(degree),
+        galois_key, constants, fused_twiddles, coefficient_workspace,
+        std::move(output_id));
+}
+
+PreparedRnsObject CkksOperationPlan::append_galois(
+    CkksOperationKind kind,
+    std::string step_id,
+    const PreparedRnsObject& input,
+    std::uint32_t galois_element,
+    const PreparedEvaluationKey& galois_key,
+    const PreparedKeySwitchConstants& constants,
+    const std::vector<PreparedFusedAutomorphismTwiddles>& fused_twiddles,
+    const PreparedRnsObject& coefficient_workspace,
+    std::string output_id)
+{
+    require_new_step(step_id);
+    if (kind != CkksOperationKind::rotate
+        && kind != CkksOperationKind::conjugate) {
+        throw std::invalid_argument("invalid CKKS Galois operation kind");
+    }
+    validate_value(input, 2, "CKKS Galois input");
+    if (input.components.empty()) {
+        throw std::invalid_argument("CKKS Galois input has no components");
+    }
+    const std::size_t degree = input.components.front().degree;
+    const std::uint64_t ring_order = 2ULL * degree;
+    if (galois_element >= ring_order
+        || std::gcd<std::uint64_t>(galois_element, ring_order) != 1) {
+        throw std::invalid_argument("CKKS Galois element is invalid");
+    }
+    validate_value_representation(
+        coefficient_workspace, 2,
+        hpu::runtime::PolynomialDomain::coefficient,
+        galois_element, "CKKS Galois coefficient workspace");
+    require_ckks_metadata_matches(
+        image_builder_.level_chain(), input.metadata(),
+        coefficient_workspace.metadata(),
+        "CKKS Galois coefficient workspace");
+
+    if (galois_key.data_parms_id != input.parms_id
+        || galois_key.chain_index != input.chain_index
+        || constants.data_parms_id != input.parms_id
+        || constants.chain_index != input.chain_index) {
+        throw std::invalid_argument(
+            "CKKS Galois resources do not match the input level");
+    }
+    const auto& level = image_builder_.level_chain().require(input.parms_id);
+    validate_evaluation_key_resource(
+        image_builder_.image(), level, galois_key, degree);
+    validate_constant_resource(
+        image_builder_.image(), constants.id, constants.values,
+        "CKKS Galois KeySwitch constants");
+    if (constants.hardware_prefix != constants.id + "/hardware"
+        || constants.hardware_constant_polynomial_count == 0
+        || constants.hardware_workspace_polynomial_count == 0) {
+        throw std::invalid_argument(
+            "CKKS Galois constants lack hardware-expanded resources");
+    }
+    if (fused_twiddles.size() != level.rns_layout.q_mod_ids.size()) {
+        throw std::invalid_argument(
+            "CKKS Galois fused-twiddle count does not match active Q");
+    }
+
+    std::vector<std::string> fused_twiddle_ids;
+    fused_twiddle_ids.reserve(fused_twiddles.size());
+    const std::size_t expected_stages = ntt_stage_count(degree);
+    for (std::size_t basis = 0; basis < fused_twiddles.size(); ++basis) {
+        const auto& table = fused_twiddles[basis];
+        const int modulus_id = level.rns_layout.q_mod_ids[basis];
+        const std::uint32_t modulus = level.q_moduli[basis];
+        if (table.id.empty()
+            || table.modulus_id != static_cast<std::uint8_t>(modulus_id)
+            || table.modulus != modulus
+            || table.inverse_stages.size() != expected_stages
+            || hpu::model::pow_mod(
+                table.modified_psi, galois_element, modulus)
+                != table.canonical_psi) {
+            throw std::invalid_argument(
+                "CKKS Galois fused twiddles do not match the operation");
+        }
+        for (std::size_t stage = 0; stage < expected_stages; ++stage) {
+            validate_twiddle_resource(
+                image_builder_.image(),
+                table.id + "/stage" + std::to_string(stage),
+                table.inverse_stages[stage], degree / 2,
+                "CKKS Galois fused twiddle stage");
+        }
+        validate_twiddle_resource(
+            image_builder_.image(), table.id + "/post_untwist_scale",
+            table.post_untwist_scale, degree,
+            "CKKS Galois fused post-untwist table");
+        fused_twiddle_ids.push_back(table.id);
+    }
+
+    const auto output_metadata = infer_ckks_preserving_metadata(
+        image_builder_.level_chain(), input.metadata());
+    auto output = image_builder_.reserve_ciphertext(
+        std::move(output_id), output_metadata, 2);
+
+    CkksOperationStep step;
+    step.id = std::move(step_id);
+    step.kind = kind;
+    step.inputs = {describe(input)};
+    step.workspaces = {describe(coefficient_workspace)};
+    step.output = describe(output);
+    step.resources.requires_canonical_twiddles = true;
+    step.resources.galois_element = galois_element;
+    step.resources.evaluation_key_ids = {galois_key.id};
+    step.resources.constant_ids = {constants.id};
+    step.resources.fused_twiddle_ids = std::move(fused_twiddle_ids);
+    commit_step(std::move(step));
+    return output;
+}
+
 const std::vector<CkksOperationStep>& CkksOperationPlan::steps() const noexcept
 {
     return steps_;
@@ -458,13 +657,24 @@ void CkksOperationPlan::validate_value(
     std::size_t component_count,
     const char* role) const
 {
+    validate_value_representation(
+        object, component_count, canonical_domain, 1, role);
+}
+
+void CkksOperationPlan::validate_value_representation(
+    const PreparedRnsObject& object,
+    std::size_t component_count,
+    hpu::runtime::PolynomialDomain domain,
+    std::uint64_t key_domain,
+    const char* role) const
+{
     if (object.id.empty() || object.components.size() != component_count) {
         throw std::invalid_argument(
             std::string(role) + " has an invalid id or component count");
     }
     validate_ckks_metadata(
         image_builder_.level_chain(), object.metadata(), role);
-    if (object.domain != canonical_domain || object.key_domain != 1) {
+    if (object.domain != domain || object.key_domain != key_domain) {
         throw std::invalid_argument(
             std::string(role) + " is not in canonical NTT/key domain");
     }
