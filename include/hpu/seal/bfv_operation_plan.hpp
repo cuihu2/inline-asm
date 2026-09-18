@@ -46,9 +46,10 @@ struct BfvOperationStep {
     BfvOperationResources resources;
 };
 
-// Plans BFV operations that preserve level, component count, coefficient
-// output domain, and canonical secret-key domain. No implicit level transition
-// is inserted; MultiplyPlain explicitly owns its NTT/INTT round trip.
+// Plans BFV operations that preserve the two-component coefficient-domain
+// ciphertext shape and canonical secret-key domain. No implicit level
+// transition is inserted: only append_mod_switch moves to the adjacent level.
+// MultiplyPlain explicitly owns its NTT/INTT round trip.
 class BfvOperationPlan {
 public:
     explicit BfvOperationPlan(BfvApplicationImageBuilder& image_builder);

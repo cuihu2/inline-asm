@@ -177,6 +177,12 @@ the fixed instruction array, resolved HPU_MEM span table, zero-argument run
 wrapper, and provenance CSV. Incomplete schedules, altered DMA operands, and
 out-of-capacity spans are rejected before artifact generation.
 
+`examples/bfv_multiply_modswitch_application.cpp` is the application-facing
+reference for this path. It plans `Multiply -> ModSwitch -> AddPlain`, prepares
+the destination-level plaintext before execution, and can emit assembly,
+instruction/command bits, the C run wrapper, resolved DMA manifest, and the
+HPU_MEM image with `--emit-dir`. See `doc/BFV_APPLICATION_EXAMPLE.md`.
+
 ## First CKKS application stream
 
 `hpu::scheme::ckks::generate_ciphertext_multiply_body_asm` is now the formal

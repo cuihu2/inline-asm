@@ -156,6 +156,11 @@ ctest --test-dir build-seal -R hpu_seal_ckks_context_test --output-on-failure
 `x*(RotateLeft(x,1)+Conjugate(x))+1`，覆盖 Galois key/workspace、分支合并、
 Multiply→Relinearize→Rescale、完整 DMA relocation 和 runtime artifacts。
 
+BFV 顶层示例见 `doc/BFV_APPLICATION_EXAMPLE.md`。它实现
+`ModSwitch(left*right)+3`，演示预制目标 level plaintext、融合
+Multiply/Relinearize、显式 ModSwitch，以及 `.asm/.inst32/.cmd26`、运行包装、
+resolved DMA manifest 和 HPU_MEM 镜像的生成。
+
 当前 HPU_MEM 软件执行器已经对 CKKS Add/Subtract/MultiplyPlain/AddPlain/
 SubtractPlain、Negate、通用密文 Multiply、Square、KeySwitch、Relinearize、Rescale、
 raw/slot-step Rotate 和 Conjugate

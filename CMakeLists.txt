@@ -364,10 +364,28 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
             hpu_seal_ckks_codegen
     )
 
+    add_executable(hpu_bfv_multiply_modswitch_example
+            examples/bfv_multiply_modswitch_application.cpp
+    )
+    target_link_libraries(hpu_bfv_multiply_modswitch_example
+            PRIVATE
+            hpu_seal_ckks_codegen
+            hpu_filesystem_compat
+    )
+
     if(BUILD_TESTING)
         add_test(
                 NAME hpu_ckks_composed_application_example
                 COMMAND hpu_ckks_composed_application_example)
+
+        add_test(
+                NAME hpu_bfv_multiply_modswitch_example
+                COMMAND hpu_bfv_multiply_modswitch_example)
+        add_test(
+                NAME hpu_bfv_multiply_modswitch_example_artifacts
+                COMMAND hpu_bfv_multiply_modswitch_example
+                        --emit-dir
+                        ${CMAKE_CURRENT_BINARY_DIR}/bfv_multiply_modswitch_example_artifacts)
 
         add_executable(hpu_seal_ckks_context_test
                 test/seal_ckks_context_test.cpp

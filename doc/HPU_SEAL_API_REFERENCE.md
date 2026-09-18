@@ -792,3 +792,9 @@ SEAL 仅作为逐字 oracle 与最终解密验证；HPU 软件执行器运行整
 Rotate/Conjugate→Add→Multiply→Relinearize→Rescale→AddPlain 的完整 planner、
 relocation 和 runtime artifact 流程；详细说明见
 `doc/CKKS_COMPOSED_APPLICATION_EXAMPLE.md`。
+
+BFV 顶层应用参考 `examples/bfv_multiply_modswitch_application.cpp`。它实现
+`ModSwitch(left*right)+3`，其中 bias 在目标 level 预制，并把同一 plan 降低为完整
+relocation/runtime。传入 `--emit-dir PATH` 可输出 `.asm/.inst32/.cmd26`、生成的
+`hpu_run_*()` C 包装、resolved DMA CSV 和 HPU_MEM uint32 镜像；完整说明见
+`doc/BFV_APPLICATION_EXAMPLE.md`。
