@@ -154,6 +154,14 @@ objects. The combined lowering loads the application modulus table once and
 terminates with one `psync`; no runtime coefficient arithmetic falls back to
 the CPU.
 
+The BFV ciphertext-multiply codegen now also has a SEAL-facing explicit-layout
+entry. It consumes active-Q, fixed single-P, per-level B, `m_sk`, and t MOD_IDs
+instead of reconstructing them from legacy `num_b/dnum`. The fused stream uses
+comparison-free BEHZ followed directly by the BFV rounded single-P
+relinearization, and owns exactly one modulus-table lifetime. This is the
+low-level contract that the next BFV planner/relocation step will bind to the
+already prepared multiply constants and relinearization key.
+
 ## First CKKS application stream
 
 `hpu::scheme::ckks::generate_ciphertext_multiply_body_asm` is now the formal

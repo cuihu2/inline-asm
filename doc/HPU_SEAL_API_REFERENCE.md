@@ -575,10 +575,10 @@ public:
 
 ---
 
-## 3. HPU 指令生成 API：`hpu::scheme::ckks`
+## 3. HPU 指令生成 API：`hpu::scheme::{ckks,bfv}`
 
 这一层直接生成 HPU 汇编 body（字符串），是“仿 SEAL 算子”的 codegen 入口。
-头文件位于 `include/scheme/ckks/`，实现位于 `src/scheme/ckks/`。所有函数返回
+头文件位于 `include/scheme/{ckks,bfv}/`，实现位于 `src/scheme/{ckks,bfv}/`。所有函数返回
 包含 HPU 指令的 `std::string`；`*_asm` 版本返回带 `__asm__ volatile(...)` 包装的
 完整 C++ 内联汇编函数，`*_body_asm` 版本只返回 body。
 
@@ -686,6 +686,30 @@ std::uint32_t rotation_galois_element(std::size_t degree, int steps);  // genera
 ```
 
 - 正 step 左旋、负 step 右旋，与 SEAL generator-3 槽布局一致；step=0 拒绝。
+
+### 3.6 BFV 显式布局密文乘法
+
+`include/scheme/bfv/ciphertext_multiply.hpp`
+
+```cpp
+struct BfvCiphertextMultiplyLayout {
+    hpu::RnsDecompositionLayout keyswitch_layout; // active Q、固定 single-P、singleton digits
+    std::vector<int> b_mod_ids;
+    int m_sk_mod_id;
+    int plaintext_mod_id;
+};
+std::string generate_ciphertext_multiply_body_asm(
+    int N, const BfvCiphertextMultiplyLayout& layout,
+    std::uint64_t plaintext_modulus,
+    bool append_psync = false, bool manage_modulus_table = true);
+```
+
+- 该入口组合 comparison-free/no-SMRQ BEHZ、branchless-SK 与 BFV rounded single-P
+  Relinearization；不使用 generic CKKS ModDown 语义。
+- Q/P/B/`m_sk`/t 全部使用调用者提供的全局 MOD_ID，允许降 level 后 P 和辅助基不重编号；
+  重复、越界、非 singleton-Q digit、multi-P 或不足的 B 基会被拒绝。
+- `manage_modulus_table=true` 时整个融合流只装载/释放一次 small-bank 模表；嵌入更大
+  planner 时可传 `false`，由外层统一管理模表和终止 `psync`。
 
 ---
 

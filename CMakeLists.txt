@@ -227,6 +227,17 @@ if(BUILD_TESTING)
             NAME hpu_bfv_keyswitch_codegen_test
             COMMAND hpu_bfv_keyswitch_codegen_test)
 
+    add_executable(hpu_bfv_ciphertext_multiply_codegen_test
+            test/bfv_ciphertext_multiply_codegen_test.cpp
+    )
+    target_link_libraries(hpu_bfv_ciphertext_multiply_codegen_test
+            PRIVATE
+            hpu_fhe_codegen
+    )
+    add_test(
+            NAME hpu_bfv_ciphertext_multiply_codegen_test
+            COMMAND hpu_bfv_ciphertext_multiply_codegen_test)
+
     foreach(INVALID_CONFIG
             invalid_context_overflow
             invalid_num_q

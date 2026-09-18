@@ -1280,6 +1280,12 @@ scratch。三分量结果占用的 span 随后直接作为 KeySwitch 输入；�
 Q 分量。默认 `N=4096,Q=4,Pks=3,B=6` 的统一 window 为 30913 line，完整 DMA
 顺序和地址只由同一目录中的 `dma_plan.csv` 与 `hardware/line_map.csv` 规定。
 
+SEAL-facing codegen 另提供显式 `BfvCiphertextMultiplyLayout`：直接接收 active Q、固定
+single-P、每层 B、`m_sk` 和 t 的全局 MOD_ID，并强制 singleton-Q KeySwitch digits。
+该融合流复用 comparison-free BEHZ，但后半段明确选择 BFV rounded single-P
+Relinearization；整条流只装载一次 small-bank 模表，降 level 时不会把 P 或辅助基重新编号。
+当前这一入口是后续 application planner/DMA relocation 的底层契约。
+
 `bfv_modswitch` 接收单 kernel 的二分量 Q 密文，先加 `floor(q_last/2)`，再把
 `q_last` 当单元素 P 基复用 ModDown；输出为 `[2,num_q-1,N]`。其数学 golden 与
 `direct_rounded_divide_last` 逐 limb 比较，随后执行 BFV scale-and-round Decrypt
