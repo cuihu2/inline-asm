@@ -247,6 +247,10 @@ auto relocation = build_bfv_relocation_schedule(
 - lowering 为整个计划只装载一次 small-bank 模表、在末尾只发出一次 `psync`。
   relocation 按生成汇编中每条 `dload/dstore` 的顺序绑定具体 HPU_MEM limb，并拒绝
   shape、level、domain、只读属性或 DMA ABI 不匹配的对象。
+- `include/hpu/seal/bfv_operation_runtime.hpp` 将完整 relocation schedule 与汇编一起
+  物化为 `BfvRuntimeProgram`，逐条复核编码后的 custom1。`render_bfv_runtime_artifacts`
+  输出固定指令字、resolved span 数组、`hpu_run_<stem>()` 包装和带 BFV operation/
+  allocation provenance 的 CSV；任何不完整 schedule、编码字段漂移或越界 span 都会被拒绝。
 
 #### 2.2.4 CKKS 操作元数据规则
 
@@ -495,12 +499,18 @@ CkksRelocationSchedule schedule = build_ckks_relocation_schedule(
 - 只有 `unresolved_operations` 为空且绑定数等于 `expected_dma_count` 时，
   `schedule.complete()` 才返回 true。
 
-`include/hpu/seal/operation_runtime.hpp`
+`include/hpu/seal/operation_runtime.hpp`、
+`include/hpu/seal/bfv_operation_runtime.hpp`
 
 ```cpp
 CkksRuntimeProgram runtime = lower_ckks_runtime_program(lowered, schedule);
 CkksRuntimeArtifacts artifacts = render_ckks_runtime_artifacts(
     "ckks_x2_plus_one", runtime, image_builder.image().capacity_lines());
+
+BfvRuntimeProgram bfv_runtime = lower_bfv_runtime_program(
+    bfv_lowered, bfv_schedule);
+BfvRuntimeArtifacts bfv_artifacts = render_bfv_runtime_artifacts(
+    "bfv_fused_multiply", bfv_runtime, bfv_builder.image().capacity_lines());
 ```
 
 - runtime lowering 通过公共 assembler 生成 `EncodedInstruction`，执行 object lifetime

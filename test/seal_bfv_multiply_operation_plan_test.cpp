@@ -3,6 +3,7 @@
 #include "hpu/seal/bfv_operation_codegen.hpp"
 #include "hpu/seal/bfv_operation_plan.hpp"
 #include "hpu/seal/bfv_operation_relocation.hpp"
+#include "hpu/seal/bfv_operation_runtime.hpp"
 #include "scheme/bfv/ciphertext_multiply.hpp"
 
 #include <seal/seal.h>
@@ -142,6 +143,53 @@ int main()
                                 hpu::seal_adapter::BfvDmaDirection::store),
                 "BFV Multiply relocation omitted a required input, workspace, key, or output");
 
+        const auto runtime = hpu::seal_adapter::lower_bfv_runtime_program(lowered, relocations);
+        const auto runtime_spans = runtime.spans();
+        require(runtime.instructions.size() > runtime.dma.size() &&
+                    runtime.dma.size() == relocations.expected_dma_count &&
+                    runtime_spans.size() == runtime.dma.size() &&
+                    runtime.dma.front().instruction_index == 0 &&
+                    runtime.dma.front().binding.allocation_id == "constants/modulus_table" &&
+                    runtime.dma.back().binding.allocation_id.find("output/product/") == 0 &&
+                    runtime_spans.back().line_offset ==
+                        relocations.bindings.back().span.line_offset,
+                "BFV runtime lowering lost encoded instructions or resolved spans");
+        const auto artifacts = hpu::seal_adapter::render_bfv_runtime_artifacts(
+            "bfv_fused_multiply", runtime, image_builder.image().capacity_lines());
+        require(artifacts.header.find("int hpu_run_bfv_fused_multiply(void);") !=
+                        std::string::npos &&
+                    artifacts.source.find("static const hpu_dma_span_t "
+                                          "hpu_program_bfv_fused_multiply_resolved_spans[]") !=
+                        std::string::npos &&
+                    artifacts.source.find("hpu_program_bfv_fused_multiply(") != std::string::npos &&
+                    artifacts.resolved_dma_manifest.find(
+                        "instruction_index,dma_index,operation_index,operation_id") == 0 &&
+                    artifacts.resolved_dma_manifest.find("\"multiply\"") != std::string::npos &&
+                    artifacts.resolved_dma_manifest.find("\"output/product/c1/mod") !=
+                        std::string::npos,
+                "BFV runtime artifacts lost their wrapper or relocation provenance");
+
+        auto incomplete_relocations = relocations;
+        incomplete_relocations.bindings.pop_back();
+        require_invalid_argument(
+            [&] {
+                (void)hpu::seal_adapter::lower_bfv_runtime_program(lowered, incomplete_relocations);
+            },
+            "BFV runtime accepted an incomplete relocation schedule");
+        auto corrupted_relocations = relocations;
+        corrupted_relocations.bindings[1].object_slot = 7;
+        require_invalid_argument(
+            [&] {
+                (void)hpu::seal_adapter::lower_bfv_runtime_program(lowered, corrupted_relocations);
+            },
+            "BFV runtime accepted a DMA binding that disagrees with the encoded instruction");
+        require_invalid_argument(
+            [&] {
+                (void)hpu::seal_adapter::render_bfv_runtime_artifacts(
+                    "bfv_fused_multiply", runtime, image_builder.image().used_lines() - 1);
+            },
+            "BFV runtime rendered an output span beyond the declared HPU_MEM capacity");
+
         ::seal::Evaluator evaluator(*bundle.context);
         ::seal::Ciphertext expected;
         evaluator.multiply(encrypted_left, encrypted_right, expected);
@@ -193,7 +241,7 @@ int main()
             },
             "BFV Multiply accepted an image without canonical twiddles");
 
-        std::cout << "SEAL BFV fused Multiply planner/relocation path passed\n";
+        std::cout << "SEAL BFV fused Multiply planner/relocation/runtime path passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "SEAL BFV Multiply operation plan test failed: " << error.what() << '\n';

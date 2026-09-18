@@ -954,6 +954,12 @@ branchless SK、ModUp 累加器及 rounded ModDown 预留全部 workspace；relo
 汇编的 DMA 顺序绑定这些对象。三分量 tensor 只在 HPU_MEM 阶段内存在，随后直接送入
 KeySwitch，host 只观察最终二分量系数域输出。
 
+`lower_bfv_runtime_program` 进一步使用项目 assembler 把完整 body 编成固定 32-bit 指令，
+并将每条 encoded custom1 的 DMA 序号、对象槽、方向、type/release 与 flag 重新和
+relocation 对拍。`render_bfv_runtime_artifacts` 输出 resolved span 数组、零参数
+`hpu_run_<stem>()` 包装及带 operation/allocation 来源的 CSV；span 越界或 schedule
+不完整时不会生成可执行包。
+
 生产密钥生成、安全参数选择、随机数接口、其余 BFV planner/codegen 以及噪声预算仍属于
 后续 host runtime/compiler 工作。Encode/Decode 是自包含的功能实现，
 不承担生产参数选择或密文元数据持久化。当前主硬件测试使用确定性零噪声、P 可整除的功能 fixture，必须标记为

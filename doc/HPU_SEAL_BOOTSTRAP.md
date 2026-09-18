@@ -162,6 +162,11 @@ builder reserves every BEHZ/KeySwitch workspace, and relocation binds the full
 comparison-free BEHZ plus rounded single-P relinearization DMA stream. The
 three-component tensor remains phase-local; the HPU writes a two-component
 coefficient-domain ciphertext without host synchronization or CPU arithmetic.
+The BFV runtime materializer assembles this body with the project encoder,
+checks every encoded custom1 field against the relocation schedule, and emits
+the fixed instruction array, resolved HPU_MEM span table, zero-argument run
+wrapper, and provenance CSV. Incomplete schedules, altered DMA operands, and
+out-of-capacity spans are rejected before artifact generation.
 
 ## First CKKS application stream
 
