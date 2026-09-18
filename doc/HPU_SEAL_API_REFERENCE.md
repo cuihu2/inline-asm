@@ -182,6 +182,8 @@ auto output = builder.reserve_ciphertext("output/result", level);
 auto relin = builder.add_relinearization_key("relin/top", keys, level);
 auto ks = builder.add_keyswitch_constants("constants/keyswitch/top", level);
 auto mul = builder.add_multiply_constants("constants/multiply/top", level);
+auto mod_switch = builder.add_mod_switch_constants(
+    "constants/mod_switch/top", level);
 ```
 
 - 模表直接使用 `BfvLevelRegistry` 的全局 Q/P/B/`m_sk`/t MOD_ID；t 不生成 evaluator
@@ -194,6 +196,9 @@ auto mul = builder.add_multiply_constants("constants/multiply/top", level);
 - Multiply 镜像展开 comparison-free BEHZ 所需的 Q→Bsk、t residue、
   `Q^{-1} mod Bsk`、B→Q/`m_sk`、`B^{-1} mod m_sk`、`m_sk`→Q 与 `-B mod Q`。
   同一 B 基的 qhat inverse 在 B→Q 与 B→`m_sk` 之间共享，不重复占用 HPU_MEM。
+- ModSwitch 镜像为相邻 level 预制每个 source-Q limb 的 `floor(q_last/2)` residue、
+  dropped-Q→retained-Q 单源 BConv 常量、`q_last^{-1} mod q_i` 和二分量工作区。
+  这些对象足以在 HPU 上完成 rounded coefficient-domain drop-last，不需要运行时比较。
 - builder 不接收 legacy `bfv_num_b/dnum`。未知 `parms_id` 会被拒绝；SecretKey
   从 API 和镜像中均不可见。
 - BFV Ciphertext 保持 SEAL 的系数域 Q 表示并按 limb 打包；`reserve_ciphertext` 可为
@@ -222,15 +227,18 @@ auto ciphertext_product = plan.append_multiply(
     "multiply", left, right, prepared_relin_key,
     prepared_keyswitch_constants, prepared_multiply_constants,
     "output/ciphertext_product");
+auto switched = plan.append_mod_switch(
+    "mod_switch", ciphertext_product, prepared_mod_switch_constants,
+    "output/next_level");
 auto program = lower_bfv_operation_plan(plan, context);
 auto relocation = build_bfv_relocation_schedule(
     program, builder.image(), context);
 ```
 
-- 首层 planner 支持 Ciphertext Add/Subtract/Multiply、Negate、AddPlain/SubtractPlain 与
-  MultiplyPlain。
+- 首层 planner 支持 Ciphertext Add/Subtract/Multiply、Negate、AddPlain/SubtractPlain、
+  MultiplyPlain 与 ModSwitch。
   所有输入与输出都必须是同一 `parms_id` 的二分量系数域 Q 密文；算子保持 level、
-  component 数、输出 domain 和 `key_domain=1`，不会隐式插入 ModSwitch。
+  component 数、输出 domain 和 `key_domain=1`。除显式 ModSwitch 外不会隐式降 level。
 - AddPlain/SubtractPlain 只接受 builder 生成的只读系数域 `Delta*m` 对象；为
   MultiplyPlain 准备的 NTT plaintext 会被明确拒绝。运行时仅执行 `padd/psub`，不做
   host plaintext 缩放或系数计算。
@@ -244,6 +252,10 @@ auto relocation = build_bfv_relocation_schedule(
   single-P relinearization 的融合流，输出仍为二分量系数域密文。BEHZ 输入扩基、tensor、
   FastFloor、branchless SK 和 KeySwitch 的全部中间多项式都由 builder 预留，relocation
   逐条绑定；三分量 tensor 不暴露给 host，也不存在 CPU 同步或数值回退。
+- ModSwitch 只接受存在相邻下一层的二分量系数域密文。它按 modified-SEAL 的
+  `divide_and_round_q_last_inplace` 语义先加 `floor(q_last/2)`，再用单源 BConv 和
+  `q_last^{-1}` 完成 rounded drop-last；输出被 planner 注册到下一 `parms_id`。
+  Multiply→ModSwitch 可作为同一计划一次 lowering、relocation 和 runtime 物化。
 - lowering 为整个计划只装载一次 small-bank 模表、在末尾只发出一次 `psync`。
   relocation 按生成汇编中每条 `dload/dstore` 的顺序绑定具体 HPU_MEM limb，并拒绝
   shape、level、domain、只读属性或 DMA ABI 不匹配的对象。

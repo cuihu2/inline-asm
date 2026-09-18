@@ -17,7 +17,8 @@ enum class BfvOperationKind {
     add_plain,
     subtract_plain,
     multiply_plain,
-    negate
+    negate,
+    mod_switch
 };
 
 struct BfvPlannedValue {
@@ -34,6 +35,7 @@ struct BfvOperationResources {
     std::string evaluation_key_id;
     std::string keyswitch_constants_id;
     std::string multiply_constants_id;
+    std::string mod_switch_constants_id;
 };
 
 struct BfvOperationStep {
@@ -75,6 +77,10 @@ public:
                                                std::string output_id);
     PreparedBfvRnsObject append_negate(std::string step_id, const PreparedBfvRnsObject& ciphertext,
                                        std::string output_id);
+    PreparedBfvRnsObject append_mod_switch(std::string step_id,
+                                           const PreparedBfvRnsObject& ciphertext,
+                                           const PreparedBfvModSwitchConstants& constants,
+                                           std::string output_id);
 
     const std::vector<BfvOperationStep>& steps() const noexcept;
 

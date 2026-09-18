@@ -568,6 +568,53 @@ void bind_negate(OperationBindingBuilder& bindings, const BfvOperationStep& step
     bindings.finish();
 }
 
+void bind_mod_switch(OperationBindingBuilder& bindings, const BfvOperationStep& step,
+                     const BfvLevelDescriptor& source, const BfvLevelDescriptor& destination)
+{
+    if (step.inputs.size() != 1 || step.inputs[0].component_count != 2 ||
+        step.output.component_count != 2 || step.resources.requires_canonical_twiddles ||
+        step.resources.mod_switch_constants_id.empty() ||
+        source.keyswitch_layout.q_mod_ids.size() < 2 ||
+        destination.keyswitch_layout.q_mod_ids.size() + 1 !=
+            source.keyswitch_layout.q_mod_ids.size() ||
+        !std::equal(destination.keyswitch_layout.q_mod_ids.begin(),
+                    destination.keyswitch_layout.q_mod_ids.end(),
+                    source.keyswitch_layout.q_mod_ids.begin())) {
+        throw std::invalid_argument("invalid BFV ModSwitch relocation manifest");
+    }
+    const auto& source_contexts = source.keyswitch_layout.q_mod_ids;
+    const auto& destination_contexts = destination.keyswitch_layout.q_mod_ids;
+    const int dropped_context = source_contexts.back();
+    const std::string hardware_prefix = step.resources.mod_switch_constants_id + "/hardware";
+    for (std::size_t component = 0; component < 2; ++component) {
+        const std::string rounded_role = "rounded/c" + std::to_string(component);
+        for (int context : source_contexts) {
+            bindings.load(0, limb_id(step.inputs.front(), component, context));
+            bindings.load(1, hardware_prefix + "/half/mod" + std::to_string(context));
+            bindings.store(0, workspace_mod_id(hardware_prefix, rounded_role, context));
+        }
+
+        bindings.load(0, workspace_mod_id(hardware_prefix, rounded_role, dropped_context));
+        bindings.load(1,
+                      hardware_prefix + "/moddown/qhat_inv/mod" + std::to_string(dropped_context));
+        bindings.store(0, hardware_prefix + "/workspace/bconv/normalized0");
+        for (int target : destination_contexts) {
+            bindings.load(0, hardware_prefix + "/workspace/bconv/normalized0");
+            bindings.load(1, hardware_prefix + "/moddown/qhat_mod_target/target" +
+                                 std::to_string(target) + "/source" +
+                                 std::to_string(dropped_context));
+            bindings.store(2, workspace_mod_id(hardware_prefix, "moddown/correction", target));
+        }
+        for (int context : destination_contexts) {
+            bindings.load(0, workspace_mod_id(hardware_prefix, rounded_role, context));
+            bindings.load(1, workspace_mod_id(hardware_prefix, "moddown/correction", context));
+            bindings.load(2, hardware_prefix + "/moddown/p_inverse/mod" + std::to_string(context));
+            bindings.store(0, limb_id(step.output, component, context));
+        }
+    }
+    bindings.finish();
+}
+
 } // namespace
 
 BfvRelocationSchedule build_bfv_relocation_schedule(const BfvLoweredProgram& program,
@@ -662,6 +709,10 @@ BfvRelocationSchedule build_bfv_relocation_schedule(const BfvLoweredProgram& pro
             break;
         case BfvOperationKind::negate:
             bind_negate(bindings, step, level);
+            break;
+        case BfvOperationKind::mod_switch:
+            bind_mod_switch(bindings, step, level,
+                            level_chain.require(step.output.metadata.parms_id));
             break;
         }
         first_program_dma_index += instructions.size();

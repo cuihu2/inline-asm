@@ -45,6 +45,20 @@ struct PreparedBfvMultiplyConstants {
     std::size_t hardware_workspace_polynomial_count = 0;
 };
 
+struct PreparedBfvModSwitchConstants {
+    std::string id;
+    ::seal::parms_id_type source_parms_id{};
+    ::seal::parms_id_type destination_parms_id{};
+    std::size_t source_chain_index = 0;
+    std::size_t destination_chain_index = 0;
+    int dropped_mod_id = -1;
+    hpu::runtime::HpuMemSpan values;
+    std::string hardware_prefix;
+    std::size_t hardware_component_capacity = 0;
+    std::size_t hardware_constant_polynomial_count = 0;
+    std::size_t hardware_workspace_polynomial_count = 0;
+};
+
 // Builds a BFV HPU_MEM application image. Parameters, per-level bases, input
 // objects, prepared plaintexts, outputs, keys, and constants all use identities
 // derived from modified-SEAL; legacy bfv_num_b/dnum configuration is rejected.
@@ -66,6 +80,9 @@ public:
                                                        const BfvLevelDescriptor& level);
     PreparedBfvMultiplyConstants add_multiply_constants(std::string id,
                                                         const BfvLevelDescriptor& level);
+    PreparedBfvModSwitchConstants add_mod_switch_constants(std::string id,
+                                                           const BfvLevelDescriptor& source_level,
+                                                           std::size_t component_capacity = 2);
     PreparedBfvRnsObject reserve_ciphertext(
         std::string id, const BfvLevelDescriptor& level, std::size_t component_count = 2,
         hpu::runtime::PolynomialDomain domain = hpu::runtime::PolynomialDomain::coefficient,

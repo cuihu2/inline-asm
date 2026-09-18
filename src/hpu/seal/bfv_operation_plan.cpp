@@ -181,6 +181,47 @@ PreparedBfvRnsObject BfvOperationPlan::append_negate(std::string step_id,
     return output;
 }
 
+PreparedBfvRnsObject
+BfvOperationPlan::append_mod_switch(std::string step_id, const PreparedBfvRnsObject& ciphertext,
+                                    const PreparedBfvModSwitchConstants& constants,
+                                    std::string output_id)
+{
+    require_new_step(step_id);
+    validate_value(ciphertext, 2, hpu::runtime::PolynomialDomain::coefficient, false,
+                   "BFV ModSwitch input");
+    const auto& source = image_builder_.level_chain().require(ciphertext.parms_id);
+    if (!image_builder_.level_chain().has_next(source.parms_id)) {
+        throw std::invalid_argument("BFV ModSwitch input has no next data level");
+    }
+    const auto& destination = image_builder_.level_chain().next(source.parms_id);
+    if (constants.source_parms_id != source.parms_id ||
+        constants.source_chain_index != source.chain_index ||
+        constants.destination_parms_id != destination.parms_id ||
+        constants.destination_chain_index != destination.chain_index ||
+        constants.dropped_mod_id != source.keyswitch_layout.q_mod_ids.back()) {
+        throw std::invalid_argument(
+            "BFV ModSwitch constants do not match the adjacent level transition");
+    }
+    validate_constant_resource(image_builder_.image(), constants.id, constants.values,
+                               "BFV ModSwitch constants");
+    if (constants.hardware_prefix != constants.id + "/hardware" ||
+        constants.hardware_component_capacity < ciphertext.components.size() ||
+        constants.hardware_constant_polynomial_count == 0 ||
+        constants.hardware_workspace_polynomial_count == 0) {
+        throw std::invalid_argument("BFV ModSwitch constants lack hardware-expanded resources");
+    }
+    auto output = image_builder_.reserve_ciphertext(std::move(output_id), destination);
+
+    BfvOperationStep step;
+    step.id = std::move(step_id);
+    step.kind = BfvOperationKind::mod_switch;
+    step.inputs = {describe(ciphertext)};
+    step.output = describe(output);
+    step.resources.mod_switch_constants_id = constants.id;
+    commit_step(std::move(step));
+    return output;
+}
+
 const std::vector<BfvOperationStep>& BfvOperationPlan::steps() const noexcept
 {
     return steps_;

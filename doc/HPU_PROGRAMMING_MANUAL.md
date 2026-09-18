@@ -942,8 +942,9 @@ level、MOD_ID、domain、key-domain 和 required-output 元数据，因此算�
 host plaintext lift、缩放或 NTT。
 
 BFV planner/codegen 已支持同 level、系数域的 Ciphertext Add/Subtract/Multiply/Negate、
-AddPlain/SubPlain 与 MultiplyPlain。它保持二分量 Q shape、`parms_id`、输出 coefficient
-domain 和 `key_domain=1`。Add/SubPlain 只接受预制 `Delta*m`；MultiplyPlain 只接受预制
+AddPlain/SubPlain、MultiplyPlain 与显式 ModSwitch。普通算子保持二分量 Q shape、
+`parms_id`、输出 coefficient domain 和 `key_domain=1`。Add/SubPlain 只接受预制
+`Delta*m`；MultiplyPlain 只接受预制
 canonical HPU NTT plaintext，并对两个密文分量逐 Q limb 执行显式 NTT、`pmul`、INTT。
 lowering 对整个计划只装载一次模表并只发出一次终止 `psync`，包括所有 twiddle 在内的
 每条 DMA 都由 relocation 绑定到具体 HPU_MEM limb，不存在 CPU 数值计算回退。
@@ -953,6 +954,13 @@ comparison-free BEHZ 常量。builder 为 Q→Bsk、四路输入变换、三分�
 branchless SK、ModUp 累加器及 rounded ModDown 预留全部 workspace；relocation 严格按融合
 汇编的 DMA 顺序绑定这些对象。三分量 tensor 只在 HPU_MEM 阶段内存在，随后直接送入
 KeySwitch，host 只观察最终二分量系数域输出。
+
+显式 ModSwitch 要求 source level 存在相邻下一层。builder 为每个 source-Q limb 预制
+`floor(q_last/2)` residue，并准备 dropped-Q→retained-Q 的单源 BConv、
+`q_last^{-1} mod q_i` 与全部工作区。planner 将输出直接登记为下一 `parms_id`；codegen
+严格复现 modified-SEAL 的 coefficient-domain rounded drop-last。Multiply→ModSwitch
+能够留在同一计划中完成 relocation、指令编码和 runtime artifact 生成，过程中没有
+系数比较、host 同步或 CPU 数值回退。
 
 `lower_bfv_runtime_program` 进一步使用项目 assembler 把完整 body 编成固定 32-bit 指令，
 并将每条 encoded custom1 的 DMA 序号、对象槽、方向、type/release 与 flag 重新和
@@ -1299,6 +1307,10 @@ Relinearization；整条流只装载一次 small-bank 模表，降 level 时不�
 `BfvOperationPlan::append_multiply` 已消费这一入口，并要求 prepared relinearization key、
 KeySwitch 常量和 BEHZ 常量来自同一 level。对应 relocation 覆盖四路输入、所有常量与
 twiddle、中间 workspace、评估密钥和最终两个 Q 输出，不需要 CPU 参与中间计算。
+
+`BfvOperationPlan::append_mod_switch` 消费 `add_mod_switch_constants` 产生的相邻 level
+资源。它拒绝 bottom level、错误 source/destination `parms_id`、非二分量或非系数域输入；
+relocation 按 rounded、单源 BConv、乘逆元三个阶段绑定 DMA，并将输出绑定到下一层 Q。
 
 `bfv_modswitch` 接收单 kernel 的二分量 Q 密文，先加 `floor(q_last/2)`，再把
 `q_last` 当单元素 P 基复用 ModDown；输出为 `[2,num_q-1,N]`。其数学 golden 与

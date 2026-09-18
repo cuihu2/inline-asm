@@ -2,6 +2,7 @@
 
 #include "scheme/bfv/basic_arithmetic.hpp"
 #include "scheme/bfv/ciphertext_multiply.hpp"
+#include "scheme/bfv/modswitch.hpp"
 #include "util/hpu_asm.hpp"
 #include "util/validation.hpp"
 
@@ -139,6 +140,23 @@ std::string lower_step(const BfvOperationStep& step, const BfvLevelChain& level_
         require_same_level(step.inputs.front(), step.output, "planned BFV Negate output");
         return hpu::scheme::bfv::generate_negate_body_asm(static_cast<int>(level.q_moduli.size()),
                                                           false, false);
+    }
+    case BfvOperationKind::mod_switch: {
+        if (step.inputs.size() != 1 || step.resources.requires_canonical_twiddles ||
+            step.resources.mod_switch_constants_id.empty()) {
+            throw std::invalid_argument("invalid planned BFV ModSwitch resources");
+        }
+        const auto& source = require_coefficient_value_shape(level_chain, step.inputs.front(), 2,
+                                                             "planned BFV ModSwitch input");
+        const auto& destination = require_coefficient_value_shape(level_chain, step.output, 2,
+                                                                  "planned BFV ModSwitch output");
+        if (!level_chain.has_next(source.parms_id) ||
+            level_chain.next(source.parms_id).parms_id != destination.parms_id ||
+            destination.q_moduli.size() + 1 != source.q_moduli.size()) {
+            throw std::invalid_argument("planned BFV ModSwitch output is not the adjacent level");
+        }
+        return hpu::scheme::bfv::generate_modswitch_body_asm(
+            static_cast<int>(source.q_moduli.size()), 2, false, false);
     }
     }
     throw std::invalid_argument("unknown planned BFV operation kind");

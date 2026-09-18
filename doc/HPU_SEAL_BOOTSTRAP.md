@@ -143,7 +143,8 @@ MultiplyPlain. Runtime execution therefore performs no host plaintext lift,
 scaling, or NTT.
 
 The BFV planner/codegen layer now covers ciphertext Add/Subtract/Multiply/Negate,
-AddPlain/SubtractPlain, and MultiplyPlain. It requires exact same-level,
+AddPlain/SubtractPlain, MultiplyPlain, and explicit ModSwitch. Arithmetic inputs
+require exact same-level,
 two-component coefficient-domain ciphertexts. Plaintext addition and
 subtraction accept only the prepared Delta-scaled form; MultiplyPlain accepts
 only the centered-lift canonical HPU NTT form. For every ciphertext component
@@ -153,6 +154,14 @@ pre-twist, stage-twiddle, and post-scale DMAs resolve to immutable HPU_MEM
 objects. The combined lowering loads the application modulus table once and
 terminates with one `psync`; no runtime coefficient arithmetic falls back to
 the CPU.
+
+ModSwitch consumes a two-component coefficient-domain ciphertext at a level
+with an adjacent successor and produces the registered next-level shape. The
+builder precomputes every `floor(q_last/2)` residue, dropped-Q-to-retained-Q
+single-source BConv constant, `q_last` inverse, and workspace. Lowering follows
+modified-SEAL's rounded coefficient-domain drop-last exactly, so it needs no
+runtime comparison or CPU assist. Multiply followed by ModSwitch can be
+lowered, relocated, encoded, and emitted as one runtime program.
 
 BFV ciphertext Multiply uses the SEAL-facing explicit-layout entry. It consumes
 active-Q, fixed single-P, per-level B, `m_sk`, and t MOD_IDs instead of

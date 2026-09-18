@@ -564,6 +564,88 @@ BfvApplicationImageBuilder::add_multiply_constants(std::string id, const BfvLeve
     return result;
 }
 
+PreparedBfvModSwitchConstants BfvApplicationImageBuilder::add_mod_switch_constants(
+    std::string id, const BfvLevelDescriptor& source_level, std::size_t component_capacity)
+{
+    constexpr std::uint32_t format_magic = 0x424d5331U; // "BMS1"
+    const BfvLevelDescriptor& source = require_level(source_level.parms_id);
+    if (component_capacity == 0 || source.q_moduli.size() < 2 ||
+        !level_chain_.has_next(source.parms_id)) {
+        throw std::invalid_argument("BFV ModSwitch source has no next data level");
+    }
+    const BfvLevelDescriptor& destination = level_chain_.next(source.parms_id);
+    if (destination.q_moduli.size() + 1 != source.q_moduli.size() ||
+        !std::equal(destination.q_moduli.begin(), destination.q_moduli.end(),
+                    source.q_moduli.begin()) ||
+        !std::equal(destination.keyswitch_layout.q_mod_ids.begin(),
+                    destination.keyswitch_layout.q_mod_ids.end(),
+                    source.keyswitch_layout.q_mod_ids.begin())) {
+        throw std::logic_error("BFV ModSwitch levels are not a drop-last Q chain");
+    }
+
+    const int dropped_id = source.keyswitch_layout.q_mod_ids.back();
+    const std::uint32_t q_last = source.q_moduli.back();
+    std::vector<std::uint32_t> words{format_magic, static_cast<std::uint32_t>(dropped_id), q_last,
+                                     q_last >> 1U,
+                                     static_cast<std::uint32_t>(destination.q_moduli.size())};
+    for (std::size_t basis = 0; basis < destination.q_moduli.size(); ++basis) {
+        const std::uint32_t q = destination.q_moduli[basis];
+        words.push_back(static_cast<std::uint32_t>(destination.keyswitch_layout.q_mod_ids[basis]));
+        words.push_back(hpu::model::inverse_mod_prime(q_last % q, q));
+    }
+
+    PreparedBfvModSwitchConstants result;
+    result.id = id;
+    result.source_parms_id = source.parms_id;
+    result.destination_parms_id = destination.parms_id;
+    result.source_chain_index = source.chain_index;
+    result.destination_chain_index = destination.chain_index;
+    result.dropped_mod_id = dropped_id;
+    result.values = image_.add(id, words, hpu::runtime::AllocationKind::constant, true).span;
+    result.hardware_prefix = id + "/hardware";
+    result.hardware_component_capacity = component_capacity;
+    const std::size_t degree = registry().poly_modulus_degree;
+    const auto add_constant = [&](const std::string& name, std::uint32_t value) {
+        add_constant_polynomial(image_, degree, name, value,
+                                result.hardware_constant_polynomial_count);
+    };
+    const auto reserve_workspace = [&](const std::string& name) {
+        image_.reserve(name, degree, hpu::runtime::AllocationKind::workspace);
+        ++result.hardware_workspace_polynomial_count;
+    };
+
+    const std::uint32_t half = q_last >> 1U;
+    for (std::size_t basis = 0; basis < source.q_moduli.size(); ++basis) {
+        add_constant(
+            mod_id(result.hardware_prefix + "/half", source.keyswitch_layout.q_mod_ids[basis]),
+            half % source.q_moduli[basis]);
+    }
+    const std::string moddown_prefix = result.hardware_prefix + "/moddown";
+    add_constant(mod_id(moddown_prefix + "/qhat_inv", dropped_id), 1);
+    for (std::size_t basis = 0; basis < destination.q_moduli.size(); ++basis) {
+        const int target_id = destination.keyswitch_layout.q_mod_ids[basis];
+        add_constant(moddown_prefix + "/qhat_mod_target/target" + std::to_string(target_id) +
+                         "/source" + std::to_string(dropped_id),
+                     1);
+        add_constant(mod_id(moddown_prefix + "/p_inverse", target_id),
+                     hpu::model::inverse_mod_prime(q_last % destination.q_moduli[basis],
+                                                   destination.q_moduli[basis]));
+    }
+
+    const std::string workspace_prefix = result.hardware_prefix + "/workspace";
+    for (std::size_t component = 0; component < component_capacity; ++component) {
+        for (int context : source.keyswitch_layout.q_mod_ids) {
+            reserve_workspace(
+                mod_id(workspace_prefix + "/rounded/c" + std::to_string(component), context));
+        }
+    }
+    reserve_workspace(workspace_prefix + "/bconv/normalized0");
+    for (int context : destination.keyswitch_layout.q_mod_ids) {
+        reserve_workspace(mod_id(workspace_prefix + "/moddown/correction", context));
+    }
+    return result;
+}
+
 const hpu::runtime::HpuMemImage& BfvApplicationImageBuilder::image() const noexcept
 {
     return image_;
