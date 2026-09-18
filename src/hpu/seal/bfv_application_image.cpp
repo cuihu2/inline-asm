@@ -526,6 +526,41 @@ BfvApplicationImageBuilder::add_multiply_constants(std::string id, const BfvLeve
         add_constant(mod_id(result.hardware_prefix + "/branchless/negative_b", q_id),
                      b_mod_q == 0 ? 0 : q - b_mod_q);
     }
+
+    const auto reserve_workspace = [&](const std::string& name) {
+        image_.reserve(name, degree, hpu::runtime::AllocationKind::workspace);
+        ++result.hardware_workspace_polynomial_count;
+    };
+    const std::string workspace_prefix = result.hardware_prefix + "/workspace";
+    const std::size_t normalized_count = std::max(q_ids.size(), b_ids.size());
+    for (std::size_t index = 0; index < normalized_count; ++index) {
+        reserve_workspace(workspace_prefix + "/bconv/normalized" + std::to_string(index));
+    }
+    for (int input = 0; input < 4; ++input) {
+        for (int context : q_bsk_ids) {
+            reserve_workspace(
+                mod_id(workspace_prefix + "/input/i" + std::to_string(input), context));
+        }
+    }
+    for (int component = 0; component < 3; ++component) {
+        for (int context : q_bsk_ids) {
+            reserve_workspace(
+                mod_id(workspace_prefix + "/tensor/c" + std::to_string(component), context));
+        }
+        for (int context : bsk_ids) {
+            reserve_workspace(mod_id(
+                workspace_prefix + "/fast_floor/converted/c" + std::to_string(component), context));
+        }
+        for (int context : q_ids) {
+            reserve_workspace(
+                mod_id(workspace_prefix + "/branchless/y/c" + std::to_string(component), context));
+            reserve_workspace(mod_id(
+                workspace_prefix + "/branchless/alpha/c" + std::to_string(component), context));
+        }
+        reserve_workspace(
+            mod_id(workspace_prefix + "/branchless/alpha/c" + std::to_string(component),
+                   authoritative.m_sk_mod_id));
+    }
     return result;
 }
 

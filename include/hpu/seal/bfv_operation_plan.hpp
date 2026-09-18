@@ -10,7 +10,15 @@
 
 namespace hpu::seal_adapter {
 
-enum class BfvOperationKind { add, subtract, add_plain, subtract_plain, multiply_plain, negate };
+enum class BfvOperationKind {
+    add,
+    subtract,
+    multiply,
+    add_plain,
+    subtract_plain,
+    multiply_plain,
+    negate
+};
 
 struct BfvPlannedValue {
     std::string id;
@@ -23,6 +31,9 @@ struct BfvPlannedValue {
 struct BfvOperationResources {
     bool requires_modulus_table = true;
     bool requires_canonical_twiddles = false;
+    std::string evaluation_key_id;
+    std::string keyswitch_constants_id;
+    std::string multiply_constants_id;
 };
 
 struct BfvOperationStep {
@@ -44,6 +55,12 @@ public:
                                     const PreparedBfvRnsObject& right, std::string output_id);
     PreparedBfvRnsObject append_subtract(std::string step_id, const PreparedBfvRnsObject& left,
                                          const PreparedBfvRnsObject& right, std::string output_id);
+    PreparedBfvRnsObject append_multiply(std::string step_id, const PreparedBfvRnsObject& left,
+                                         const PreparedBfvRnsObject& right,
+                                         const PreparedEvaluationKey& relinearization_key,
+                                         const PreparedKeySwitchConstants& keyswitch_constants,
+                                         const PreparedBfvMultiplyConstants& multiply_constants,
+                                         std::string output_id);
     PreparedBfvRnsObject append_add_plain(std::string step_id,
                                           const PreparedBfvRnsObject& ciphertext,
                                           const PreparedBfvRnsObject& plaintext,
@@ -68,7 +85,12 @@ private:
     void validate_value(const PreparedBfvRnsObject& object, std::size_t component_count,
                         hpu::runtime::PolynomialDomain domain, bool require_prepared_plaintext,
                         const char* role) const;
-    void validate_canonical_twiddles(const BfvLevelDescriptor& level) const;
+    void validate_canonical_twiddles(const BfvLevelDescriptor& level,
+                                     bool include_multiply_auxiliary = false) const;
+    void validate_multiply_resources(const BfvLevelDescriptor& level,
+                                     const PreparedEvaluationKey& relinearization_key,
+                                     const PreparedKeySwitchConstants& keyswitch_constants,
+                                     const PreparedBfvMultiplyConstants& multiply_constants) const;
     void require_same_level(const PreparedBfvRnsObject& left, const PreparedBfvRnsObject& right,
                             const char* role) const;
     PreparedBfvRnsObject append_ciphertext_binary(BfvOperationKind kind, std::string step_id,

@@ -1,5 +1,6 @@
 #include "hpu/seal/bfv_operation_plan.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
@@ -30,6 +31,38 @@ std::size_t ntt_stage_count(std::size_t degree)
     return stages;
 }
 
+std::vector<std::uint8_t> full_keyswitch_modulus_ids(const BfvLevelDescriptor& level)
+{
+    auto result = q_modulus_ids(level);
+    for (int id : level.keyswitch_layout.p_mod_ids) {
+        result.push_back(static_cast<std::uint8_t>(id));
+    }
+    return result;
+}
+
+void require_resource_id(const std::string& id, const char* role)
+{
+    if (id.empty()) {
+        throw std::invalid_argument(std::string(role) + " id cannot be empty");
+    }
+}
+
+void validate_constant_resource(const hpu::runtime::HpuMemImage& image, const std::string& id,
+                                const hpu::runtime::HpuMemSpan& span, const char* role)
+{
+    require_resource_id(id, role);
+    try {
+        const auto& allocation = image.allocation(id);
+        if (!same_span(allocation.span, span) || allocation.word_count == 0 ||
+            allocation.kind != hpu::runtime::AllocationKind::constant || !allocation.read_only) {
+            throw std::invalid_argument(std::string(role) +
+                                        " does not match its BFV HPU_MEM allocation");
+        }
+    } catch (const std::out_of_range&) {
+        throw std::invalid_argument(std::string(role) + " is absent from this BFV HPU_MEM image");
+    }
+}
+
 } // namespace
 
 BfvOperationPlan::BfvOperationPlan(BfvApplicationImageBuilder& image_builder)
@@ -53,6 +86,37 @@ PreparedBfvRnsObject BfvOperationPlan::append_subtract(std::string step_id,
 {
     return append_ciphertext_binary(BfvOperationKind::subtract, std::move(step_id), left, right,
                                     std::move(output_id));
+}
+
+PreparedBfvRnsObject BfvOperationPlan::append_multiply(
+    std::string step_id, const PreparedBfvRnsObject& left, const PreparedBfvRnsObject& right,
+    const PreparedEvaluationKey& relinearization_key,
+    const PreparedKeySwitchConstants& keyswitch_constants,
+    const PreparedBfvMultiplyConstants& multiply_constants, std::string output_id)
+{
+    require_new_step(step_id);
+    validate_value(left, 2, hpu::runtime::PolynomialDomain::coefficient, false,
+                   "BFV Multiply left input");
+    validate_value(right, 2, hpu::runtime::PolynomialDomain::coefficient, false,
+                   "BFV Multiply right input");
+    require_same_level(left, right, "BFV Multiply");
+    const auto& level = image_builder_.level_chain().require(left.parms_id);
+    validate_canonical_twiddles(level, true);
+    validate_multiply_resources(level, relinearization_key, keyswitch_constants,
+                                multiply_constants);
+    auto output = image_builder_.reserve_ciphertext(std::move(output_id), level);
+
+    BfvOperationStep step;
+    step.id = std::move(step_id);
+    step.kind = BfvOperationKind::multiply;
+    step.inputs = {describe(left), describe(right)};
+    step.output = describe(output);
+    step.resources.requires_canonical_twiddles = true;
+    step.resources.evaluation_key_id = relinearization_key.id;
+    step.resources.keyswitch_constants_id = keyswitch_constants.id;
+    step.resources.multiply_constants_id = multiply_constants.id;
+    commit_step(std::move(step));
+    return output;
 }
 
 PreparedBfvRnsObject BfvOperationPlan::append_add_plain(std::string step_id,
@@ -188,7 +252,8 @@ void BfvOperationPlan::validate_value(const PreparedBfvRnsObject& object,
     }
 }
 
-void BfvOperationPlan::validate_canonical_twiddles(const BfvLevelDescriptor& level) const
+void BfvOperationPlan::validate_canonical_twiddles(const BfvLevelDescriptor& level,
+                                                   bool include_multiply_auxiliary) const
 {
     const std::size_t degree = image_builder_.registry().poly_modulus_degree;
     const std::size_t stages = ntt_stage_count(degree);
@@ -198,13 +263,22 @@ void BfvOperationPlan::validate_canonical_twiddles(const BfvLevelDescriptor& lev
             if (allocation.word_count != words || allocation.span.line_count == 0 ||
                 allocation.kind != hpu::runtime::AllocationKind::twiddle || !allocation.read_only) {
                 throw std::invalid_argument(
-                    "BFV MultiplyPlain canonical twiddle has an incompatible allocation: " + id);
+                    "BFV canonical twiddle has an incompatible allocation: " + id);
             }
         } catch (const std::out_of_range&) {
-            throw std::invalid_argument("BFV MultiplyPlain canonical twiddle is absent: " + id);
+            throw std::invalid_argument("BFV canonical twiddle is absent: " + id);
         }
     };
-    for (int modulus_id : level.keyswitch_layout.q_mod_ids) {
+    std::vector<int> contexts = level.keyswitch_layout.q_mod_ids;
+    if (include_multiply_auxiliary) {
+        contexts.insert(contexts.end(), level.keyswitch_layout.p_mod_ids.begin(),
+                        level.keyswitch_layout.p_mod_ids.end());
+        contexts.insert(contexts.end(), level.b_mod_ids.begin(), level.b_mod_ids.end());
+        contexts.push_back(level.m_sk_mod_id);
+    }
+    std::sort(contexts.begin(), contexts.end());
+    contexts.erase(std::unique(contexts.begin(), contexts.end()), contexts.end());
+    for (int modulus_id : contexts) {
         const std::string prefix = "constants/twiddle/canonical/mod" + std::to_string(modulus_id);
         require_twiddle(prefix + "/ntt/pre_twist", degree);
         for (std::size_t stage = 0; stage < stages; ++stage) {
@@ -212,6 +286,92 @@ void BfvOperationPlan::validate_canonical_twiddles(const BfvLevelDescriptor& lev
             require_twiddle(prefix + "/intt/stage" + std::to_string(stage), degree / 2);
         }
         require_twiddle(prefix + "/intt/post_untwist_scale", degree);
+    }
+}
+
+void BfvOperationPlan::validate_multiply_resources(
+    const BfvLevelDescriptor& level, const PreparedEvaluationKey& relinearization_key,
+    const PreparedKeySwitchConstants& keyswitch_constants,
+    const PreparedBfvMultiplyConstants& multiply_constants) const
+{
+    if (!hpu::is_seal_single_p_rns_decomposition_layout(
+            static_cast<int>(image_builder_.registry().poly_modulus_degree),
+            level.keyswitch_layout) ||
+        level.keyswitch_layout.q_mod_ids.size() < 2 ||
+        level.b_mod_ids.size() < level.keyswitch_layout.q_mod_ids.size() || level.m_sk_mod_id < 0 ||
+        level.plaintext_mod_id < 0) {
+        throw std::invalid_argument("BFV Multiply level has an unsupported HPU layout");
+    }
+    const auto matches_level = [&](const ::seal::parms_id_type& parms_id, std::size_t chain_index) {
+        return parms_id == level.parms_id && chain_index == level.chain_index;
+    };
+    if (!matches_level(relinearization_key.data_parms_id, relinearization_key.chain_index) ||
+        !matches_level(keyswitch_constants.data_parms_id, keyswitch_constants.chain_index) ||
+        !matches_level(multiply_constants.data_parms_id, multiply_constants.chain_index)) {
+        throw std::invalid_argument("BFV Multiply resources do not match the ciphertext level");
+    }
+    if (relinearization_key.rns_layout.q_mod_ids != level.keyswitch_layout.q_mod_ids ||
+        relinearization_key.rns_layout.p_mod_ids != level.keyswitch_layout.p_mod_ids ||
+        relinearization_key.rns_layout.key_digits != level.keyswitch_layout.key_digits ||
+        relinearization_key.digits.size() != level.keyswitch_layout.key_digits.size()) {
+        throw std::invalid_argument("BFV Multiply relinearization key has the wrong RNS layout");
+    }
+    require_resource_id(relinearization_key.id, "BFV Multiply relinearization key");
+    const auto expected_key_modulus_ids = full_keyswitch_modulus_ids(level);
+    const std::size_t degree = image_builder_.registry().poly_modulus_degree;
+    for (std::size_t digit = 0; digit < relinearization_key.digits.size(); ++digit) {
+        if (relinearization_key.digits[digit].size() != 2) {
+            throw std::invalid_argument(
+                "BFV Multiply relinearization-key digit needs two components");
+        }
+        for (std::size_t component = 0; component < 2; ++component) {
+            const auto& polynomial = relinearization_key.digits[digit][component];
+            if (polynomial.id != relinearization_key.id + "/d" + std::to_string(digit) + "/c" +
+                                     std::to_string(component) ||
+                polynomial.degree != degree || polynomial.modulus_ids != expected_key_modulus_ids ||
+                polynomial.limbs.size() != expected_key_modulus_ids.size()) {
+                throw std::invalid_argument(
+                    "BFV Multiply relinearization key has an invalid allocation shape");
+            }
+            for (std::size_t basis = 0; basis < polynomial.limbs.size(); ++basis) {
+                const std::string allocation_id =
+                    polynomial.id + "/mod" + std::to_string(polynomial.modulus_ids[basis]);
+                try {
+                    const auto& allocation = image_builder_.image().allocation(allocation_id);
+                    if (!same_span(allocation.span, polynomial.limbs[basis]) ||
+                        allocation.word_count != degree ||
+                        allocation.kind != hpu::runtime::AllocationKind::evaluation_key ||
+                        !allocation.read_only) {
+                        throw std::invalid_argument(
+                            "BFV Multiply relinearization key does not belong to this image");
+                    }
+                } catch (const std::out_of_range&) {
+                    throw std::invalid_argument(
+                        "BFV Multiply relinearization key is absent from this image");
+                }
+            }
+        }
+    }
+
+    validate_constant_resource(image_builder_.image(), keyswitch_constants.id,
+                               keyswitch_constants.values, "BFV Multiply KeySwitch constants");
+    if (keyswitch_constants.hardware_prefix != keyswitch_constants.id + "/hardware" ||
+        keyswitch_constants.hardware_constant_polynomial_count == 0 ||
+        keyswitch_constants.hardware_workspace_polynomial_count == 0) {
+        throw std::invalid_argument(
+            "BFV Multiply KeySwitch constants lack hardware-expanded resources");
+    }
+
+    validate_constant_resource(image_builder_.image(), multiply_constants.id,
+                               multiply_constants.values, "BFV Multiply BEHZ constants");
+    if (multiply_constants.hardware_prefix != multiply_constants.id + "/hardware" ||
+        multiply_constants.q_mod_ids != level.keyswitch_layout.q_mod_ids ||
+        multiply_constants.b_mod_ids != level.b_mod_ids ||
+        multiply_constants.m_sk_mod_id != level.m_sk_mod_id ||
+        multiply_constants.plaintext_mod_id != level.plaintext_mod_id ||
+        multiply_constants.hardware_constant_polynomial_count == 0 ||
+        multiply_constants.hardware_workspace_polynomial_count == 0) {
+        throw std::invalid_argument("BFV Multiply constants have the wrong BEHZ layout");
     }
 }
 

@@ -42,6 +42,7 @@ struct PreparedBfvMultiplyConstants {
     int m_sk_mod_id = -1;
     int plaintext_mod_id = -1;
     std::size_t hardware_constant_polynomial_count = 0;
+    std::size_t hardware_workspace_polynomial_count = 0;
 };
 
 // Builds a BFV HPU_MEM application image. Parameters, per-level bases, input

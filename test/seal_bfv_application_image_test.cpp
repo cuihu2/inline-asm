@@ -222,6 +222,8 @@ int main()
 
         const std::size_t expected_multiply_constants =
             2 * b_count * q_count + 5 * q_count + 4 * b_count + 4;
+        const std::size_t expected_multiply_workspaces =
+            13 * q_count + 10 * b_count + 13 + std::max(q_count, b_count);
         require(multiply.data_parms_id == level.parms_id &&
                     multiply.chain_index == level.chain_index &&
                     multiply.q_mod_ids == level.keyswitch_layout.q_mod_ids &&
@@ -229,6 +231,7 @@ int main()
                     multiply.m_sk_mod_id == level.m_sk_mod_id &&
                     multiply.plaintext_mod_id == level.plaintext_mod_id &&
                     multiply.hardware_constant_polynomial_count == expected_multiply_constants &&
+                    multiply.hardware_workspace_polynomial_count == expected_multiply_workspaces &&
                     first_word(builder.image(), multiply.id) == 0x42465631U,
                 "BFV BEHZ multiply constant image has the wrong shape");
 

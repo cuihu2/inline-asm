@@ -218,12 +218,16 @@ auto with_plain = plan.append_add_plain(
     "add_plain", sum, prepared_add_plain, "output/result");
 auto product = plan.append_multiply_plain(
     "multiply_plain", left, prepared_multiply_plain, "output/product");
+auto ciphertext_product = plan.append_multiply(
+    "multiply", left, right, prepared_relin_key,
+    prepared_keyswitch_constants, prepared_multiply_constants,
+    "output/ciphertext_product");
 auto program = lower_bfv_operation_plan(plan, context);
 auto relocation = build_bfv_relocation_schedule(
     program, builder.image(), context);
 ```
 
-- 首层 planner 支持 Ciphertext Add/Subtract、Negate、AddPlain/SubtractPlain 与
+- 首层 planner 支持 Ciphertext Add/Subtract/Multiply、Negate、AddPlain/SubtractPlain 与
   MultiplyPlain。
   所有输入与输出都必须是同一 `parms_id` 的二分量系数域 Q 密文；算子保持 level、
   component 数、输出 domain 和 `key_domain=1`，不会隐式插入 ModSwitch。
@@ -234,6 +238,12 @@ auto relocation = build_bfv_relocation_schedule(
   component/Q limb，lowering 显式执行 canonical NTT、`pmul` 和 INTT，结果恢复为
   BFV 系数域；pre-twist、正逆 stage twiddle 与 post-scale 都由 relocation 绑定到
   builder 预制的只读 HPU_MEM 对象，不存在 CPU 计算回退。
+- Ciphertext Multiply 接收同 level 的两个二分量系数域密文，并要求同 level 的
+  `PreparedEvaluationKey`、`PreparedKeySwitchConstants` 与
+  `PreparedBfvMultiplyConstants`。lowering 生成 comparison-free BEHZ 与 rounded
+  single-P relinearization 的融合流，输出仍为二分量系数域密文。BEHZ 输入扩基、tensor、
+  FastFloor、branchless SK 和 KeySwitch 的全部中间多项式都由 builder 预留，relocation
+  逐条绑定；三分量 tensor 不暴露给 host，也不存在 CPU 同步或数值回退。
 - lowering 为整个计划只装载一次 small-bank 模表、在末尾只发出一次 `psync`。
   relocation 按生成汇编中每条 `dload/dstore` 的顺序绑定具体 HPU_MEM limb，并拒绝
   shape、level、domain、只读属性或 DMA ABI 不匹配的对象。

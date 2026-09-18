@@ -941,12 +941,18 @@ B→Q/`m_sk`、`B^{-1} mod m_sk`、`m_sk`→Q 与 `-B mod Q` 均为预计算只�
 level、MOD_ID、domain、key-domain 和 required-output 元数据，因此算子执行期间不需要
 host plaintext lift、缩放或 NTT。
 
-BFV 基础 planner/codegen 已支持同 level、系数域的 Ciphertext Add/Subtract/Negate、
+BFV planner/codegen 已支持同 level、系数域的 Ciphertext Add/Subtract/Multiply/Negate、
 AddPlain/SubPlain 与 MultiplyPlain。它保持二分量 Q shape、`parms_id`、输出 coefficient
 domain 和 `key_domain=1`。Add/SubPlain 只接受预制 `Delta*m`；MultiplyPlain 只接受预制
 canonical HPU NTT plaintext，并对两个密文分量逐 Q limb 执行显式 NTT、`pmul`、INTT。
 lowering 对整个计划只装载一次模表并只发出一次终止 `psync`，包括所有 twiddle 在内的
 每条 DMA 都由 relocation 绑定到具体 HPU_MEM limb，不存在 CPU 数值计算回退。
+
+Ciphertext Multiply 额外要求同 level 的 RelinKeys、rounded single-P KeySwitch 常量和
+comparison-free BEHZ 常量。builder 为 Q→Bsk、四路输入变换、三分量 tensor、FastFloor、
+branchless SK、ModUp 累加器及 rounded ModDown 预留全部 workspace；relocation 严格按融合
+汇编的 DMA 顺序绑定这些对象。三分量 tensor 只在 HPU_MEM 阶段内存在，随后直接送入
+KeySwitch，host 只观察最终二分量系数域输出。
 
 生产密钥生成、安全参数选择、随机数接口、其余 BFV planner/codegen 以及噪声预算仍属于
 后续 host runtime/compiler 工作。Encode/Decode 是自包含的功能实现，
@@ -1284,7 +1290,9 @@ SEAL-facing codegen 另提供显式 `BfvCiphertextMultiplyLayout`：直接接收
 single-P、每层 B、`m_sk` 和 t 的全局 MOD_ID，并强制 singleton-Q KeySwitch digits。
 该融合流复用 comparison-free BEHZ，但后半段明确选择 BFV rounded single-P
 Relinearization；整条流只装载一次 small-bank 模表，降 level 时不会把 P 或辅助基重新编号。
-当前这一入口是后续 application planner/DMA relocation 的底层契约。
+`BfvOperationPlan::append_multiply` 已消费这一入口，并要求 prepared relinearization key、
+KeySwitch 常量和 BEHZ 常量来自同一 level。对应 relocation 覆盖四路输入、所有常量与
+twiddle、中间 workspace、评估密钥和最终两个 Q 输出，不需要 CPU 参与中间计算。
 
 `bfv_modswitch` 接收单 kernel 的二分量 Q 密文，先加 `floor(q_last/2)`，再把
 `q_last` 当单元素 P 基复用 ModDown；输出为 `[2,num_q-1,N]`。其数学 golden 与

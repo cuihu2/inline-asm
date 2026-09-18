@@ -1,6 +1,7 @@
 #include "hpu/seal/bfv_operation_codegen.hpp"
 
 #include "scheme/bfv/basic_arithmetic.hpp"
+#include "scheme/bfv/ciphertext_multiply.hpp"
 #include "util/hpu_asm.hpp"
 #include "util/validation.hpp"
 
@@ -66,6 +67,32 @@ std::string lower_step(const BfvOperationStep& step, const BfvLevelChain& level_
         return step.kind == BfvOperationKind::add
                    ? hpu::scheme::bfv::generate_add_body_asm(num_q, false, false)
                    : hpu::scheme::bfv::generate_subtract_body_asm(num_q, false, false);
+    }
+    case BfvOperationKind::multiply: {
+        if (step.inputs.size() != 2 || !step.resources.requires_canonical_twiddles ||
+            step.resources.evaluation_key_id.empty() ||
+            step.resources.keyswitch_constants_id.empty() ||
+            step.resources.multiply_constants_id.empty()) {
+            throw std::invalid_argument("invalid planned BFV Multiply resources");
+        }
+        const auto& level = require_coefficient_value_shape(level_chain, step.inputs[0], 2,
+                                                            "planned BFV Multiply left input");
+        require_coefficient_value_shape(level_chain, step.inputs[1], 2,
+                                        "planned BFV Multiply right input");
+        require_coefficient_value_shape(level_chain, step.output, 2, "planned BFV Multiply output");
+        require_same_level(step.inputs[0], step.inputs[1], "planned BFV Multiply");
+        require_same_level(step.inputs[0], step.output, "planned BFV Multiply output");
+        hpu::scheme::bfv::BfvCiphertextMultiplyLayout layout;
+        layout.keyswitch_layout = level.keyswitch_layout;
+        layout.b_mod_ids = level.b_mod_ids;
+        layout.m_sk_mod_id = level.m_sk_mod_id;
+        layout.plaintext_mod_id = level.plaintext_mod_id;
+        if (!hpu::scheme::bfv::is_valid_ciphertext_multiply_layout(degree, layout,
+                                                                   level.plaintext_modulus)) {
+            throw std::invalid_argument("planned BFV Multiply level has an unsupported layout");
+        }
+        return hpu::scheme::bfv::generate_ciphertext_multiply_body_asm(
+            degree, layout, level.plaintext_modulus, false, false);
     }
     case BfvOperationKind::add_plain:
     case BfvOperationKind::subtract_plain: {

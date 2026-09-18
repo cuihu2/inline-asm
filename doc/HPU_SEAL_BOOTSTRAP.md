@@ -142,7 +142,7 @@ Delta-scaled data for Add/SubPlain and centered-lift canonical HPU NTT data for
 MultiplyPlain. Runtime execution therefore performs no host plaintext lift,
 scaling, or NTT.
 
-The first BFV planner/codegen layer now covers ciphertext Add/Subtract/Negate,
+The BFV planner/codegen layer now covers ciphertext Add/Subtract/Multiply/Negate,
 AddPlain/SubtractPlain, and MultiplyPlain. It requires exact same-level,
 two-component coefficient-domain ciphertexts. Plaintext addition and
 subtraction accept only the prepared Delta-scaled form; MultiplyPlain accepts
@@ -154,13 +154,14 @@ objects. The combined lowering loads the application modulus table once and
 terminates with one `psync`; no runtime coefficient arithmetic falls back to
 the CPU.
 
-The BFV ciphertext-multiply codegen now also has a SEAL-facing explicit-layout
-entry. It consumes active-Q, fixed single-P, per-level B, `m_sk`, and t MOD_IDs
-instead of reconstructing them from legacy `num_b/dnum`. The fused stream uses
-comparison-free BEHZ followed directly by the BFV rounded single-P
-relinearization, and owns exactly one modulus-table lifetime. This is the
-low-level contract that the next BFV planner/relocation step will bind to the
-already prepared multiply constants and relinearization key.
+BFV ciphertext Multiply uses the SEAL-facing explicit-layout entry. It consumes
+active-Q, fixed single-P, per-level B, `m_sk`, and t MOD_IDs instead of
+reconstructing them from legacy `num_b/dnum`. The planner requires the matching
+prepared relinearization key, KeySwitch constants, and BEHZ constants. The
+builder reserves every BEHZ/KeySwitch workspace, and relocation binds the full
+comparison-free BEHZ plus rounded single-P relinearization DMA stream. The
+three-component tensor remains phase-local; the HPU writes a two-component
+coefficient-domain ciphertext without host synchronization or CPU arithmetic.
 
 ## First CKKS application stream
 
