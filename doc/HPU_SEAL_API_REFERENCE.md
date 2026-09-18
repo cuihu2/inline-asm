@@ -263,6 +263,10 @@ auto relocation = build_bfv_relocation_schedule(
   物化为 `BfvRuntimeProgram`，逐条复核编码后的 custom1。`render_bfv_runtime_artifacts`
   输出固定指令字、resolved span 数组、`hpu_run_<stem>()` 包装和带 BFV operation/
   allocation provenance 的 CSV；任何不完整 schedule、编码字段漂移或越界 span 都会被拒绝。
+- `include/hpu/seal/bfv_software_executor.hpp` 提供 HPU_MEM 功能执行层。当前可执行融合
+  Multiply/Relinearize、ModSwitch 与 AddPlain；Multiply 直接复现 no-SMRQ BEHZ、
+  FastFloor、branchless-SK 和 rounded single-P KeySwitch，并消费 builder 预制的
+  twiddle、evaluation key 与常量，不调用 `seal::Evaluator`。
 
 #### 2.2.4 CKKS 操作元数据规则
 

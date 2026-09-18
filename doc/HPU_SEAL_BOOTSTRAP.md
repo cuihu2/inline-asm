@@ -182,6 +182,11 @@ reference for this path. It plans `Multiply -> ModSwitch -> AddPlain`, prepares
 the destination-level plaintext before execution, and can emit assembly,
 instruction/command bits, the C run wrapper, resolved DMA manifest, and the
 HPU_MEM image with `--emit-dir`. See `doc/BFV_APPLICATION_EXAMPLE.md`.
+The same example executes the prepared image with `BfvSoftwareExecutor` and
+compares both final ciphertext components word-for-word with an independent
+modified-SEAL oracle. The executor implements comparison-free BEHZ,
+branchless-SK, rounded single-P KeySwitch, and rounded drop-last without
+calling `seal::Evaluator`.
 
 ## First CKKS application stream
 

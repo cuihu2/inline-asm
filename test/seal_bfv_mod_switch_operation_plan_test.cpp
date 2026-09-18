@@ -5,6 +5,7 @@
 #include "hpu/seal/bfv_operation_plan.hpp"
 #include "hpu/seal/bfv_operation_relocation.hpp"
 #include "hpu/seal/bfv_operation_runtime.hpp"
+#include "hpu/seal/bfv_software_executor.hpp"
 #include "scheme/bfv/modswitch.hpp"
 
 #include <seal/seal.h>
@@ -125,7 +126,7 @@ int main()
 
         hpu::seal_adapter::BfvApplicationImageBuilder builder(*bundle.context, 12288);
         builder.add_modulus_table();
-        builder.add_canonical_twiddles();
+        const auto canonical_twiddles = builder.add_canonical_twiddles();
         const auto& source = builder.level_chain().top();
         const auto& destination = builder.level_chain().next(source.parms_id);
         const auto left = builder.add_ciphertext("input/left", encrypted_left);
@@ -224,6 +225,16 @@ int main()
         require(expected_product.parms_id() == output.parms_id &&
                     expected_product.size() == output.components.size(),
                 "BFV composed planner metadata differs from modified-SEAL");
+        hpu::seal_adapter::BfvSoftwareExecutor software_executor(*bundle.context, builder.image());
+        software_executor.multiply(left, right, relinearization_key, keyswitch_constants,
+                                   multiply_constants, canonical_twiddles, product);
+        software_executor.mod_switch(product, mod_switch_constants, output);
+        for (std::size_t component = 0; component < output.components.size(); ++component) {
+            const auto actual = software_executor.export_component(output, component);
+            require(std::equal(actual.words.begin(), actual.words.end(),
+                               expected_product.data(component)),
+                    "BFV software Multiply/ModSwitch differs from modified-SEAL coefficients");
+        }
 
         auto wrong_constants = mod_switch_constants;
         wrong_constants.source_parms_id = destination.parms_id;

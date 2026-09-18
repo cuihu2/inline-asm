@@ -4,6 +4,7 @@
 #include "hpu/seal/bfv_operation_plan.hpp"
 #include "hpu/seal/bfv_operation_relocation.hpp"
 #include "hpu/seal/bfv_operation_runtime.hpp"
+#include "hpu/seal/bfv_software_executor.hpp"
 #include "scheme/bfv/ciphertext_multiply.hpp"
 
 #include <seal/seal.h>
@@ -69,7 +70,7 @@ int main()
 
         hpu::seal_adapter::BfvApplicationImageBuilder image_builder(*bundle.context, 8192);
         image_builder.add_modulus_table();
-        image_builder.add_canonical_twiddles();
+        const auto canonical_twiddles = image_builder.add_canonical_twiddles();
         const auto& level = image_builder.level_chain().top();
         const auto left = image_builder.add_ciphertext("input/left", encrypted_left);
         const auto right = image_builder.add_ciphertext("input/right", encrypted_right);
@@ -197,6 +198,15 @@ int main()
         require(expected.parms_id() == output.parms_id &&
                     expected.size() == output.components.size(),
                 "BFV Multiply planner metadata differs from modified-SEAL");
+        hpu::seal_adapter::BfvSoftwareExecutor software_executor(*bundle.context,
+                                                                 image_builder.image());
+        software_executor.multiply(left, right, relinearization_key, keyswitch_constants,
+                                   multiply_constants, canonical_twiddles, output);
+        for (std::size_t component = 0; component < output.components.size(); ++component) {
+            const auto actual = software_executor.export_component(output, component);
+            require(std::equal(actual.words.begin(), actual.words.end(), expected.data(component)),
+                    "BFV software Multiply differs from modified-SEAL coefficients");
+        }
 
         auto missing_workspace = multiply_constants;
         missing_workspace.hardware_workspace_polynomial_count = 0;

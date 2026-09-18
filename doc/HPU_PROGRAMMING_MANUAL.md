@@ -968,6 +968,12 @@ relocation 对拍。`render_bfv_runtime_artifacts` 输出 resolved span 数组�
 `hpu_run_<stem>()` 包装及带 operation/allocation 来源的 CSV；span 越界或 schedule
 不完整时不会生成可执行包。
 
+`BfvSoftwareExecutor` 已能从相同 application image 执行 BFV 融合 Multiply、显式
+ModSwitch 与 AddPlain。其 Multiply 路径按 HPU 阶段执行 Q→Bsk、NTT tensor、FastFloor、
+branchless-SK 和 rounded single-P Relinearization，读取镜像中的 twiddle、常量和
+RelinKeys，不调用 `seal::Evaluator`。`bfv_multiply_modswitch_application` 示例将最终
+两个密文分量与 modified-SEAL 独立 oracle 逐字比较，并完成解密/BatchDecode 验证。
+
 生产密钥生成、安全参数选择、随机数接口、其余 BFV planner/codegen 以及噪声预算仍属于
 后续 host runtime/compiler 工作。Encode/Decode 是自包含的功能实现，
 不承担生产参数选择或密文元数据持久化。当前主硬件测试使用确定性零噪声、P 可整除的功能 fixture，必须标记为

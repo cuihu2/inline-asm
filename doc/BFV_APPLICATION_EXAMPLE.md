@@ -125,10 +125,11 @@ auto artifacts = render_bfv_runtime_artifacts(
 
 ## 4. 当前验证边界
 
-示例使用 modified-SEAL 独立计算同一表达式，解密后检查所有 batching slots，证明输入、
-明文语义和 level 迁移正确。BFV HPU 程序的 Multiply、KeySwitch 与 rounded ModSwitch
-分别已有逐阶段和 modified-SEAL 差分测试；当前示例本身尚未用 BFV 软件执行器执行
-最终 HPU_MEM 输出。
+示例使用 `BfvSoftwareExecutor` 从同一份 HPU_MEM 镜像读取密文、twiddle、评估密钥和
+预计算常量，依次执行 comparison-free BEHZ、branchless-SK、rounded single-P
+KeySwitch、rounded ModSwitch 和 AddPlain。该执行路径不调用 `seal::Evaluator`；最终
+两个密文分量与 modified-SEAL 独立 oracle 逐系数完全一致，再解密检查所有 batching
+slots。因此 planner、预制资源和 BFV 数值链在 host 功能模型上形成了完整闭环。
 
 真实裸机或 Linux 执行时，平台 runtime/driver 还需要分配并上传 HPU_MEM、配置 CSR、
 维护 cache 一致性、执行生成的 `hpu_run_bfv_multiply_modswitch_application()`，并处理

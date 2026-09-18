@@ -308,6 +308,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
             src/hpu/seal/bfv_application_image.cpp
             src/hpu/seal/bfv_context.cpp
             src/hpu/seal/bfv_level.cpp
+            src/hpu/seal/bfv_software_executor.cpp
             src/hpu/seal/ckks_context.cpp
             src/hpu/seal/ckks_level.cpp
             src/hpu/seal/ckks_metadata.cpp
