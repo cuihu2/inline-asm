@@ -941,11 +941,12 @@ B→Q/`m_sk`、`B^{-1} mod m_sk`、`m_sk`→Q 与 `-B mod Q` 均为预计算只�
 level、MOD_ID、domain、key-domain 和 required-output 元数据，因此算子执行期间不需要
 host plaintext lift、缩放或 NTT。
 
-BFV 基础 planner/codegen 已支持同 level、系数域的 Ciphertext Add/Subtract/Negate 与
-AddPlain/SubPlain。它保持二分量 Q shape、`parms_id`、coefficient domain 和
-`key_domain=1`，只接受预制 `Delta*m` plaintext；lowering 对整个计划只装载一次模表并
-只发出一次终止 `psync`，每条 DMA 都由 relocation 绑定到具体 HPU_MEM limb。
-MultiplyPlain 仍是下一步：密文需要显式 NTT，与预制 NTT plaintext 逐点相乘后再 INTT。
+BFV 基础 planner/codegen 已支持同 level、系数域的 Ciphertext Add/Subtract/Negate、
+AddPlain/SubPlain 与 MultiplyPlain。它保持二分量 Q shape、`parms_id`、输出 coefficient
+domain 和 `key_domain=1`。Add/SubPlain 只接受预制 `Delta*m`；MultiplyPlain 只接受预制
+canonical HPU NTT plaintext，并对两个密文分量逐 Q limb 执行显式 NTT、`pmul`、INTT。
+lowering 对整个计划只装载一次模表并只发出一次终止 `psync`，包括所有 twiddle 在内的
+每条 DMA 都由 relocation 绑定到具体 HPU_MEM limb，不存在 CPU 数值计算回退。
 
 生产密钥生成、安全参数选择、随机数接口、其余 BFV planner/codegen 以及噪声预算仍属于
 后续 host runtime/compiler 工作。Encode/Decode 是自包含的功能实现，
@@ -1261,6 +1262,11 @@ SEAL-facing 基础 planner 的 HPU_MEM 布局保持 BFV 原生
 执行 `padd/psub`；Negate 用 `(c-c)-c` 合成模负数；AddPlain/SubPlain 只对 `c0` 与预制
 `Delta*m` 做加减，并把 `c1` 原样复制到输出。所有步骤必须处于同一 level，整个计划只
 装载一次模表并在最后发出一个 `psync`，不存在 CPU 数值计算回退。
+
+MultiplyPlain 对 `c0/c1` 的每个 Q limb 先加载 canonical pre-twist 与所有正向 stage
+twiddle 完成 NTT，再与同一预制 plaintext limb 执行 `pmul`，最后加载逆向 stage 与
+post-untwist-scale 完成 INTT，直接写回系数域输出。密文中间值始终驻留在 `p0`，不需要
+额外 HPU_MEM workspace；plaintext 和全部 twiddle 都是只读 DMA 输入。
 
 `bfv_encode` 与 `bgv_encode` 都是纯 host 包：完成 coefficient/batch Encode、Decode
 和 round-trip 验证，不再生成 RNS-Q NTT 硬件流。

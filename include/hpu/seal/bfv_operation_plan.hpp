@@ -10,7 +10,7 @@
 
 namespace hpu::seal_adapter {
 
-enum class BfvOperationKind { add, subtract, add_plain, subtract_plain, negate };
+enum class BfvOperationKind { add, subtract, add_plain, subtract_plain, multiply_plain, negate };
 
 struct BfvPlannedValue {
     std::string id;
@@ -22,6 +22,7 @@ struct BfvPlannedValue {
 
 struct BfvOperationResources {
     bool requires_modulus_table = true;
+    bool requires_canonical_twiddles = false;
 };
 
 struct BfvOperationStep {
@@ -33,8 +34,8 @@ struct BfvOperationStep {
 };
 
 // Plans BFV operations that preserve level, component count, coefficient
-// domain, and canonical secret-key domain. No implicit transform or level
-// transition is inserted.
+// output domain, and canonical secret-key domain. No implicit level transition
+// is inserted; MultiplyPlain explicitly owns its NTT/INTT round trip.
 class BfvOperationPlan {
 public:
     explicit BfvOperationPlan(BfvApplicationImageBuilder& image_builder);
@@ -51,6 +52,10 @@ public:
                                                const PreparedBfvRnsObject& ciphertext,
                                                const PreparedBfvRnsObject& plaintext,
                                                std::string output_id);
+    PreparedBfvRnsObject append_multiply_plain(std::string step_id,
+                                               const PreparedBfvRnsObject& ciphertext,
+                                               const PreparedBfvRnsObject& plaintext,
+                                               std::string output_id);
     PreparedBfvRnsObject append_negate(std::string step_id, const PreparedBfvRnsObject& ciphertext,
                                        std::string output_id);
 
@@ -61,7 +66,9 @@ private:
     void commit_step(BfvOperationStep step);
     BfvPlannedValue describe(const PreparedBfvRnsObject& object) const;
     void validate_value(const PreparedBfvRnsObject& object, std::size_t component_count,
-                        bool require_prepared_plaintext, const char* role) const;
+                        hpu::runtime::PolynomialDomain domain, bool require_prepared_plaintext,
+                        const char* role) const;
+    void validate_canonical_twiddles(const BfvLevelDescriptor& level) const;
     void require_same_level(const PreparedBfvRnsObject& left, const PreparedBfvRnsObject& right,
                             const char* role) const;
     PreparedBfvRnsObject append_ciphertext_binary(BfvOperationKind kind, std::string step_id,

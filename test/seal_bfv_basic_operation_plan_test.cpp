@@ -1,3 +1,4 @@
+#include "hpu/model/hardware_ntt.hpp"
 #include "hpu/runtime/memory_image.hpp"
 #include "hpu/seal/bfv_application_image.hpp"
 #include "hpu/seal/bfv_context.hpp"
@@ -118,6 +119,59 @@ void require_exact(const ::seal::Ciphertext& expected,
     }
 }
 
+const hpu::seal_adapter::PreparedCanonicalTwiddles&
+find_twiddles(const std::vector<hpu::seal_adapter::PreparedCanonicalTwiddles>& tables,
+              std::uint8_t modulus_id)
+{
+    const auto found = std::find_if(tables.begin(), tables.end(), [&](const auto& table) {
+        return table.modulus_id == modulus_id;
+    });
+    if (found == tables.end()) {
+        throw std::runtime_error("BFV canonical twiddle table is missing");
+    }
+    return *found;
+}
+
+void require_multiply_plain_exact(
+    const ::seal::Ciphertext& expected, const hpu::seal_adapter::PreparedBfvRnsObject& output,
+    const hpu::seal_adapter::PreparedBfvRnsObject& ciphertext,
+    const hpu::seal_adapter::PreparedBfvRnsObject& plaintext,
+    const hpu::runtime::HpuMemImage& image, const hpu::seal_adapter::BfvLevelRegistry& registry,
+    const std::vector<hpu::seal_adapter::PreparedCanonicalTwiddles>& tables)
+{
+    require(expected.parms_id() == output.parms_id && expected.size() == 2,
+            "BFV MultiplyPlain output shape differs from SEAL");
+    const std::size_t degree = registry.poly_modulus_degree;
+    for (std::size_t component = 0; component < output.components.size(); ++component) {
+        for (std::size_t basis = 0; basis < output.components[component].modulus_ids.size();
+             ++basis) {
+            const std::uint8_t modulus_id = output.components[component].modulus_ids[basis];
+            const std::uint32_t modulus = registry.modulus_table[modulus_id];
+            const auto& twiddles = find_twiddles(tables, modulus_id);
+            require(twiddles.modulus == modulus,
+                    "BFV MultiplyPlain twiddle modulus is inconsistent");
+            auto transformed = hpu::model::negacyclic_forward(
+                allocation_words(image, limb_id(ciphertext, component, modulus_id)), modulus,
+                twiddles.canonical_psi);
+            const auto plain_words = allocation_words(image, limb_id(plaintext, 0, modulus_id));
+            for (std::size_t index = 0; index < degree; ++index) {
+                transformed[index] = static_cast<std::uint32_t>(
+                    (static_cast<std::uint64_t>(transformed[index]) * plain_words[index]) %
+                    modulus);
+            }
+            const auto actual =
+                hpu::model::negacyclic_inverse(transformed, modulus, twiddles.canonical_psi);
+            for (std::size_t index = 0; index < degree; ++index) {
+                const auto expected_word =
+                    static_cast<std::uint32_t>(expected.data(component)[basis * degree + index]);
+                if (actual[index] != expected_word) {
+                    throw std::runtime_error("BFV MultiplyPlain NTT pipeline differs from SEAL");
+                }
+            }
+        }
+    }
+}
+
 } // namespace
 
 int main()
@@ -157,6 +211,7 @@ int main()
 
         hpu::seal_adapter::BfvApplicationImageBuilder image_builder(*bundle.context, 1024);
         image_builder.add_modulus_table();
+        const auto canonical_twiddles = image_builder.add_canonical_twiddles();
         const auto left = image_builder.add_ciphertext("input/left", encrypted_left);
         const auto right = image_builder.add_ciphertext("input/right", encrypted_right);
         const auto& top_level = image_builder.level_chain().top();
@@ -172,14 +227,18 @@ int main()
             plan.append_add_plain("add_plain", left, plain, "output/add_plain");
         const auto subtracted_plain =
             plan.append_subtract_plain("subtract_plain", left, plain, "output/subtract_plain");
+        const auto multiplied_plain = plan.append_multiply_plain(
+            "multiply_plain", left, multiply_plain, "output/multiply_plain");
         const auto negated = plan.append_negate("negate", left, "output/negate");
 
         const auto& steps = plan.steps();
-        require(steps.size() == 5 && steps[0].kind == hpu::seal_adapter::BfvOperationKind::add &&
+        require(steps.size() == 6 && steps[0].kind == hpu::seal_adapter::BfvOperationKind::add &&
                     steps[1].kind == hpu::seal_adapter::BfvOperationKind::subtract &&
                     steps[2].kind == hpu::seal_adapter::BfvOperationKind::add_plain &&
                     steps[3].kind == hpu::seal_adapter::BfvOperationKind::subtract_plain &&
-                    steps[4].kind == hpu::seal_adapter::BfvOperationKind::negate,
+                    steps[4].kind == hpu::seal_adapter::BfvOperationKind::multiply_plain &&
+                    steps[4].resources.requires_canonical_twiddles &&
+                    steps[5].kind == hpu::seal_adapter::BfvOperationKind::negate,
                 "BFV basic operation plan lost its explicit step sequence");
         for (const auto& step : steps) {
             require(step.output.metadata.parms_id == top_level.parms_id &&
@@ -192,7 +251,7 @@ int main()
 
         const auto lowered = hpu::seal_adapter::lower_bfv_operation_plan(plan, *bundle.context);
         const int num_q = static_cast<int>(top_level.q_moduli.size());
-        require(lowered.operations.size() == 5 &&
+        require(lowered.operations.size() == 6 &&
                     lowered.operations[0].body_asm ==
                         hpu::scheme::bfv::generate_add_body_asm(num_q, false, false) &&
                     lowered.operations[1].body_asm ==
@@ -202,12 +261,20 @@ int main()
                     lowered.operations[3].body_asm ==
                         hpu::scheme::bfv::generate_subtract_plain_body_asm(num_q, false, false) &&
                     lowered.operations[4].body_asm ==
+                        hpu::scheme::bfv::generate_multiply_plain_body_asm(
+                            static_cast<int>(spec.poly_modulus_degree), num_q, false, false) &&
+                    lowered.operations[5].body_asm ==
                         hpu::scheme::bfv::generate_negate_body_asm(num_q, false, false),
                 "BFV basic operation lowering selected an incorrect kernel");
 
         const auto relocations = hpu::seal_adapter::build_bfv_relocation_schedule(
             lowered, image_builder.image(), *bundle.context);
-        const std::size_t expected_dma_count = 1 + 26 * top_level.q_moduli.size();
+        std::size_t ntt_stages = 0;
+        for (std::size_t remaining = spec.poly_modulus_degree; remaining > 1; remaining >>= 1U) {
+            ++ntt_stages;
+        }
+        const std::size_t expected_dma_count = 1 + 26 * top_level.q_moduli.size() +
+                                               2 * top_level.q_moduli.size() * (2 * ntt_stages + 5);
         require(relocations.complete() && relocations.expected_dma_count == expected_dma_count &&
                     relocations.bindings.front().allocation_id == "constants/modulus_table",
                 "BFV basic operation relocation is incomplete");
@@ -236,6 +303,10 @@ int main()
         evaluator.sub_plain(encrypted_left, encoded_plain, expected);
         require_exact(expected, subtracted_plain, left, &plain, ExactOperation::subtract_plain,
                       image_builder.image(), image_builder.registry(), "BFV SubtractPlain");
+        evaluator.multiply_plain(encrypted_left, encoded_plain, expected);
+        require_multiply_plain_exact(expected, multiplied_plain, left, multiply_plain,
+                                     image_builder.image(), image_builder.registry(),
+                                     canonical_twiddles);
         evaluator.negate(encrypted_left, expected);
         require_exact(expected, negated, left, nullptr, ExactOperation::negate,
                       image_builder.image(), image_builder.registry(), "BFV Negate");
@@ -249,6 +320,27 @@ int main()
                                             "output/invalid_plain");
             },
             "NTT-domain BFV MultiplyPlain operand was accepted by AddPlain");
+        require_invalid_argument(
+            [&] {
+                (void)plan.append_multiply_plain("invalid_add_plain", left, plain,
+                                                 "output/invalid_multiply_plain");
+            },
+            "coefficient-domain BFV AddPlain operand was accepted by MultiplyPlain");
+
+        hpu::seal_adapter::BfvApplicationImageBuilder no_twiddle_builder(*bundle.context, 256);
+        no_twiddle_builder.add_modulus_table();
+        const auto no_twiddle_ciphertext =
+            no_twiddle_builder.add_ciphertext("input/ciphertext", encrypted_left);
+        const auto no_twiddle_plaintext = no_twiddle_builder.add_multiply_plaintext(
+            "input/plaintext", encoded_plain, no_twiddle_builder.level_chain().top());
+        hpu::seal_adapter::BfvOperationPlan no_twiddle_plan(no_twiddle_builder);
+        require_invalid_argument(
+            [&] {
+                (void)no_twiddle_plan.append_multiply_plain("multiply_plain", no_twiddle_ciphertext,
+                                                            no_twiddle_plaintext,
+                                                            "output/multiply_plain");
+            },
+            "BFV MultiplyPlain accepted an image without canonical twiddles");
 
         ::seal::Ciphertext next_level_ciphertext = encrypted_left;
         evaluator.mod_switch_to_next_inplace(next_level_ciphertext);

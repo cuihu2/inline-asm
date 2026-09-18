@@ -15,6 +15,8 @@ std::string generate_add_plain_body_asm(int num_q, bool append_psync = true,
                                         bool manage_modulus_table = true);
 std::string generate_subtract_plain_body_asm(int num_q, bool append_psync = true,
                                              bool manage_modulus_table = true);
+std::string generate_multiply_plain_body_asm(int N, int num_q, bool append_psync = true,
+                                             bool manage_modulus_table = true);
 std::string generate_negate_body_asm(int num_q, bool append_psync = true,
                                      bool manage_modulus_table = true);
 

@@ -1,6 +1,7 @@
 #include "scheme/bfv/basic_arithmetic.hpp"
 
 #include "util/hpu_asm.hpp"
+#include "util/ntt.hpp"
 #include "util/validation.hpp"
 
 #include <sstream>
@@ -113,6 +114,42 @@ std::string generate_subtract_plain_body_asm(int num_q, bool append_psync,
                                              bool manage_modulus_table)
 {
     return generate_plain_binary_body(num_q, true, append_psync, manage_modulus_table);
+}
+
+std::string generate_multiply_plain_body_asm(int N, int num_q, bool append_psync,
+                                             bool manage_modulus_table)
+{
+    std::ostringstream asm_code;
+    if (!valid_config(num_q) || !hpu::is_valid_ntt_size(N)) {
+        asm_code << "        /* Invalid BFV MultiplyPlain config */\n";
+        return asm_code.str();
+    }
+    asm_code << "        /* BFV MULTIPLY_PLAIN: coefficient ciphertext -> canonical HPU "
+                "NTT -> pointwise multiply -> coefficient output */\n";
+    if (manage_modulus_table) {
+        asm_code << hpu::dload(kModulusTableObject, hpu::DataType::mod_ctx,
+                               hpu::DloadFlag::small_bank);
+    }
+    for (int component = 0; component < 2; ++component) {
+        for (int basis = 0; basis < num_q; ++basis) {
+            asm_code << "        /* component_" << component << ", q_" << basis << " */\n";
+            asm_code << hpu::pmodld(basis);
+            asm_code << hpu::dload(kLeftObject, hpu::DataType::poly);
+            asm_code << ::generate_hpu_ntt_body_asm(N, kLeftObject, 3, false);
+            asm_code << hpu::dload(kRightObject, hpu::DataType::poly);
+            asm_code << hpu::pmul(kLeftObject, kLeftObject, kRightObject);
+            asm_code << hpu::pfree(kRightObject);
+            asm_code << ::generate_hpu_intt_body_asm(N, kLeftObject, 3, false);
+            asm_code << hpu::dstore(kLeftObject, 1);
+        }
+    }
+    if (manage_modulus_table) {
+        asm_code << hpu::pfree(kModulusTableObject);
+    }
+    if (append_psync) {
+        asm_code << hpu::psync();
+    }
+    return asm_code.str();
 }
 
 std::string generate_negate_body_asm(int num_q, bool append_psync, bool manage_modulus_table)

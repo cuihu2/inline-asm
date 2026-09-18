@@ -21,6 +21,15 @@ std::vector<std::uint8_t> q_modulus_ids(const BfvLevelDescriptor& level)
     return result;
 }
 
+std::size_t ntt_stage_count(std::size_t degree)
+{
+    std::size_t stages = 0;
+    for (std::size_t remaining = degree; remaining > 1; remaining >>= 1U) {
+        ++stages;
+    }
+    return stages;
+}
+
 } // namespace
 
 BfvOperationPlan::BfvOperationPlan(BfvApplicationImageBuilder& image_builder)
@@ -64,12 +73,38 @@ PreparedBfvRnsObject BfvOperationPlan::append_subtract_plain(std::string step_id
                                plaintext, std::move(output_id));
 }
 
+PreparedBfvRnsObject BfvOperationPlan::append_multiply_plain(std::string step_id,
+                                                             const PreparedBfvRnsObject& ciphertext,
+                                                             const PreparedBfvRnsObject& plaintext,
+                                                             std::string output_id)
+{
+    require_new_step(step_id);
+    validate_value(ciphertext, 2, hpu::runtime::PolynomialDomain::coefficient, false,
+                   "BFV MultiplyPlain ciphertext");
+    validate_value(plaintext, 1, hpu::runtime::PolynomialDomain::canonical_ntt_physical, true,
+                   "BFV prepared MultiplyPlain plaintext");
+    require_same_level(ciphertext, plaintext, "BFV MultiplyPlain");
+    const auto& level = image_builder_.level_chain().require(ciphertext.parms_id);
+    validate_canonical_twiddles(level);
+    auto output = image_builder_.reserve_ciphertext(std::move(output_id), level);
+
+    BfvOperationStep step;
+    step.id = std::move(step_id);
+    step.kind = BfvOperationKind::multiply_plain;
+    step.inputs = {describe(ciphertext), describe(plaintext)};
+    step.output = describe(output);
+    step.resources.requires_canonical_twiddles = true;
+    commit_step(std::move(step));
+    return output;
+}
+
 PreparedBfvRnsObject BfvOperationPlan::append_negate(std::string step_id,
                                                      const PreparedBfvRnsObject& ciphertext,
                                                      std::string output_id)
 {
     require_new_step(step_id);
-    validate_value(ciphertext, 2, false, "BFV Negate input");
+    validate_value(ciphertext, 2, hpu::runtime::PolynomialDomain::coefficient, false,
+                   "BFV Negate input");
     auto output = image_builder_.reserve_ciphertext(
         std::move(output_id), image_builder_.level_chain().require(ciphertext.parms_id));
 
@@ -110,11 +145,12 @@ BfvPlannedValue BfvOperationPlan::describe(const PreparedBfvRnsObject& object) c
 }
 
 void BfvOperationPlan::validate_value(const PreparedBfvRnsObject& object,
-                                      std::size_t component_count, bool require_prepared_plaintext,
-                                      const char* role) const
+                                      std::size_t component_count,
+                                      hpu::runtime::PolynomialDomain domain,
+                                      bool require_prepared_plaintext, const char* role) const
 {
     if (object.id.empty() || object.components.size() != component_count ||
-        object.domain != hpu::runtime::PolynomialDomain::coefficient || object.key_domain != 1) {
+        object.domain != domain || object.key_domain != 1) {
         throw std::invalid_argument(std::string(role) +
                                     " has an incompatible shape or representation");
     }
@@ -152,6 +188,33 @@ void BfvOperationPlan::validate_value(const PreparedBfvRnsObject& object,
     }
 }
 
+void BfvOperationPlan::validate_canonical_twiddles(const BfvLevelDescriptor& level) const
+{
+    const std::size_t degree = image_builder_.registry().poly_modulus_degree;
+    const std::size_t stages = ntt_stage_count(degree);
+    const auto require_twiddle = [&](const std::string& id, std::size_t words) {
+        try {
+            const auto& allocation = image_builder_.image().allocation(id);
+            if (allocation.word_count != words || allocation.span.line_count == 0 ||
+                allocation.kind != hpu::runtime::AllocationKind::twiddle || !allocation.read_only) {
+                throw std::invalid_argument(
+                    "BFV MultiplyPlain canonical twiddle has an incompatible allocation: " + id);
+            }
+        } catch (const std::out_of_range&) {
+            throw std::invalid_argument("BFV MultiplyPlain canonical twiddle is absent: " + id);
+        }
+    };
+    for (int modulus_id : level.keyswitch_layout.q_mod_ids) {
+        const std::string prefix = "constants/twiddle/canonical/mod" + std::to_string(modulus_id);
+        require_twiddle(prefix + "/ntt/pre_twist", degree);
+        for (std::size_t stage = 0; stage < stages; ++stage) {
+            require_twiddle(prefix + "/ntt/stage" + std::to_string(stage), degree / 2);
+            require_twiddle(prefix + "/intt/stage" + std::to_string(stage), degree / 2);
+        }
+        require_twiddle(prefix + "/intt/post_untwist_scale", degree);
+    }
+}
+
 void BfvOperationPlan::require_same_level(const PreparedBfvRnsObject& left,
                                           const PreparedBfvRnsObject& right, const char* role) const
 {
@@ -170,8 +233,10 @@ PreparedBfvRnsObject BfvOperationPlan::append_ciphertext_binary(BfvOperationKind
     if (kind != BfvOperationKind::add && kind != BfvOperationKind::subtract) {
         throw std::invalid_argument("invalid BFV ciphertext binary kind");
     }
-    validate_value(left, 2, false, "BFV binary left input");
-    validate_value(right, 2, false, "BFV binary right input");
+    validate_value(left, 2, hpu::runtime::PolynomialDomain::coefficient, false,
+                   "BFV binary left input");
+    validate_value(right, 2, hpu::runtime::PolynomialDomain::coefficient, false,
+                   "BFV binary right input");
     require_same_level(left, right, "BFV ciphertext binary");
     auto output = image_builder_.reserve_ciphertext(
         std::move(output_id), image_builder_.level_chain().require(left.parms_id));
@@ -195,8 +260,10 @@ PreparedBfvRnsObject BfvOperationPlan::append_plain_binary(BfvOperationKind kind
     if (kind != BfvOperationKind::add_plain && kind != BfvOperationKind::subtract_plain) {
         throw std::invalid_argument("invalid BFV plaintext binary kind");
     }
-    validate_value(ciphertext, 2, false, "BFV plaintext binary ciphertext");
-    validate_value(plaintext, 1, true, "BFV prepared Add/Sub plaintext");
+    validate_value(ciphertext, 2, hpu::runtime::PolynomialDomain::coefficient, false,
+                   "BFV plaintext binary ciphertext");
+    validate_value(plaintext, 1, hpu::runtime::PolynomialDomain::coefficient, true,
+                   "BFV prepared Add/Sub plaintext");
     require_same_level(ciphertext, plaintext, "BFV plaintext binary");
     auto output = image_builder_.reserve_ciphertext(
         std::move(output_id), image_builder_.level_chain().require(ciphertext.parms_id));

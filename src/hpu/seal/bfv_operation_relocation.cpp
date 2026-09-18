@@ -93,14 +93,19 @@ public:
 
     void load(int slot, const std::string& allocation_id)
     {
+        load_words(slot, allocation_id, polynomial_words_);
+    }
+
+    void load_words(int slot, const std::string& allocation_id, std::size_t expected_words)
+    {
         append(BfvDmaDirection::load, slot, allocation_id, hpu::DataType::poly,
-               hpu::DloadFlag::regular_bank, 0);
+               hpu::DloadFlag::regular_bank, 0, expected_words);
     }
 
     void store(int slot, const std::string& allocation_id)
     {
         append(BfvDmaDirection::store, slot, allocation_id, hpu::DataType::poly,
-               hpu::DloadFlag::regular_bank, 1);
+               hpu::DloadFlag::regular_bank, 1, polynomial_words_);
     }
 
     void finish() const
@@ -114,7 +119,8 @@ public:
 
 private:
     void append(BfvDmaDirection direction, int slot, const std::string& allocation_id,
-                hpu::DataType load_type, hpu::DloadFlag load_flag, int store_release)
+                hpu::DataType load_type, hpu::DloadFlag load_flag, int store_release,
+                std::size_t expected_words)
     {
         if (cursor_ >= instructions_.size()) {
             throw std::logic_error("BFV relocation recipe exceeds generated DMA instructions for " +
@@ -130,7 +136,7 @@ private:
         }
 
         const auto& allocation = image_.allocation(allocation_id);
-        if (allocation.word_count != polynomial_words_ || allocation.span.line_count == 0) {
+        if (allocation.word_count != expected_words || allocation.span.line_count == 0) {
             throw std::invalid_argument(
                 "BFV polynomial relocation has an incompatible allocation: " + allocation_id);
         }
@@ -195,6 +201,53 @@ void bind_plain_binary(OperationBindingBuilder& bindings, const BfvOperationStep
         bindings.store(2, limb_id(step.output, 0, modulus_id));
         bindings.load(0, limb_id(step.inputs[0], 1, modulus_id));
         bindings.store(0, limb_id(step.output, 1, modulus_id));
+    }
+    bindings.finish();
+}
+
+std::size_t ntt_stage_count(std::size_t degree)
+{
+    std::size_t stages = 0;
+    for (std::size_t remaining = degree; remaining > 1; remaining >>= 1U) {
+        ++stages;
+    }
+    return stages;
+}
+
+std::string canonical_twiddle_id(int modulus_id, bool inverse, const std::string& suffix)
+{
+    return "constants/twiddle/canonical/mod" + std::to_string(modulus_id) +
+           (inverse ? "/intt/" : "/ntt/") + suffix;
+}
+
+void bind_multiply_plain(OperationBindingBuilder& bindings, const BfvOperationStep& step,
+                         const BfvLevelDescriptor& level, std::size_t degree)
+{
+    if (step.inputs.size() != 2 || step.inputs[0].component_count != 2 ||
+        step.inputs[1].component_count != 1 || step.output.component_count != 2 ||
+        !step.resources.requires_canonical_twiddles) {
+        throw std::invalid_argument("invalid BFV MultiplyPlain relocation manifest");
+    }
+    const std::size_t stages = ntt_stage_count(degree);
+    for (std::size_t component = 0; component < 2; ++component) {
+        for (int modulus_id : level.keyswitch_layout.q_mod_ids) {
+            bindings.load(0, limb_id(step.inputs[0], component, modulus_id));
+            bindings.load_words(3, canonical_twiddle_id(modulus_id, false, "pre_twist"), degree);
+            for (std::size_t stage = 0; stage < stages; ++stage) {
+                bindings.load_words(
+                    3, canonical_twiddle_id(modulus_id, false, "stage" + std::to_string(stage)),
+                    degree / 2);
+            }
+            bindings.load(1, limb_id(step.inputs[1], 0, modulus_id));
+            for (std::size_t stage = 0; stage < stages; ++stage) {
+                bindings.load_words(
+                    3, canonical_twiddle_id(modulus_id, true, "stage" + std::to_string(stage)),
+                    degree / 2);
+            }
+            bindings.load_words(3, canonical_twiddle_id(modulus_id, true, "post_untwist_scale"),
+                                degree);
+            bindings.store(0, limb_id(step.output, component, modulus_id));
+        }
     }
     bindings.finish();
 }
@@ -300,6 +353,9 @@ BfvRelocationSchedule build_bfv_relocation_schedule(const BfvLoweredProgram& pro
         case BfvOperationKind::add_plain:
         case BfvOperationKind::subtract_plain:
             bind_plain_binary(bindings, step, level);
+            break;
+        case BfvOperationKind::multiply_plain:
+            bind_multiply_plain(bindings, step, level, degree);
             break;
         case BfvOperationKind::negate:
             bind_negate(bindings, step, level);

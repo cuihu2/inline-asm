@@ -216,22 +216,27 @@ BfvOperationPlan plan(builder);
 auto sum = plan.append_add("add", left, right, "output/sum");
 auto with_plain = plan.append_add_plain(
     "add_plain", sum, prepared_add_plain, "output/result");
+auto product = plan.append_multiply_plain(
+    "multiply_plain", left, prepared_multiply_plain, "output/product");
 auto program = lower_bfv_operation_plan(plan, context);
 auto relocation = build_bfv_relocation_schedule(
     program, builder.image(), context);
 ```
 
-- 首层 planner 支持 Ciphertext Add/Subtract、Negate 与 AddPlain/SubtractPlain。
+- 首层 planner 支持 Ciphertext Add/Subtract、Negate、AddPlain/SubtractPlain 与
+  MultiplyPlain。
   所有输入与输出都必须是同一 `parms_id` 的二分量系数域 Q 密文；算子保持 level、
-  component 数、domain 和 `key_domain=1`，不会隐式插入 NTT 或 ModSwitch。
+  component 数、输出 domain 和 `key_domain=1`，不会隐式插入 ModSwitch。
 - AddPlain/SubtractPlain 只接受 builder 生成的只读系数域 `Delta*m` 对象；为
   MultiplyPlain 准备的 NTT plaintext 会被明确拒绝。运行时仅执行 `padd/psub`，不做
   host plaintext 缩放或系数计算。
+- MultiplyPlain 只接受中心提升后的 canonical HPU NTT plaintext。对密文的每个
+  component/Q limb，lowering 显式执行 canonical NTT、`pmul` 和 INTT，结果恢复为
+  BFV 系数域；pre-twist、正逆 stage twiddle 与 post-scale 都由 relocation 绑定到
+  builder 预制的只读 HPU_MEM 对象，不存在 CPU 计算回退。
 - lowering 为整个计划只装载一次 small-bank 模表、在末尾只发出一次 `psync`。
   relocation 按生成汇编中每条 `dload/dstore` 的顺序绑定具体 HPU_MEM limb，并拒绝
   shape、level、domain、只读属性或 DMA ABI 不匹配的对象。
-- MultiplyPlain 尚未并入此基础 planner：BFV 密文在系数域，而其预制 plaintext 在
-  canonical HPU NTT 域，后续实现需要显式的 ciphertext NTT、逐点乘和 INTT 流程。
 
 #### 2.2.4 CKKS 操作元数据规则
 

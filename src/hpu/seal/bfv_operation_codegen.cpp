@@ -15,16 +15,24 @@ constexpr int kModulusTableObject = 4;
 
 const BfvLevelDescriptor& require_value_shape(const BfvLevelChain& level_chain,
                                               const BfvPlannedValue& value, std::size_t components,
+                                              hpu::runtime::PolynomialDomain domain,
                                               const char* role)
 {
     const auto& level = level_chain.require(value.metadata.parms_id);
     if (value.id.empty() || value.metadata.chain_index != level.chain_index ||
-        value.component_count != components ||
-        value.domain != hpu::runtime::PolynomialDomain::coefficient || value.key_domain != 1) {
+        value.component_count != components || value.domain != domain || value.key_domain != 1) {
         throw std::invalid_argument(std::string(role) +
                                     " has an incompatible shape or representation");
     }
     return level;
+}
+
+const BfvLevelDescriptor& require_coefficient_value_shape(const BfvLevelChain& level_chain,
+                                                          const BfvPlannedValue& value,
+                                                          std::size_t components, const char* role)
+{
+    return require_value_shape(level_chain, value, components,
+                               hpu::runtime::PolynomialDomain::coefficient, role);
 }
 
 void require_same_level(const BfvPlannedValue& left, const BfvPlannedValue& right, const char* role)
@@ -35,7 +43,7 @@ void require_same_level(const BfvPlannedValue& left, const BfvPlannedValue& righ
     }
 }
 
-std::string lower_step(const BfvOperationStep& step, const BfvLevelChain& level_chain)
+std::string lower_step(const BfvOperationStep& step, const BfvLevelChain& level_chain, int degree)
 {
     if (step.id.empty() || !step.resources.requires_modulus_table) {
         throw std::invalid_argument("lowered BFV step lacks its id or modulus-table requirement");
@@ -43,13 +51,15 @@ std::string lower_step(const BfvOperationStep& step, const BfvLevelChain& level_
     switch (step.kind) {
     case BfvOperationKind::add:
     case BfvOperationKind::subtract: {
-        if (step.inputs.size() != 2) {
+        if (step.inputs.size() != 2 || step.resources.requires_canonical_twiddles) {
             throw std::invalid_argument("invalid planned BFV Add/Subtract inputs");
         }
-        const auto& level = require_value_shape(level_chain, step.inputs[0], 2,
-                                                "planned BFV Add/Subtract left input");
-        require_value_shape(level_chain, step.inputs[1], 2, "planned BFV Add/Subtract right input");
-        require_value_shape(level_chain, step.output, 2, "planned BFV Add/Subtract output");
+        const auto& level = require_coefficient_value_shape(level_chain, step.inputs[0], 2,
+                                                            "planned BFV Add/Subtract left input");
+        require_coefficient_value_shape(level_chain, step.inputs[1], 2,
+                                        "planned BFV Add/Subtract right input");
+        require_coefficient_value_shape(level_chain, step.output, 2,
+                                        "planned BFV Add/Subtract output");
         require_same_level(step.inputs[0], step.inputs[1], "planned BFV Add/Subtract");
         require_same_level(step.inputs[0], step.output, "planned BFV Add/Subtract output");
         const int num_q = static_cast<int>(level.q_moduli.size());
@@ -59,15 +69,15 @@ std::string lower_step(const BfvOperationStep& step, const BfvLevelChain& level_
     }
     case BfvOperationKind::add_plain:
     case BfvOperationKind::subtract_plain: {
-        if (step.inputs.size() != 2) {
+        if (step.inputs.size() != 2 || step.resources.requires_canonical_twiddles) {
             throw std::invalid_argument("invalid planned BFV AddPlain/SubtractPlain inputs");
         }
-        const auto& level = require_value_shape(level_chain, step.inputs[0], 2,
-                                                "planned BFV AddPlain/SubtractPlain ciphertext");
-        require_value_shape(level_chain, step.inputs[1], 1,
-                            "planned BFV AddPlain/SubtractPlain plaintext");
-        require_value_shape(level_chain, step.output, 2,
-                            "planned BFV AddPlain/SubtractPlain output");
+        const auto& level = require_coefficient_value_shape(
+            level_chain, step.inputs[0], 2, "planned BFV AddPlain/SubtractPlain ciphertext");
+        require_coefficient_value_shape(level_chain, step.inputs[1], 1,
+                                        "planned BFV AddPlain/SubtractPlain plaintext");
+        require_coefficient_value_shape(level_chain, step.output, 2,
+                                        "planned BFV AddPlain/SubtractPlain output");
         require_same_level(step.inputs[0], step.inputs[1], "planned BFV AddPlain/SubtractPlain");
         require_same_level(step.inputs[0], step.output,
                            "planned BFV AddPlain/SubtractPlain output");
@@ -76,13 +86,29 @@ std::string lower_step(const BfvOperationStep& step, const BfvLevelChain& level_
                    ? hpu::scheme::bfv::generate_add_plain_body_asm(num_q, false, false)
                    : hpu::scheme::bfv::generate_subtract_plain_body_asm(num_q, false, false);
     }
+    case BfvOperationKind::multiply_plain: {
+        if (step.inputs.size() != 2 || !step.resources.requires_canonical_twiddles) {
+            throw std::invalid_argument("invalid planned BFV MultiplyPlain resources");
+        }
+        const auto& level = require_coefficient_value_shape(level_chain, step.inputs[0], 2,
+                                                            "planned BFV MultiplyPlain ciphertext");
+        require_value_shape(level_chain, step.inputs[1], 1,
+                            hpu::runtime::PolynomialDomain::canonical_ntt_physical,
+                            "planned BFV MultiplyPlain plaintext");
+        require_coefficient_value_shape(level_chain, step.output, 2,
+                                        "planned BFV MultiplyPlain output");
+        require_same_level(step.inputs[0], step.inputs[1], "planned BFV MultiplyPlain");
+        require_same_level(step.inputs[0], step.output, "planned BFV MultiplyPlain output");
+        return hpu::scheme::bfv::generate_multiply_plain_body_asm(
+            degree, static_cast<int>(level.q_moduli.size()), false, false);
+    }
     case BfvOperationKind::negate: {
-        if (step.inputs.size() != 1) {
+        if (step.inputs.size() != 1 || step.resources.requires_canonical_twiddles) {
             throw std::invalid_argument("invalid planned BFV Negate inputs");
         }
-        const auto& level =
-            require_value_shape(level_chain, step.inputs.front(), 2, "planned BFV Negate input");
-        require_value_shape(level_chain, step.output, 2, "planned BFV Negate output");
+        const auto& level = require_coefficient_value_shape(level_chain, step.inputs.front(), 2,
+                                                            "planned BFV Negate input");
+        require_coefficient_value_shape(level_chain, step.output, 2, "planned BFV Negate output");
         require_same_level(step.inputs.front(), step.output, "planned BFV Negate output");
         return hpu::scheme::bfv::generate_negate_body_asm(static_cast<int>(level.q_moduli.size()),
                                                           false, false);
@@ -118,7 +144,8 @@ BfvLoweredProgram lower_bfv_operation_plan(const BfvOperationPlan& plan,
     for (const auto& step : plan.steps()) {
         BfvLoweredOperation lowered;
         lowered.operation = step;
-        lowered.body_asm = lower_step(step, level_chain);
+        lowered.body_asm = lower_step(step, level_chain,
+                                      static_cast<int>(key_data->parms().poly_modulus_degree()));
         result.body_asm += lowered.body_asm;
         result.operations.push_back(std::move(lowered));
     }

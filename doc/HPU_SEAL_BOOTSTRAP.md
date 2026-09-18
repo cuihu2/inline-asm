@@ -142,16 +142,17 @@ Delta-scaled data for Add/SubPlain and centered-lift canonical HPU NTT data for
 MultiplyPlain. Runtime execution therefore performs no host plaintext lift,
 scaling, or NTT.
 
-The first BFV planner/codegen layer now covers ciphertext Add/Subtract/Negate
-and AddPlain/SubtractPlain. It requires exact same-level, two-component,
-coefficient-domain ciphertexts and accepts only the prepared Delta-scaled form
-for plaintext addition or subtraction. Lowering emits coefficient-domain
-`padd`/`psub` streams, loads the application modulus table once, and terminates
-with one `psync`; relocation resolves every generated DMA to a concrete
-HPU_MEM limb. MultiplyPlain is intentionally the next step because its
-centered-lift plaintext is already in canonical HPU NTT form while BFV
-ciphertexts enter in coefficient form, so its planner must own the explicit
-NTT-pointwise-multiply-INTT round trip.
+The first BFV planner/codegen layer now covers ciphertext Add/Subtract/Negate,
+AddPlain/SubtractPlain, and MultiplyPlain. It requires exact same-level,
+two-component coefficient-domain ciphertexts. Plaintext addition and
+subtraction accept only the prepared Delta-scaled form; MultiplyPlain accepts
+only the centered-lift canonical HPU NTT form. For every ciphertext component
+and active-Q limb, MultiplyPlain performs an explicit canonical NTT,
+pointwise `pmul`, and INTT, returning a coefficient-domain ciphertext. All
+pre-twist, stage-twiddle, and post-scale DMAs resolve to immutable HPU_MEM
+objects. The combined lowering loads the application modulus table once and
+terminates with one `psync`; no runtime coefficient arithmetic falls back to
+the CPU.
 
 ## First CKKS application stream
 
