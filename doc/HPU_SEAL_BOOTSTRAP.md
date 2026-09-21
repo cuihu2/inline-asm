@@ -187,6 +187,10 @@ compares both final ciphertext components word-for-word with an independent
 modified-SEAL oracle. The executor implements comparison-free BEHZ,
 branchless-SK, rounded single-P KeySwitch, and rounded drop-last without
 calling `seal::Evaluator`.
+The same executor also covers BFV Add, Subtract, Negate, AddPlain,
+SubtractPlain, and coefficient-domain MultiplyPlain with a canonical HPU
+NTT/INTT round trip. The basic-operation integration test compares every
+result component word-for-word with modified-SEAL.
 
 ## First CKKS application stream
 

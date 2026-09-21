@@ -161,6 +161,8 @@ BFV 顶层示例见 `doc/BFV_APPLICATION_EXAMPLE.md`。它实现
 Multiply/Relinearize、显式 ModSwitch，以及 `.asm/.inst32/.cmd26`、运行包装、
 resolved DMA manifest 和 HPU_MEM 镜像的生成。示例还通过 `BfvSoftwareExecutor`
 执行同一镜像，并将最终密文与 modified-SEAL 逐系数比较。
+BFV 软件执行器也覆盖 Add/Subtract/Negate、AddPlain/SubtractPlain 和
+canonical-NTT 往返的 MultiplyPlain，全部与 modified-SEAL 逐系数对拍。
 
 当前 HPU_MEM 软件执行器已经对 CKKS Add/Subtract/MultiplyPlain/AddPlain/
 SubtractPlain、Negate、通用密文 Multiply、Square、KeySwitch、Relinearize、Rescale、

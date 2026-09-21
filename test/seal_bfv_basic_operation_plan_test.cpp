@@ -5,6 +5,7 @@
 #include "hpu/seal/bfv_operation_codegen.hpp"
 #include "hpu/seal/bfv_operation_plan.hpp"
 #include "hpu/seal/bfv_operation_relocation.hpp"
+#include "hpu/seal/bfv_software_executor.hpp"
 #include "scheme/bfv/basic_arithmetic.hpp"
 
 #include <seal/seal.h>
@@ -172,6 +173,23 @@ void require_multiply_plain_exact(
     }
 }
 
+void require_executor_exact(const ::seal::Ciphertext& expected,
+                            const hpu::seal_adapter::PreparedBfvRnsObject& output,
+                            const hpu::seal_adapter::BfvSoftwareExecutor& executor,
+                            const char* name)
+{
+    if (expected.parms_id() != output.parms_id || expected.size() != output.components.size()) {
+        throw std::runtime_error(std::string(name) + " output shape differs from SEAL");
+    }
+    for (std::size_t component = 0; component < output.components.size(); ++component) {
+        const auto actual = executor.export_component(output, component);
+        if (!std::equal(actual.words.begin(), actual.words.end(), expected.data(component))) {
+            throw std::runtime_error(std::string(name) +
+                                     " software execution differs from SEAL coefficients");
+        }
+    }
+}
+
 } // namespace
 
 int main()
@@ -291,25 +309,40 @@ int main()
 
         ::seal::Evaluator evaluator(*bundle.context);
         ::seal::Ciphertext expected;
+        hpu::seal_adapter::BfvSoftwareExecutor software_executor(*bundle.context,
+                                                                 image_builder.image());
         evaluator.add(encrypted_left, encrypted_right, expected);
         require_exact(expected, added, left, &right, ExactOperation::add, image_builder.image(),
                       image_builder.registry(), "BFV Add");
+        software_executor.add(left, right, added);
+        require_executor_exact(expected, added, software_executor, "BFV Add");
         evaluator.sub(encrypted_left, encrypted_right, expected);
         require_exact(expected, subtracted, left, &right, ExactOperation::subtract,
                       image_builder.image(), image_builder.registry(), "BFV Subtract");
+        software_executor.subtract(left, right, subtracted);
+        require_executor_exact(expected, subtracted, software_executor, "BFV Subtract");
         evaluator.add_plain(encrypted_left, encoded_plain, expected);
         require_exact(expected, added_plain, left, &plain, ExactOperation::add_plain,
                       image_builder.image(), image_builder.registry(), "BFV AddPlain");
+        software_executor.add_plain(left, plain, added_plain);
+        require_executor_exact(expected, added_plain, software_executor, "BFV AddPlain");
         evaluator.sub_plain(encrypted_left, encoded_plain, expected);
         require_exact(expected, subtracted_plain, left, &plain, ExactOperation::subtract_plain,
                       image_builder.image(), image_builder.registry(), "BFV SubtractPlain");
+        software_executor.subtract_plain(left, plain, subtracted_plain);
+        require_executor_exact(expected, subtracted_plain, software_executor, "BFV SubtractPlain");
         evaluator.multiply_plain(encrypted_left, encoded_plain, expected);
         require_multiply_plain_exact(expected, multiplied_plain, left, multiply_plain,
                                      image_builder.image(), image_builder.registry(),
                                      canonical_twiddles);
+        software_executor.multiply_plain(left, multiply_plain, canonical_twiddles,
+                                         multiplied_plain);
+        require_executor_exact(expected, multiplied_plain, software_executor, "BFV MultiplyPlain");
         evaluator.negate(encrypted_left, expected);
         require_exact(expected, negated, left, nullptr, ExactOperation::negate,
                       image_builder.image(), image_builder.registry(), "BFV Negate");
+        software_executor.negate(left, negated);
+        require_executor_exact(expected, negated, software_executor, "BFV Negate");
 
         require_invalid_argument(
             [&] { (void)plan.append_negate("add", left, "output/duplicate_step"); },
@@ -325,7 +358,16 @@ int main()
                 (void)plan.append_multiply_plain("invalid_add_plain", left, plain,
                                                  "output/invalid_multiply_plain");
             },
-            "coefficient-domain BFV AddPlain operand was accepted by MultiplyPlain");
+            "coefficient-domain BFV AddPlain operand was accepted by "
+            "MultiplyPlain");
+        require_invalid_argument(
+            [&] { software_executor.add_plain(left, multiply_plain, added_plain); },
+            "BFV software AddPlain accepted an NTT-domain plaintext");
+        require_invalid_argument(
+            [&] {
+                software_executor.multiply_plain(left, plain, canonical_twiddles, multiplied_plain);
+            },
+            "BFV software MultiplyPlain accepted a coefficient-domain plaintext");
 
         hpu::seal_adapter::BfvApplicationImageBuilder no_twiddle_builder(*bundle.context, 256);
         no_twiddle_builder.add_modulus_table();

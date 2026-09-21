@@ -211,26 +211,134 @@ BfvSoftwareExecutor::base_convert(const RnsPolynomial& input, const std::vector<
     return result;
 }
 
-void BfvSoftwareExecutor::add_plain(const PreparedBfvRnsObject& ciphertext,
-                                    const PreparedBfvRnsObject& plaintext,
-                                    const PreparedBfvRnsObject& output)
+void BfvSoftwareExecutor::ciphertext_binary(const PreparedBfvRnsObject& left,
+                                            const PreparedBfvRnsObject& right,
+                                            const PreparedBfvRnsObject& output,
+                                            hpu::runtime::PointwiseOperation operation)
+{
+    validate_object(left, 2, hpu::runtime::PolynomialDomain::coefficient);
+    validate_object(right, 2, hpu::runtime::PolynomialDomain::coefficient);
+    validate_object(output, 2, hpu::runtime::PolynomialDomain::coefficient);
+    if (left.parms_id != right.parms_id || left.parms_id != output.parms_id ||
+        operation == hpu::runtime::PointwiseOperation::multiply) {
+        throw std::invalid_argument("BFV Add/Subtract operands or operation are invalid");
+    }
+    for (std::size_t component = 0; component < 2; ++component) {
+        const auto& left_polynomial = left.components[component];
+        const auto& right_polynomial = right.components[component];
+        const auto& output_polynomial = output.components[component];
+        for (std::size_t basis = 0; basis < left_polynomial.limbs.size(); ++basis) {
+            memory_.pointwise(output_polynomial.limbs[basis], left_polynomial.limbs[basis],
+                              right_polynomial.limbs[basis], left_polynomial.degree,
+                              left_polynomial.modulus_ids[basis], operation);
+        }
+    }
+}
+
+void BfvSoftwareExecutor::add(const PreparedBfvRnsObject& left, const PreparedBfvRnsObject& right,
+                              const PreparedBfvRnsObject& output)
+{
+    ciphertext_binary(left, right, output, hpu::runtime::PointwiseOperation::add);
+}
+
+void BfvSoftwareExecutor::subtract(const PreparedBfvRnsObject& left,
+                                   const PreparedBfvRnsObject& right,
+                                   const PreparedBfvRnsObject& output)
+{
+    ciphertext_binary(left, right, output, hpu::runtime::PointwiseOperation::subtract);
+}
+
+void BfvSoftwareExecutor::plaintext_binary(const PreparedBfvRnsObject& ciphertext,
+                                           const PreparedBfvRnsObject& plaintext,
+                                           const PreparedBfvRnsObject& output,
+                                           hpu::runtime::PointwiseOperation operation)
 {
     validate_object(ciphertext, 2, hpu::runtime::PolynomialDomain::coefficient);
     validate_object(plaintext, 1, hpu::runtime::PolynomialDomain::coefficient);
     validate_object(output, 2, hpu::runtime::PolynomialDomain::coefficient);
+    if (ciphertext.parms_id != plaintext.parms_id || ciphertext.parms_id != output.parms_id ||
+        operation == hpu::runtime::PointwiseOperation::multiply) {
+        throw std::invalid_argument("BFV AddPlain/SubtractPlain operands or operation are invalid");
+    }
+    for (std::size_t basis = 0; basis < ciphertext.components[0].limbs.size(); ++basis) {
+        memory_.pointwise(output.components[0].limbs[basis], ciphertext.components[0].limbs[basis],
+                          plaintext.components[0].limbs[basis], ciphertext.components[0].degree,
+                          ciphertext.components[0].modulus_ids[basis], operation);
+        memory_.copy(output.components[1].limbs[basis], ciphertext.components[1].limbs[basis],
+                     ciphertext.components[1].degree);
+    }
+}
+
+void BfvSoftwareExecutor::add_plain(const PreparedBfvRnsObject& ciphertext,
+                                    const PreparedBfvRnsObject& plaintext,
+                                    const PreparedBfvRnsObject& output)
+{
+    plaintext_binary(ciphertext, plaintext, output, hpu::runtime::PointwiseOperation::add);
+}
+
+void BfvSoftwareExecutor::subtract_plain(const PreparedBfvRnsObject& ciphertext,
+                                         const PreparedBfvRnsObject& plaintext,
+                                         const PreparedBfvRnsObject& output)
+{
+    plaintext_binary(ciphertext, plaintext, output, hpu::runtime::PointwiseOperation::subtract);
+}
+
+void BfvSoftwareExecutor::multiply_plain(const PreparedBfvRnsObject& ciphertext,
+                                         const PreparedBfvRnsObject& plaintext,
+                                         const std::vector<PreparedCanonicalTwiddles>& tables,
+                                         const PreparedBfvRnsObject& output)
+{
+    validate_object(ciphertext, 2, hpu::runtime::PolynomialDomain::coefficient);
+    validate_object(plaintext, 1, hpu::runtime::PolynomialDomain::canonical_ntt_physical);
+    validate_object(output, 2, hpu::runtime::PolynomialDomain::coefficient);
     if (ciphertext.parms_id != plaintext.parms_id || ciphertext.parms_id != output.parms_id) {
-        throw std::invalid_argument("BFV AddPlain operands are at different levels");
+        throw std::invalid_argument("BFV MultiplyPlain operands are at different levels");
     }
-    auto output0 = read_polynomial(ciphertext.components[0]);
+    const std::size_t degree = level_chain_.registry().poly_modulus_degree;
     const auto plain = read_polynomial(plaintext.components[0]);
-    for (std::size_t basis = 0; basis < output0.size(); ++basis) {
-        const std::uint32_t modulus = memory_.modulus(ciphertext.components[0].modulus_ids[basis]);
-        for (std::size_t index = 0; index < output0[basis].size(); ++index) {
-            output0[basis][index] = add_mod(output0[basis][index], plain[basis][index], modulus);
+    for (std::size_t component = 0; component < 2; ++component) {
+        const auto coefficients = read_polynomial(ciphertext.components[component]);
+        RnsPolynomial result(coefficients.size(), Limb(degree));
+        for (std::size_t basis = 0; basis < coefficients.size(); ++basis) {
+            const std::uint8_t modulus_id = ciphertext.components[component].modulus_ids[basis];
+            const std::uint32_t modulus = memory_.modulus(modulus_id);
+            auto transformed =
+                transform_limb(coefficients[basis], degree, modulus_id, tables, false);
+            for (std::size_t index = 0; index < degree; ++index) {
+                if (plain[basis][index] >= modulus) {
+                    throw std::invalid_argument(
+                        "BFV MultiplyPlain plaintext is not reduced modulo q");
+                }
+                transformed[index] = multiply_mod(transformed[index], plain[basis][index], modulus);
+            }
+            result[basis] = transform_limb(transformed, degree, modulus_id, tables, true);
         }
+        write_polynomial(output.components[component], result);
     }
-    write_polynomial(output.components[0], output0);
-    write_polynomial(output.components[1], read_polynomial(ciphertext.components[1]));
+}
+
+void BfvSoftwareExecutor::negate(const PreparedBfvRnsObject& ciphertext,
+                                 const PreparedBfvRnsObject& output)
+{
+    validate_object(ciphertext, 2, hpu::runtime::PolynomialDomain::coefficient);
+    validate_object(output, 2, hpu::runtime::PolynomialDomain::coefficient);
+    if (ciphertext.parms_id != output.parms_id) {
+        throw std::invalid_argument("BFV Negate input and output are at different levels");
+    }
+    for (std::size_t component = 0; component < 2; ++component) {
+        auto result = read_polynomial(ciphertext.components[component]);
+        for (std::size_t basis = 0; basis < result.size(); ++basis) {
+            const std::uint32_t modulus =
+                memory_.modulus(ciphertext.components[component].modulus_ids[basis]);
+            for (auto& word : result[basis]) {
+                if (word >= modulus) {
+                    throw std::invalid_argument("BFV Negate input is not reduced modulo q");
+                }
+                word = word == 0 ? 0 : modulus - word;
+            }
+        }
+        write_polynomial(output.components[component], result);
+    }
 }
 
 void BfvSoftwareExecutor::mod_switch(const PreparedBfvRnsObject& input,

@@ -19,6 +19,10 @@ class BfvSoftwareExecutor {
 public:
     BfvSoftwareExecutor(const ::seal::SEALContext& context, const hpu::runtime::HpuMemImage& image);
 
+    void add(const PreparedBfvRnsObject& left, const PreparedBfvRnsObject& right,
+             const PreparedBfvRnsObject& output);
+    void subtract(const PreparedBfvRnsObject& left, const PreparedBfvRnsObject& right,
+                  const PreparedBfvRnsObject& output);
     void multiply(const PreparedBfvRnsObject& left, const PreparedBfvRnsObject& right,
                   const PreparedEvaluationKey& relinearization_key,
                   const PreparedKeySwitchConstants& keyswitch_constants,
@@ -30,6 +34,13 @@ public:
                     const PreparedBfvRnsObject& output);
     void add_plain(const PreparedBfvRnsObject& ciphertext, const PreparedBfvRnsObject& plaintext,
                    const PreparedBfvRnsObject& output);
+    void subtract_plain(const PreparedBfvRnsObject& ciphertext,
+                        const PreparedBfvRnsObject& plaintext, const PreparedBfvRnsObject& output);
+    void multiply_plain(const PreparedBfvRnsObject& ciphertext,
+                        const PreparedBfvRnsObject& plaintext,
+                        const std::vector<PreparedCanonicalTwiddles>& tables,
+                        const PreparedBfvRnsObject& output);
+    void negate(const PreparedBfvRnsObject& ciphertext, const PreparedBfvRnsObject& output);
 
     HpuRnsPolynomial export_component(const PreparedBfvRnsObject& object,
                                       std::size_t component) const;
@@ -50,6 +61,12 @@ private:
     RnsPolynomial base_convert(const RnsPolynomial& input, const std::vector<int>& sources,
                                const std::vector<int>& targets, const std::string& prefix,
                                const std::string& inverse_prefix = {});
+    void ciphertext_binary(const PreparedBfvRnsObject& left, const PreparedBfvRnsObject& right,
+                           const PreparedBfvRnsObject& output,
+                           hpu::runtime::PointwiseOperation operation);
+    void plaintext_binary(const PreparedBfvRnsObject& ciphertext,
+                          const PreparedBfvRnsObject& plaintext, const PreparedBfvRnsObject& output,
+                          hpu::runtime::PointwiseOperation operation);
 
     const hpu::runtime::HpuMemImage& image_;
     BfvLevelChain level_chain_;
