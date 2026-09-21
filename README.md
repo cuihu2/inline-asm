@@ -163,6 +163,9 @@ resolved DMA manifest 和 HPU_MEM 镜像的生成。示例还通过 `BfvSoftware
 执行同一镜像，并将最终密文与 modified-SEAL 逐系数比较。
 BFV 软件执行器也覆盖 Add/Subtract/Negate、AddPlain/SubtractPlain 和
 canonical-NTT 往返的 MultiplyPlain，全部与 modified-SEAL 逐系数对拍。
+BFV application image 可按预定 RotateRows 步长或 RotateColumns 准备对应的
+level-specific GaloisKey 与 modified-root INTT twiddle；任意步长的算子组装仍由后续
+BFV Rotation planner 完成。
 
 当前 HPU_MEM 软件执行器已经对 CKKS Add/Subtract/MultiplyPlain/AddPlain/
 SubtractPlain、Negate、通用密文 Multiply、Square、KeySwitch、Relinearize、Rescale、

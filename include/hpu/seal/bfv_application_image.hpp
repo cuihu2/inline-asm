@@ -76,6 +76,20 @@ public:
                                                 const BfvLevelDescriptor& level);
     PreparedEvaluationKey add_relinearization_key(std::string id, const ::seal::RelinKeys& keys,
                                                   const BfvLevelDescriptor& level);
+    PreparedEvaluationKey add_galois_key(std::string id, const ::seal::GaloisKeys& keys,
+                                         std::uint32_t galois_element,
+                                         const BfvLevelDescriptor& level);
+    PreparedEvaluationKey add_row_rotation_key(std::string id, const ::seal::GaloisKeys& keys,
+                                               int steps, const BfvLevelDescriptor& level);
+    PreparedEvaluationKey add_column_rotation_key(std::string id,
+                                                  const ::seal::GaloisKeys& keys,
+                                                  const BfvLevelDescriptor& level);
+    std::vector<PreparedFusedAutomorphismTwiddles> add_fused_automorphism_twiddles(
+        std::string id, std::uint32_t galois_element, const BfvLevelDescriptor& level);
+    std::vector<PreparedFusedAutomorphismTwiddles> add_row_rotation_twiddles(
+        std::string id, int steps, const BfvLevelDescriptor& level);
+    std::vector<PreparedFusedAutomorphismTwiddles> add_column_rotation_twiddles(
+        std::string id, const BfvLevelDescriptor& level);
     PreparedKeySwitchConstants add_keyswitch_constants(std::string id,
                                                        const BfvLevelDescriptor& level);
     PreparedBfvMultiplyConstants add_multiply_constants(std::string id,

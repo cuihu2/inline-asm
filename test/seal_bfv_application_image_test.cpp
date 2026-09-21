@@ -2,6 +2,7 @@
 #include "hpu/runtime/memory_image.hpp"
 #include "hpu/seal/bfv_application_image.hpp"
 #include "hpu/seal/bfv_context.hpp"
+#include "scheme/bfv/galois.hpp"
 
 #include <seal/seal.h>
 
@@ -65,6 +66,40 @@ std::vector<std::uint32_t> allocation_words(const hpu::runtime::HpuMemImage& ima
     return {first, first + static_cast<std::ptrdiff_t>(allocation.word_count)};
 }
 
+std::vector<std::uint32_t> span_words(const hpu::runtime::HpuMemImage& image,
+                                      hpu::runtime::HpuMemSpan span, std::size_t word_count)
+{
+    const auto first =
+        image.words().begin() +
+        static_cast<std::ptrdiff_t>(span.line_offset * hpu::runtime::kHpuMemLineWords);
+    return {first, first + static_cast<std::ptrdiff_t>(word_count)};
+}
+
+void require_fused_automorphism(
+    const hpu::runtime::HpuMemImage& image,
+    const hpu::seal_adapter::PreparedBfvRnsObject& input,
+    const std::vector<hpu::seal_adapter::PreparedFusedAutomorphismTwiddles>& tables,
+    std::uint32_t galois_element)
+{
+    const std::size_t degree = input.components.front().degree;
+    require(!tables.empty(), "BFV fused automorphism tables are empty");
+    const auto& table = tables.front();
+    const auto coefficients = span_words(image, input.components.front().limbs.front(), degree);
+    const auto canonical_ntt =
+        hpu::model::negacyclic_forward(coefficients, table.modulus, table.canonical_psi);
+    hpu::model::HardwareNttModel model(
+        degree, table.modulus, hpu::model::pow_mod(table.modified_psi, 2, table.modulus));
+    hpu::model::InverseNttTables inverse;
+    for (const auto& stage : table.inverse_stages) {
+        inverse.stages.push_back(span_words(image, stage, degree / 2));
+    }
+    inverse.post_scale = span_words(image, table.post_untwist_scale, degree);
+    const auto actual = model.inverse(canonical_ntt, inverse);
+    const auto expected =
+        hpu::model::automorphism_coefficients(coefficients, galois_element, table.modulus);
+    require(actual == expected, "BFV modified-root INTT differs from coefficient automorphism");
+}
+
 } // namespace
 
 int main()
@@ -79,8 +114,19 @@ int main()
         ::seal::KeyGenerator key_generator(*bundle.context);
         ::seal::PublicKey public_key;
         ::seal::RelinKeys relin_keys;
+        ::seal::GaloisKeys galois_keys;
         key_generator.create_public_key(public_key);
         key_generator.create_relin_keys(relin_keys);
+        const std::uint32_t rotate_left_element =
+            hpu::scheme::bfv::row_rotation_galois_element(spec.poly_modulus_degree, 1);
+        const std::uint32_t rotate_right_element =
+            hpu::scheme::bfv::row_rotation_galois_element(spec.poly_modulus_degree, -2);
+        const std::uint32_t rotate_columns_element =
+            hpu::scheme::bfv::column_rotation_galois_element(spec.poly_modulus_degree);
+        key_generator.create_galois_keys(
+            std::vector<std::uint32_t>{rotate_left_element, rotate_right_element,
+                                       rotate_columns_element},
+            galois_keys);
 
         ::seal::BatchEncoder encoder(*bundle.context);
         std::vector<std::uint64_t> slots(encoder.slot_count());
@@ -108,6 +154,18 @@ int main()
             builder.add_add_subtract_plaintext("plain/add_subtract_next", plaintext, next_level);
         const auto output = builder.reserve_ciphertext("output/ciphertext", level);
         const auto prepared_relin = builder.add_relinearization_key("relin/top", relin_keys, level);
+        const auto rotate_left_key =
+            builder.add_row_rotation_key("galois/left1", galois_keys, 1, level);
+        const auto rotate_right_key =
+            builder.add_row_rotation_key("galois/right2", galois_keys, -2, level);
+        const auto rotate_columns_key =
+            builder.add_column_rotation_key("galois/columns", galois_keys, level);
+        const auto rotate_left_twiddles =
+            builder.add_row_rotation_twiddles("bfv_left1", 1, level);
+        const auto rotate_right_twiddles =
+            builder.add_row_rotation_twiddles("bfv_right2", -2, level);
+        const auto rotate_columns_twiddles =
+            builder.add_column_rotation_twiddles("bfv_columns", level);
         const auto keyswitch = builder.add_keyswitch_constants("constants/keyswitch/top", level);
         const auto multiply = builder.add_multiply_constants("constants/multiply/top", level);
 
@@ -199,6 +257,38 @@ int main()
                     prepared_relin.digits.front().size() == 2 &&
                     prepared_relin.digits.front().front().modulus_ids == expected_key_ids,
                 "BFV level-specific relinearization key has the wrong Q|P shape");
+        for (const auto* key : {&rotate_left_key, &rotate_right_key, &rotate_columns_key}) {
+            require(key->data_parms_id == level.parms_id && key->chain_index == level.chain_index &&
+                        key->digits.size() == q_count &&
+                        key->rns_layout.q_mod_ids == level.keyswitch_layout.q_mod_ids &&
+                        key->rns_layout.p_mod_ids == level.keyswitch_layout.p_mod_ids &&
+                        key->rns_layout.key_digits == level.keyswitch_layout.key_digits,
+                    "BFV level-specific Galois key has the wrong Q|P shape");
+        }
+        for (const auto& entry : {std::pair{rotate_left_element, &rotate_left_twiddles},
+                                  std::pair{rotate_right_element, &rotate_right_twiddles},
+                                  std::pair{rotate_columns_element, &rotate_columns_twiddles}}) {
+            require(entry.second->size() == q_count,
+                    "BFV fused automorphism twiddles do not cover active Q");
+            for (const auto& table : *entry.second) {
+                require(table.inverse_stages.size() == 7 &&
+                            hpu::model::pow_mod(table.modified_psi, entry.first, table.modulus) ==
+                                table.canonical_psi,
+                        "BFV modified-root twiddle invariant failed");
+            }
+            require_fused_automorphism(builder.image(), prepared_ciphertext, *entry.second,
+                                       entry.first);
+        }
+        require(rotate_left_element == 3 && rotate_columns_element == 2 * spec.poly_modulus_degree - 1,
+                "BFV batching step-to-Galois mapping differs from SEAL");
+        require_invalid_argument(
+            [&] { (void)hpu::scheme::bfv::row_rotation_galois_element(spec.poly_modulus_degree, 0); },
+            "zero-step BFV row rotation was not rejected as a no-op");
+        require_invalid_argument(
+            [&] {
+                (void)builder.add_galois_key("galois/missing", galois_keys, 5, level);
+            },
+            "BFV application image accepted a missing Galois key");
 
         const std::size_t expected_keyswitch_constants = q_count * q_count + 4 * q_count + 2;
         require(keyswitch.data_parms_id == level.parms_id &&

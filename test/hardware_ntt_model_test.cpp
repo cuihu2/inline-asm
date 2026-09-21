@@ -1,4 +1,5 @@
 #include "hpu/model/hardware_ntt.hpp"
+#include "scheme/bfv/galois.hpp"
 
 #include <cstdint>
 #include <iostream>
@@ -197,7 +198,13 @@ int main()
         test_degree(65536);
         test_delta_basis();
         test_fused_automorphism(128, 3);
+        test_fused_automorphism(
+            128, hpu::scheme::bfv::row_rotation_galois_element(128, -2));
+        test_fused_automorphism(
+            128, hpu::scheme::bfv::column_rotation_galois_element(128));
         test_fused_automorphism(65536, 3);
+        test_fused_automorphism(
+            65536, hpu::scheme::bfv::column_rotation_galois_element(65536));
         std::cout << "HPU NTT model tests passed, including N=65536 and fused automorphism\n";
         return 0;
     } catch (const std::exception& error) {

@@ -191,6 +191,10 @@ The same executor also covers BFV Add, Subtract, Negate, AddPlain,
 SubtractPlain, and coefficient-domain MultiplyPlain with a canonical HPU
 NTT/INTT round trip. The basic-operation integration test compares every
 result component word-for-word with modified-SEAL.
+BFV application images can additionally preload a level-specific Galois key
+and modified-root inverse-NTT tables for a fixed row-rotation step or the
+column swap. The table builder accepts every valid odd Galois element; the BFV
+Rotation planner/codegen is a separate integration step.
 
 ## First CKKS application stream
 

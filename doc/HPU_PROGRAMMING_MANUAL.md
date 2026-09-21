@@ -976,6 +976,12 @@ rounded single-P Relinearization。执行器只读取镜像中的输入、twiddl
 evaluation key，不调用 `seal::Evaluator`。基本算子测试及
 `bfv_multiply_modswitch_application` 均与 modified-SEAL 独立 oracle 逐字比较。
 
+BFV Rotation 的预制资源层支持任意预定 RotateRows 步长和 RotateColumns。host 将步长
+映射为 SEAL Galois element `k`，按活动 level 截取对应 GaloisKey，并为每个 active-Q
+模数预加载 `psi'=psi^(1/k)` 的 PINTT stage 与 post-untwist 表。真实 HPU_MEM 表已对
+左移、负向步长和 `k=2N-1` 列交换与系数域 `X->X^k` oracle 对拍；本段只描述资源准备，
+后续 BFV Rotation kernel 负责 canonical PNTT、modified-root PINTT 和 rounded KeySwitch。
+
 生产密钥生成、安全参数选择、随机数接口、其余 BFV planner/codegen 以及噪声预算仍属于
 后续 host runtime/compiler 工作。Encode/Decode 是自包含的功能实现，
 不承担生产参数选择或密文元数据持久化。当前主硬件测试使用确定性零噪声、P 可整除的功能 fixture，必须标记为

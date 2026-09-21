@@ -45,4 +45,10 @@ std::vector<HpuKeySwitchDigit> galois_key_to_hpu(
     const ::seal::SEALContext& context,
     const CkksLevelDescriptor& level);
 
+std::vector<HpuKeySwitchDigit> galois_key_to_hpu(
+    const ::seal::GaloisKeys& keys,
+    std::uint32_t galois_element,
+    const ::seal::SEALContext& context,
+    const BfvLevelDescriptor& level);
+
 } // namespace hpu::seal_adapter

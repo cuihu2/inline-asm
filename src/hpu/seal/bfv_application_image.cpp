@@ -2,6 +2,7 @@
 
 #include "hpu/model/hardware_ntt.hpp"
 #include "hpu/seal/evaluation_key.hpp"
+#include "scheme/bfv/galois.hpp"
 
 #include <seal/util/numth.h>
 
@@ -359,6 +360,91 @@ BfvApplicationImageBuilder::add_relinearization_key(std::string id, const ::seal
     const BfvLevelDescriptor& authoritative = require_level(level.parms_id);
     return add_evaluation_key(
         std::move(id), relinearization_key_to_hpu(keys, context_, authoritative), authoritative);
+}
+
+PreparedEvaluationKey BfvApplicationImageBuilder::add_galois_key(
+    std::string id, const ::seal::GaloisKeys& keys, std::uint32_t galois_element,
+    const BfvLevelDescriptor& level)
+{
+    const BfvLevelDescriptor& authoritative = require_level(level.parms_id);
+    return add_evaluation_key(std::move(id),
+                              galois_key_to_hpu(keys, galois_element, context_, authoritative),
+                              authoritative);
+}
+
+PreparedEvaluationKey BfvApplicationImageBuilder::add_row_rotation_key(
+    std::string id, const ::seal::GaloisKeys& keys, int steps, const BfvLevelDescriptor& level)
+{
+    return add_galois_key(
+        std::move(id), keys,
+        hpu::scheme::bfv::row_rotation_galois_element(registry().poly_modulus_degree, steps),
+        level);
+}
+
+PreparedEvaluationKey BfvApplicationImageBuilder::add_column_rotation_key(
+    std::string id, const ::seal::GaloisKeys& keys, const BfvLevelDescriptor& level)
+{
+    return add_galois_key(
+        std::move(id), keys,
+        hpu::scheme::bfv::column_rotation_galois_element(registry().poly_modulus_degree), level);
+}
+
+std::vector<PreparedFusedAutomorphismTwiddles>
+BfvApplicationImageBuilder::add_fused_automorphism_twiddles(
+    std::string id, std::uint32_t galois_element, const BfvLevelDescriptor& level)
+{
+    const BfvLevelDescriptor& authoritative = require_level(level.parms_id);
+    const auto tables =
+        create_fused_inverse_automorphism_tables(authoritative.parms_id, galois_element, context_);
+    if (tables.size() != authoritative.keyswitch_layout.q_mod_ids.size()) {
+        throw std::logic_error("BFV fused automorphism table count does not match active Q");
+    }
+    std::vector<PreparedFusedAutomorphismTwiddles> result;
+    result.reserve(tables.size());
+    for (std::size_t basis = 0; basis < tables.size(); ++basis) {
+        PreparedFusedAutomorphismTwiddles prepared;
+        prepared.modulus_id =
+            static_cast<std::uint8_t>(authoritative.keyswitch_layout.q_mod_ids[basis]);
+        prepared.modulus = tables[basis].modulus;
+        prepared.canonical_psi = tables[basis].canonical_psi;
+        prepared.modified_psi = tables[basis].modified_psi;
+        const std::string prefix = "constants/twiddle/" + id + "/mod" +
+                                   std::to_string(prepared.modulus_id) + "/intt";
+        prepared.id = prefix;
+        for (std::size_t stage = 0; stage < tables[basis].stages.size(); ++stage) {
+            prepared.inverse_stages.push_back(
+                image_
+                    .add(stage_id(prefix, stage), tables[basis].stages[stage],
+                         hpu::runtime::AllocationKind::twiddle, true)
+                    .span);
+        }
+        prepared.post_untwist_scale =
+            image_
+                .add(prefix + "/post_untwist_scale", tables[basis].post_untwist_scale,
+                     hpu::runtime::AllocationKind::twiddle, true)
+                .span;
+        result.push_back(std::move(prepared));
+    }
+    return result;
+}
+
+std::vector<PreparedFusedAutomorphismTwiddles>
+BfvApplicationImageBuilder::add_row_rotation_twiddles(std::string id, int steps,
+                                                      const BfvLevelDescriptor& level)
+{
+    return add_fused_automorphism_twiddles(
+        std::move(id),
+        hpu::scheme::bfv::row_rotation_galois_element(registry().poly_modulus_degree, steps),
+        level);
+}
+
+std::vector<PreparedFusedAutomorphismTwiddles>
+BfvApplicationImageBuilder::add_column_rotation_twiddles(std::string id,
+                                                         const BfvLevelDescriptor& level)
+{
+    return add_fused_automorphism_twiddles(
+        std::move(id),
+        hpu::scheme::bfv::column_rotation_galois_element(registry().poly_modulus_degree), level);
 }
 
 PreparedKeySwitchConstants

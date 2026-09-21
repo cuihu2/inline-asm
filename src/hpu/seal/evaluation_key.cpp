@@ -147,4 +147,19 @@ std::vector<HpuKeySwitchDigit> galois_key_to_hpu(
         "SEAL level Galois-key");
 }
 
+std::vector<HpuKeySwitchDigit> galois_key_to_hpu(
+    const ::seal::GaloisKeys& keys,
+    std::uint32_t galois_element,
+    const ::seal::SEALContext& context,
+    const BfvLevelDescriptor& level)
+{
+    if (!keys.has_key(galois_element)) {
+        throw std::invalid_argument("SEAL GaloisKeys does not contain the requested element");
+    }
+    return key_digits_to_hpu(
+        keys.key(galois_element), keys.parms_id(), context, level.parms_id,
+        level.evaluation_key_digit_indices, level.keyswitch_layout.q_mod_ids,
+        level.keyswitch_layout.p_mod_ids, "SEAL BFV level Galois-key");
+}
+
 } // namespace hpu::seal_adapter

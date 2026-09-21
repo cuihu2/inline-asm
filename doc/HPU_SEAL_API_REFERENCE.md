@@ -269,6 +269,10 @@ auto relocation = build_bfv_relocation_schedule(
   plaintext 与 twiddle，完成系数域→NTT→逐点乘法→系数域；Ciphertext Multiply
   直接复现 no-SMRQ BEHZ、FastFloor、branchless-SK 和 rounded single-P KeySwitch。
   所有路径读取 builder 预制资源，不调用 `seal::Evaluator`。
+- BFV application image 的 `add_row_rotation_key/twiddles` 与
+  `add_column_rotation_key/twiddles` 按 SEAL generator-3 batching 约定，把预定步长映射
+  为 Galois element，并准备 active-Q GaloisKey 和 `psi^(1/k)` modified-root INTT 表。
+  资源转换支持任意合法 `k`；完整 Rotation planner/codegen 尚未在本节 API 中声明完成。
 
 #### 2.2.4 CKKS 操作元数据规则
 
