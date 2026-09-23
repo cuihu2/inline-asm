@@ -823,3 +823,8 @@ BFV 顶层应用参考 `examples/bfv_multiply_modswitch_application.cpp`。它�
 relocation/runtime。传入 `--emit-dir PATH` 可输出 `.asm/.inst32/.cmd26`、生成的
 `hpu_run_*()` C 包装、resolved DMA CSV 和 HPU_MEM uint32 镜像；完整说明见
 `doc/BFV_APPLICATION_EXAMPLE.md`。
+
+BFV rotation 应用参考 `examples/bfv_rotation_application.cpp`。它将
+`RotateRows(x,2)` 与 `RotateColumns(x)` 两个分支合并为一次 Add，展示预制
+GaloisKey、modified-root twiddle、key-domain workspace、完整编码与 relocation；
+调用说明见 `doc/BFV_ROTATION_APPLICATION_EXAMPLE.md`。

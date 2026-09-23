@@ -150,3 +150,5 @@ MultiplyPlain、ModSwitch、RotateRows 和 RotateColumns。使用旋转时，先
 系数域 workspace，再调用 `append_rotate_rows` 或 `append_rotate_columns`。若应用需要
 尚未覆盖的算子，应同时补齐 image resource、
 planner metadata、codegen、relocation 和差分测试，而不是在顶层手写 DMA。
+
+完整的 rotation 分支示例见 `doc/BFV_ROTATION_APPLICATION_EXAMPLE.md`。

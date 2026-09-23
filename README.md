@@ -167,6 +167,8 @@ BFV application image 可按预定 RotateRows 步长或 RotateColumns 准备对�
 level-specific GaloisKey 与 modified-root INTT twiddle。BFV planner 已支持
 RotateRows 与 RotateColumns，并完成汇编、DMA relocation、runtime 编码与软件执行；
 正向/负向行旋转和换列均与 modified-SEAL 逐系数对拍。
+可运行的 rotation 应用见 `doc/BFV_ROTATION_APPLICATION_EXAMPLE.md`，计算
+`RotateRows(x,2)+RotateColumns(x)`，展示两条 Galois 分支合并、编码与 DMA 产物生成。
 
 当前 HPU_MEM 软件执行器已经对 CKKS Add/Subtract/MultiplyPlain/AddPlain/
 SubtractPlain、Negate、通用密文 Multiply、Square、KeySwitch、Relinearize、Rescale、
