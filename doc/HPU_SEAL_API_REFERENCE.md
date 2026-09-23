@@ -230,13 +230,21 @@ auto ciphertext_product = plan.append_multiply(
 auto switched = plan.append_mod_switch(
     "mod_switch", ciphertext_product, prepared_mod_switch_constants,
     "output/next_level");
+auto rotated = plan.append_rotate_rows(
+    "rotate_rows_2", left, 2, prepared_row_galois_key,
+    prepared_keyswitch_constants, prepared_row_twiddles,
+    prepared_row_workspace, "output/rotated");
+auto swapped = plan.append_rotate_columns(
+    "rotate_columns", left, prepared_column_galois_key,
+    prepared_keyswitch_constants, prepared_column_twiddles,
+    prepared_column_workspace, "output/swapped");
 auto program = lower_bfv_operation_plan(plan, context);
 auto relocation = build_bfv_relocation_schedule(
     program, builder.image(), context);
 ```
 
 - 首层 planner 支持 Ciphertext Add/Subtract/Multiply、Negate、AddPlain/SubtractPlain、
-  MultiplyPlain 与 ModSwitch。
+  MultiplyPlain、ModSwitch、RotateRows 与 RotateColumns。
   所有输入与输出都必须是同一 `parms_id` 的二分量系数域 Q 密文；算子保持 level、
   component 数、输出 domain 和 `key_domain=1`。除显式 ModSwitch 外不会隐式降 level。
 - AddPlain/SubtractPlain 只接受 builder 生成的只读系数域 `Delta*m` 对象；为
@@ -256,6 +264,13 @@ auto relocation = build_bfv_relocation_schedule(
   `divide_and_round_q_last_inplace` 语义先加 `floor(q_last/2)`，再用单源 BConv 和
   `q_last^{-1}` 完成 rounded drop-last；输出被 planner 注册到下一 `parms_id`。
   Multiply→ModSwitch 可作为同一计划一次 lowering、relocation 和 runtime 物化。
+- RotateRows/RotateColumns 使用预制的 active-Q GaloisKey、canonical NTT twiddle、
+  与 Galois element 匹配的 modified-root INTT twiddle，以及
+  `{domain=coefficient,key_domain=k}` 的二分量 workspace。每个输入 Q limb 执行
+  canonical NTT→modified-root INTT，形成 `sigma_k(c0),sigma_k(c1)`；然后用 BFV
+  rounded single-P KeySwitch 恢复 `key_domain=1`。输出保持系数域和原 level。
+  planner 校验 workspace、twiddle 和 level；relocation 绑定所有 DMA，整个计算没有
+  CPU 系数运算。正向/负向行旋转和换列均与 modified-SEAL 逐系数对拍。
 - lowering 为整个计划只装载一次 small-bank 模表、在末尾只发出一次 `psync`。
   relocation 按生成汇编中每条 `dload/dstore` 的顺序绑定具体 HPU_MEM limb，并拒绝
   shape、level、domain、只读属性或 DMA ABI 不匹配的对象。
@@ -265,14 +280,14 @@ auto relocation = build_bfv_relocation_schedule(
   allocation provenance 的 CSV；任何不完整 schedule、编码字段漂移或越界 span 都会被拒绝。
 - `include/hpu/seal/bfv_software_executor.hpp` 提供 HPU_MEM 功能执行层。当前可执行
   Add/Subtract/Negate、AddPlain/SubtractPlain、MultiplyPlain、融合
-  Multiply/Relinearize 和 ModSwitch。MultiplyPlain 消费预制的 canonical HPU NTT
+  Multiply/Relinearize、ModSwitch、RotateRows 和 RotateColumns。MultiplyPlain 消费预制的 canonical HPU NTT
   plaintext 与 twiddle，完成系数域→NTT→逐点乘法→系数域；Ciphertext Multiply
   直接复现 no-SMRQ BEHZ、FastFloor、branchless-SK 和 rounded single-P KeySwitch。
   所有路径读取 builder 预制资源，不调用 `seal::Evaluator`。
 - BFV application image 的 `add_row_rotation_key/twiddles` 与
   `add_column_rotation_key/twiddles` 按 SEAL generator-3 batching 约定，把预定步长映射
   为 Galois element，并准备 active-Q GaloisKey 和 `psi^(1/k)` modified-root INTT 表。
-  资源转换支持任意合法 `k`；完整 Rotation planner/codegen 尚未在本节 API 中声明完成。
+  资源转换支持任意合法 `k`；顶层行旋转 API 接受预定的非零步长。
 
 #### 2.2.4 CKKS 操作元数据规则
 

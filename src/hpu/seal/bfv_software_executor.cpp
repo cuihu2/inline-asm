@@ -1,6 +1,7 @@
 #include "hpu/seal/bfv_software_executor.hpp"
 
 #include "hpu/model/hardware_ntt.hpp"
+#include "scheme/bfv/galois.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -49,6 +50,18 @@ const PreparedCanonicalTwiddles& find_tables(const std::vector<PreparedCanonical
     return *found;
 }
 
+const PreparedFusedAutomorphismTwiddles& find_fused_tables(
+    const std::vector<PreparedFusedAutomorphismTwiddles>& tables, std::uint8_t modulus_id)
+{
+    const auto found = std::find_if(tables.begin(), tables.end(), [&](const auto& table) {
+        return table.modulus_id == modulus_id;
+    });
+    if (found == tables.end()) {
+        throw std::invalid_argument("BFV software executor lacks fused twiddles for MOD_ID");
+    }
+    return *found;
+}
+
 std::string mod_id(const std::string& prefix, int modulus_id)
 {
     return prefix + "/mod" + std::to_string(modulus_id);
@@ -70,11 +83,12 @@ BfvSoftwareExecutor::BfvSoftwareExecutor(const ::seal::SEALContext& context,
 
 void BfvSoftwareExecutor::validate_object(const PreparedBfvRnsObject& object,
                                           std::size_t component_count,
-                                          hpu::runtime::PolynomialDomain domain) const
+                                          hpu::runtime::PolynomialDomain domain,
+                                          std::uint64_t key_domain) const
 {
     const auto& level = level_chain_.require(object.parms_id);
     if (object.chain_index != level.chain_index || object.components.size() != component_count ||
-        object.domain != domain || object.key_domain != 1) {
+        object.domain != domain || object.key_domain != key_domain) {
         throw std::invalid_argument("prepared BFV object has invalid metadata or component count");
     }
     for (const auto& polynomial : object.components) {
@@ -542,35 +556,54 @@ void BfvSoftwareExecutor::multiply(const PreparedBfvRnsObject& left,
         scaled_tensor[component] = std::move(y);
     }
 
+    key_switch_coefficients(scaled_tensor[2], scaled_tensor[0], &scaled_tensor[1], level,
+                            relinearization_key, keyswitch_constants, tables, output);
+}
+
+void BfvSoftwareExecutor::key_switch_coefficients(
+    const RnsPolynomial& switching, const RnsPolynomial& base0, const RnsPolynomial* base1,
+    const BfvLevelDescriptor& level, const PreparedEvaluationKey& evaluation_key,
+    const PreparedKeySwitchConstants& keyswitch_constants,
+    const std::vector<PreparedCanonicalTwiddles>& tables, const PreparedBfvRnsObject& output)
+{
+    const auto& q_ids = level.keyswitch_layout.q_mod_ids;
+    const std::size_t degree = level_chain_.registry().poly_modulus_degree;
+    if (level.keyswitch_layout.p_mod_ids.size() != 1 || switching.size() != q_ids.size() ||
+        base0.size() != q_ids.size() || (base1 && base1->size() != q_ids.size())) {
+        throw std::invalid_argument("BFV KeySwitch has an invalid single-P RNS shape");
+    }
     const int p_id = level.keyswitch_layout.p_mod_ids.front();
     std::vector<int> full_ids = q_ids;
     full_ids.push_back(p_id);
-    if (relinearization_key.data_parms_id != level.parms_id ||
-        relinearization_key.chain_index != level.chain_index ||
-        relinearization_key.rns_layout.q_mod_ids != q_ids ||
-        relinearization_key.rns_layout.p_mod_ids != std::vector<int>{p_id} ||
-        relinearization_key.digits.size() != q_ids.size()) {
-        throw std::invalid_argument("BFV relinearization key does not match Multiply level");
+    if (evaluation_key.data_parms_id != level.parms_id ||
+        evaluation_key.chain_index != level.chain_index ||
+        evaluation_key.rns_layout.q_mod_ids != q_ids ||
+        evaluation_key.rns_layout.p_mod_ids != std::vector<int>{p_id} ||
+        evaluation_key.rns_layout.key_digits.size() != q_ids.size() ||
+        evaluation_key.digits.size() != q_ids.size()) {
+        throw std::invalid_argument("BFV evaluation key does not match KeySwitch level");
     }
     std::vector<RnsPolynomial> accumulators(2, RnsPolynomial(full_ids.size(), Limb(degree, 0)));
     for (std::size_t digit = 0; digit < q_ids.size(); ++digit) {
-        if (relinearization_key.digits[digit].size() != 2 ||
-            relinearization_key.rns_layout.key_digits[digit] != std::vector<int>{q_ids[digit]}) {
-            throw std::invalid_argument("BFV relinearization key digit shape is invalid");
+        if (switching[digit].size() != degree || evaluation_key.digits[digit].size() != 2 ||
+            evaluation_key.rns_layout.key_digits[digit] != std::vector<int>{q_ids[digit]}) {
+            throw std::invalid_argument("BFV evaluation key digit shape is invalid");
         }
         for (std::size_t target = 0; target < full_ids.size(); ++target) {
             const std::uint8_t target_id = static_cast<std::uint8_t>(full_ids[target]);
             const std::uint32_t modulus = memory_.modulus(target_id);
             Limb converted(degree);
             for (std::size_t index = 0; index < degree; ++index) {
-                converted[index] = scaled_tensor[2][digit][index] % modulus;
+                converted[index] = switching[digit][index] % modulus;
             }
             const auto digit_ntt = transform_limb(converted, degree, target_id, tables, false);
             for (std::size_t key_component = 0; key_component < 2; ++key_component) {
-                const auto& key_polynomial = relinearization_key.digits[digit][key_component];
-                if (key_polynomial.modulus_ids.size() != full_ids.size() ||
+                const auto& key_polynomial = evaluation_key.digits[digit][key_component];
+                if (key_polynomial.degree != degree ||
+                    key_polynomial.limbs.size() != full_ids.size() ||
+                    key_polynomial.modulus_ids.size() != full_ids.size() ||
                     key_polynomial.modulus_ids[target] != target_id) {
-                    throw std::invalid_argument("BFV relinearization key MOD_ID order is invalid");
+                    throw std::invalid_argument("BFV evaluation key MOD_ID order is invalid");
                 }
                 const auto key_words = memory_.read(key_polynomial.limbs[target], degree);
                 for (std::size_t index = 0; index < degree; ++index) {
@@ -624,10 +657,13 @@ void BfvSoftwareExecutor::multiply(const PreparedBfvRnsObject& left,
         }
     }
 
-    RnsPolynomial output0 = scaled_tensor[0];
-    RnsPolynomial output1 = scaled_tensor[1];
+    RnsPolynomial output0 = base0;
+    RnsPolynomial output1 = base1 ? *base1 : RnsPolynomial(q_ids.size(), Limb(degree, 0));
     for (std::size_t basis = 0; basis < q_ids.size(); ++basis) {
         const std::uint32_t modulus = level.q_moduli[basis];
+        if (output0[basis].size() != degree || output1[basis].size() != degree) {
+            throw std::invalid_argument("BFV KeySwitch base has an invalid degree");
+        }
         for (std::size_t index = 0; index < degree; ++index) {
             output0[basis][index] =
                 add_mod(output0[basis][index], switched[0][basis][index], modulus);
@@ -637,6 +673,89 @@ void BfvSoftwareExecutor::multiply(const PreparedBfvRnsObject& left,
     }
     write_polynomial(output.components[0], output0);
     write_polynomial(output.components[1], output1);
+}
+
+void BfvSoftwareExecutor::rotate(
+    const PreparedBfvRnsObject& input, std::uint32_t galois_element,
+    const PreparedEvaluationKey& galois_key,
+    const PreparedKeySwitchConstants& keyswitch_constants,
+    const std::vector<PreparedFusedAutomorphismTwiddles>& fused_tables,
+    const std::vector<PreparedCanonicalTwiddles>& canonical_tables,
+    const PreparedBfvRnsObject& coefficient_workspace,
+    const PreparedBfvRnsObject& output)
+{
+    validate_object(input, 2, hpu::runtime::PolynomialDomain::coefficient);
+    validate_object(coefficient_workspace, 2, hpu::runtime::PolynomialDomain::coefficient,
+                    galois_element);
+    validate_object(output, 2, hpu::runtime::PolynomialDomain::coefficient);
+    const std::size_t degree = level_chain_.registry().poly_modulus_degree;
+    if (input.parms_id != coefficient_workspace.parms_id ||
+        input.parms_id != output.parms_id || galois_element == 0 ||
+        galois_element >= 2ULL * degree || (galois_element & 1U) == 0U) {
+        throw std::invalid_argument("BFV Rotate has invalid level or Galois element");
+    }
+    const auto& level = level_chain_.require(input.parms_id);
+    if (fused_tables.size() != level.keyswitch_layout.q_mod_ids.size()) {
+        throw std::invalid_argument("BFV Rotate lacks fused twiddles for active Q");
+    }
+    for (std::size_t component = 0; component < 2; ++component) {
+        const auto& source = input.components[component];
+        const auto& workspace = coefficient_workspace.components[component];
+        for (std::size_t basis = 0; basis < source.limbs.size(); ++basis) {
+            const std::uint8_t modulus_id = source.modulus_ids[basis];
+            const std::uint32_t modulus = memory_.modulus(modulus_id);
+            const auto& canonical = find_tables(canonical_tables, modulus_id);
+            const auto& fused = find_fused_tables(fused_tables, modulus_id);
+            if (canonical.modulus != modulus || fused.modulus != modulus ||
+                fused.canonical_psi != canonical.canonical_psi ||
+                hpu::model::pow_mod(fused.modified_psi, galois_element, modulus) !=
+                    fused.canonical_psi) {
+                throw std::invalid_argument("BFV Rotate modified-root tables do not match k");
+            }
+            const auto coefficients = memory_.read(source.limbs[basis], degree);
+            const auto transformed =
+                transform_limb(coefficients, degree, modulus_id, canonical_tables, false);
+            hpu::model::HardwareNttModel model(
+                degree, modulus, hpu::model::pow_mod(fused.modified_psi, 2, modulus));
+            hpu::model::InverseNttTables inverse_tables;
+            inverse_tables.stages.reserve(fused.inverse_stages.size());
+            for (const auto& span : fused.inverse_stages) {
+                inverse_tables.stages.push_back(memory_.read(span, degree / 2));
+            }
+            inverse_tables.post_scale = memory_.read(fused.post_untwist_scale, degree);
+            memory_.write(workspace.limbs[basis], model.inverse(transformed, inverse_tables));
+        }
+    }
+
+    key_switch_coefficients(read_polynomial(coefficient_workspace.components[1]),
+                            read_polynomial(coefficient_workspace.components[0]), nullptr, level,
+                            galois_key, keyswitch_constants, canonical_tables, output);
+}
+
+void BfvSoftwareExecutor::rotate_rows(
+    const PreparedBfvRnsObject& input, int steps, const PreparedEvaluationKey& galois_key,
+    const PreparedKeySwitchConstants& keyswitch_constants,
+    const std::vector<PreparedFusedAutomorphismTwiddles>& fused_tables,
+    const std::vector<PreparedCanonicalTwiddles>& canonical_tables,
+    const PreparedBfvRnsObject& coefficient_workspace, const PreparedBfvRnsObject& output)
+{
+    rotate(input, hpu::scheme::bfv::row_rotation_galois_element(
+                      level_chain_.registry().poly_modulus_degree, steps),
+           galois_key, keyswitch_constants, fused_tables, canonical_tables,
+           coefficient_workspace, output);
+}
+
+void BfvSoftwareExecutor::rotate_columns(
+    const PreparedBfvRnsObject& input, const PreparedEvaluationKey& galois_key,
+    const PreparedKeySwitchConstants& keyswitch_constants,
+    const std::vector<PreparedFusedAutomorphismTwiddles>& fused_tables,
+    const std::vector<PreparedCanonicalTwiddles>& canonical_tables,
+    const PreparedBfvRnsObject& coefficient_workspace, const PreparedBfvRnsObject& output)
+{
+    rotate(input, hpu::scheme::bfv::column_rotation_galois_element(
+                      level_chain_.registry().poly_modulus_degree),
+           galois_key, keyswitch_constants, fused_tables, canonical_tables,
+           coefficient_workspace, output);
 }
 
 HpuRnsPolynomial BfvSoftwareExecutor::export_component(const PreparedBfvRnsObject& object,

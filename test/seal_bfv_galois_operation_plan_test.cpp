@@ -4,6 +4,8 @@
 #include "hpu/seal/bfv_operation_plan.hpp"
 #include "hpu/seal/bfv_operation_relocation.hpp"
 #include "hpu/seal/bfv_operation_runtime.hpp"
+#include "hpu/seal/bfv_software_executor.hpp"
+#include "hpu/model/hardware_ntt.hpp"
 #include "scheme/bfv/galois.hpp"
 #include "scheme/bfv/rotate.hpp"
 #include "util/hpu_asm.hpp"
@@ -46,6 +48,42 @@ std::size_t count_token(const std::string& text, const std::string& token)
     return count;
 }
 
+void require_exact(const ::seal::Ciphertext& expected,
+                   const hpu::seal_adapter::PreparedBfvRnsObject& actual,
+                   const hpu::seal_adapter::BfvSoftwareExecutor& executor, const char* operation)
+{
+    require(expected.parms_id() == actual.parms_id &&
+                expected.size() == actual.components.size(),
+            "BFV rotation output shape differs from modified-SEAL");
+    for (std::size_t component = 0; component < actual.components.size(); ++component) {
+        const auto words = executor.export_component(actual, component);
+        if (!std::equal(words.words.begin(), words.words.end(), expected.data(component))) {
+            throw std::runtime_error(std::string(operation) +
+                                     " differs from modified-SEAL coefficients");
+        }
+    }
+}
+
+void require_automorphism(const hpu::seal_adapter::PreparedBfvRnsObject& input,
+                          const hpu::seal_adapter::PreparedBfvRnsObject& workspace,
+                          std::uint32_t element,
+                          const hpu::seal_adapter::BfvSoftwareExecutor& executor,
+                          const hpu::seal_adapter::BfvLevelDescriptor& level)
+{
+    for (std::size_t component = 0; component < 2; ++component) {
+        for (std::size_t basis = 0; basis < level.q_moduli.size(); ++basis) {
+            const std::size_t degree = input.components[component].degree;
+            const auto source = executor.memory().read(input.components[component].limbs[basis],
+                                                       degree);
+            const auto expected = hpu::model::automorphism_coefficients(
+                source, element, level.q_moduli[basis]);
+            const auto actual = executor.memory().read(
+                workspace.components[component].limbs[basis], degree);
+            require(actual == expected, "BFV rotation workspace differs from automorphism");
+        }
+    }
+}
+
 } // namespace
 
 int main()
@@ -59,8 +97,11 @@ int main()
         const hpu::seal_adapter::BfvLevelChain level_chain(*bundle.context);
         const auto& level = level_chain.top();
         constexpr int row_steps = 2;
+        constexpr int right_steps = -2;
         const auto row_element =
             hpu::scheme::bfv::row_rotation_galois_element(spec.poly_modulus_degree, row_steps);
+        const auto right_element =
+            hpu::scheme::bfv::row_rotation_galois_element(spec.poly_modulus_degree, right_steps);
         const auto column_element =
             hpu::scheme::bfv::column_rotation_galois_element(spec.poly_modulus_degree);
 
@@ -69,7 +110,7 @@ int main()
         ::seal::GaloisKeys galois_keys;
         key_generator.create_public_key(public_key);
         key_generator.create_galois_keys(
-            std::vector<std::uint32_t>{row_element, column_element}, galois_keys);
+            std::vector<std::uint32_t>{row_element, right_element, column_element}, galois_keys);
 
         ::seal::BatchEncoder encoder(*bundle.context);
         std::vector<std::uint64_t> slots(encoder.slot_count());
@@ -84,7 +125,7 @@ int main()
 
         hpu::seal_adapter::BfvApplicationImageBuilder image_builder(*bundle.context, 8192);
         image_builder.add_modulus_table();
-        image_builder.add_canonical_twiddles();
+        const auto canonical_twiddles = image_builder.add_canonical_twiddles();
         const auto input = image_builder.add_ciphertext("input/x", encrypted);
         const auto constants =
             image_builder.add_keyswitch_constants("constants/keyswitch/top", level);
@@ -92,16 +133,23 @@ int main()
             "key/rotate_rows_2/top", galois_keys, row_steps, level);
         const auto column_key = image_builder.add_column_rotation_key(
             "key/rotate_columns/top", galois_keys, level);
+        const auto right_key = image_builder.add_row_rotation_key(
+            "key/rotate_right_2/top", galois_keys, right_steps, level);
         const auto row_twiddles = image_builder.add_row_rotation_twiddles(
             "rotate_rows_2/top", row_steps, level);
         const auto column_twiddles = image_builder.add_column_rotation_twiddles(
             "rotate_columns/top", level);
+        const auto right_twiddles = image_builder.add_row_rotation_twiddles(
+            "rotate_right_2/top", right_steps, level);
         const auto row_workspace = image_builder.reserve_ciphertext(
             "scratch/rotate_rows_2", level, 2,
             hpu::runtime::PolynomialDomain::coefficient, row_element);
         const auto column_workspace = image_builder.reserve_ciphertext(
             "scratch/rotate_columns", level, 2,
             hpu::runtime::PolynomialDomain::coefficient, column_element);
+        const auto right_workspace = image_builder.reserve_ciphertext(
+            "scratch/rotate_right_2", level, 2,
+            hpu::runtime::PolynomialDomain::coefficient, right_element);
 
         hpu::seal_adapter::BfvOperationPlan plan(image_builder);
         auto wrong_workspace = row_workspace;
@@ -127,23 +175,31 @@ int main()
         const auto column_output = plan.append_rotate_columns(
             "rotate_columns", input, column_key, constants, column_twiddles,
             column_workspace, "output/rotate_columns");
+        const auto right_output = plan.append_rotate_rows(
+            "rotate_right_2", input, right_steps, right_key, constants, right_twiddles,
+            right_workspace, "output/rotate_right_2");
         require(row_output.key_domain == 1 && column_output.key_domain == 1 &&
-                    plan.steps().size() == 2 &&
+                    right_output.key_domain == 1 && plan.steps().size() == 3 &&
                     plan.steps()[0].kind == hpu::seal_adapter::BfvOperationKind::rotate_rows &&
                     plan.steps()[1].kind == hpu::seal_adapter::BfvOperationKind::rotate_columns &&
+                    plan.steps()[2].kind == hpu::seal_adapter::BfvOperationKind::rotate_rows &&
                     plan.steps()[0].resources.galois_element == row_element &&
-                    plan.steps()[1].resources.galois_element == column_element,
+                    plan.steps()[1].resources.galois_element == column_element &&
+                    plan.steps()[2].resources.galois_element == right_element,
                 "BFV rotation planner lost operation metadata");
 
         const auto lowered = hpu::seal_adapter::lower_bfv_operation_plan(
             plan, *bundle.context, true, true);
-        require(lowered.operations.size() == 2 &&
+        require(lowered.operations.size() == 3 &&
                     lowered.operations[0].body_asm == hpu::scheme::bfv::generate_rotate_body_asm(
                         static_cast<int>(spec.poly_modulus_degree), level.keyswitch_layout,
                         row_element, false, false) &&
                     lowered.operations[1].body_asm == hpu::scheme::bfv::generate_rotate_body_asm(
                         static_cast<int>(spec.poly_modulus_degree), level.keyswitch_layout,
                         column_element, false, false) &&
+                    lowered.operations[2].body_asm == hpu::scheme::bfv::generate_rotate_body_asm(
+                        static_cast<int>(spec.poly_modulus_degree), level.keyswitch_layout,
+                        right_element, false, false) &&
                     count_token(lowered.body_asm,
                                 hpu::dload(4, hpu::DataType::mod_ctx,
                                            hpu::DloadFlag::small_bank)) == 1 &&
@@ -175,6 +231,27 @@ int main()
         const auto runtime = hpu::seal_adapter::lower_bfv_runtime_program(lowered, relocation);
         require(!runtime.instructions.empty() && runtime.dma.size() == relocation.expected_dma_count,
                 "BFV rotation runtime lowering is incomplete");
+
+        ::seal::Evaluator evaluator(*bundle.context);
+        ::seal::Ciphertext expected_rows;
+        ::seal::Ciphertext expected_columns;
+        ::seal::Ciphertext expected_right;
+        evaluator.rotate_rows(encrypted, row_steps, galois_keys, expected_rows);
+        evaluator.rotate_columns(encrypted, galois_keys, expected_columns);
+        evaluator.rotate_rows(encrypted, right_steps, galois_keys, expected_right);
+        hpu::seal_adapter::BfvSoftwareExecutor executor(*bundle.context, image_builder.image());
+        executor.rotate_rows(input, row_steps, row_key, constants, row_twiddles,
+                             canonical_twiddles, row_workspace, row_output);
+        require_automorphism(input, row_workspace, row_element, executor, level);
+        require_exact(expected_rows, row_output, executor, "BFV RotateRows(+2)");
+        executor.rotate_columns(input, column_key, constants, column_twiddles,
+                                canonical_twiddles, column_workspace, column_output);
+        require_automorphism(input, column_workspace, column_element, executor, level);
+        require_exact(expected_columns, column_output, executor, "BFV RotateColumns");
+        executor.rotate_rows(input, right_steps, right_key, constants, right_twiddles,
+                             canonical_twiddles, right_workspace, right_output);
+        require_automorphism(input, right_workspace, right_element, executor, level);
+        require_exact(expected_right, right_output, executor, "BFV RotateRows(-2)");
 
         std::cout << "BFV Galois operation plan tests passed\n";
         return 0;

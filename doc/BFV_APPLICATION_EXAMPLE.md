@@ -145,5 +145,8 @@ slots。因此 planner、预制资源和 BFV 数值链在 host 功能模型上�
 6. 使用 modified-SEAL 或已知答案验证应用语义。
 
 当前 BFV planner 支持 Ciphertext Add/Subtract/Multiply/Negate、AddPlain/SubPlain、
-MultiplyPlain 和 ModSwitch。若应用需要尚未覆盖的算子，应同时补齐 image resource、
+MultiplyPlain、ModSwitch、RotateRows 和 RotateColumns。使用旋转时，先为目标步长或
+换列准备 GaloisKey、modified-root twiddle 和 key-domain 为对应 Galois element 的
+系数域 workspace，再调用 `append_rotate_rows` 或 `append_rotate_columns`。若应用需要
+尚未覆盖的算子，应同时补齐 image resource、
 planner metadata、codegen、relocation 和差分测试，而不是在顶层手写 DMA。
