@@ -18,7 +18,9 @@ enum class BfvOperationKind {
     subtract_plain,
     multiply_plain,
     negate,
-    mod_switch
+    mod_switch,
+    rotate_rows,
+    rotate_columns
 };
 
 struct BfvPlannedValue {
@@ -32,16 +34,19 @@ struct BfvPlannedValue {
 struct BfvOperationResources {
     bool requires_modulus_table = true;
     bool requires_canonical_twiddles = false;
+    std::uint32_t galois_element = 0;
     std::string evaluation_key_id;
     std::string keyswitch_constants_id;
     std::string multiply_constants_id;
     std::string mod_switch_constants_id;
+    std::vector<std::string> fused_twiddle_ids;
 };
 
 struct BfvOperationStep {
     std::string id;
     BfvOperationKind kind = BfvOperationKind::add;
     std::vector<BfvPlannedValue> inputs;
+    std::vector<BfvPlannedValue> workspaces;
     BfvPlannedValue output;
     BfvOperationResources resources;
 };
@@ -82,6 +87,18 @@ public:
                                            const PreparedBfvRnsObject& ciphertext,
                                            const PreparedBfvModSwitchConstants& constants,
                                            std::string output_id);
+    PreparedBfvRnsObject append_rotate_rows(
+        std::string step_id, const PreparedBfvRnsObject& ciphertext, int steps,
+        const PreparedEvaluationKey& galois_key,
+        const PreparedKeySwitchConstants& keyswitch_constants,
+        const std::vector<PreparedFusedAutomorphismTwiddles>& fused_twiddles,
+        const PreparedBfvRnsObject& coefficient_workspace, std::string output_id);
+    PreparedBfvRnsObject append_rotate_columns(
+        std::string step_id, const PreparedBfvRnsObject& ciphertext,
+        const PreparedEvaluationKey& galois_key,
+        const PreparedKeySwitchConstants& keyswitch_constants,
+        const std::vector<PreparedFusedAutomorphismTwiddles>& fused_twiddles,
+        const PreparedBfvRnsObject& coefficient_workspace, std::string output_id);
 
     const std::vector<BfvOperationStep>& steps() const noexcept;
 
@@ -92,6 +109,11 @@ private:
     void validate_value(const PreparedBfvRnsObject& object, std::size_t component_count,
                         hpu::runtime::PolynomialDomain domain, bool require_prepared_plaintext,
                         const char* role) const;
+    void validate_value_representation(const PreparedBfvRnsObject& object,
+                                       std::size_t component_count,
+                                       hpu::runtime::PolynomialDomain domain,
+                                       std::uint64_t key_domain,
+                                       bool require_prepared_plaintext, const char* role) const;
     void validate_canonical_twiddles(const BfvLevelDescriptor& level,
                                      bool include_multiply_auxiliary = false) const;
     void validate_multiply_resources(const BfvLevelDescriptor& level,
@@ -108,6 +130,13 @@ private:
                                              const PreparedBfvRnsObject& ciphertext,
                                              const PreparedBfvRnsObject& plaintext,
                                              std::string output_id);
+    PreparedBfvRnsObject append_galois(
+        BfvOperationKind kind, std::string step_id,
+        const PreparedBfvRnsObject& ciphertext, std::uint32_t galois_element,
+        const PreparedEvaluationKey& galois_key,
+        const PreparedKeySwitchConstants& keyswitch_constants,
+        const std::vector<PreparedFusedAutomorphismTwiddles>& fused_twiddles,
+        const PreparedBfvRnsObject& coefficient_workspace, std::string output_id);
 
     BfvApplicationImageBuilder& image_builder_;
     std::vector<BfvOperationStep> steps_;

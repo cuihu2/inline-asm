@@ -2,7 +2,9 @@
 
 #include "scheme/bfv/basic_arithmetic.hpp"
 #include "scheme/bfv/ciphertext_multiply.hpp"
+#include "scheme/bfv/galois.hpp"
 #include "scheme/bfv/modswitch.hpp"
+#include "scheme/bfv/rotate.hpp"
 #include "util/hpu_asm.hpp"
 #include "util/validation.hpp"
 
@@ -157,6 +159,35 @@ std::string lower_step(const BfvOperationStep& step, const BfvLevelChain& level_
         }
         return hpu::scheme::bfv::generate_modswitch_body_asm(
             static_cast<int>(source.q_moduli.size()), 2, false, false);
+    }
+    case BfvOperationKind::rotate_rows:
+    case BfvOperationKind::rotate_columns: {
+        if (step.inputs.size() != 1 || step.workspaces.size() != 1 ||
+            !step.resources.requires_canonical_twiddles ||
+            step.resources.galois_element == 0 || step.resources.evaluation_key_id.empty() ||
+            step.resources.keyswitch_constants_id.empty()) {
+            throw std::invalid_argument("invalid planned BFV rotation resources");
+        }
+        const auto& level = require_coefficient_value_shape(
+            level_chain, step.inputs.front(), 2, "planned BFV rotation input");
+        require_coefficient_value_shape(level_chain, step.output, 2,
+                                        "planned BFV rotation output");
+        require_same_level(step.inputs.front(), step.output, "planned BFV rotation output");
+        const auto& workspace = step.workspaces.front();
+        if (workspace.id.empty() || workspace.metadata.parms_id != level.parms_id ||
+            workspace.metadata.chain_index != level.chain_index || workspace.component_count != 2 ||
+            workspace.domain != hpu::runtime::PolynomialDomain::coefficient ||
+            workspace.key_domain != step.resources.galois_element ||
+            step.resources.fused_twiddle_ids.size() != level.keyswitch_layout.q_mod_ids.size()) {
+            throw std::invalid_argument("planned BFV rotation workspace is incompatible");
+        }
+        if (step.kind == BfvOperationKind::rotate_columns &&
+            step.resources.galois_element !=
+                hpu::scheme::bfv::column_rotation_galois_element(degree)) {
+            throw std::invalid_argument("planned BFV RotateColumns has the wrong Galois element");
+        }
+        return hpu::scheme::bfv::generate_rotate_body_asm(
+            degree, level.keyswitch_layout, step.resources.galois_element, false, false);
     }
     }
     throw std::invalid_argument("unknown planned BFV operation kind");

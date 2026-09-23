@@ -1,6 +1,10 @@
 #include "hpu/seal/bfv_operation_plan.hpp"
 
+#include "hpu/model/hardware_ntt.hpp"
+#include "scheme/bfv/galois.hpp"
+
 #include <algorithm>
+#include <numeric>
 #include <stdexcept>
 #include <utility>
 
@@ -55,6 +59,23 @@ void validate_constant_resource(const hpu::runtime::HpuMemImage& image, const st
         const auto& allocation = image.allocation(id);
         if (!same_span(allocation.span, span) || allocation.word_count == 0 ||
             allocation.kind != hpu::runtime::AllocationKind::constant || !allocation.read_only) {
+            throw std::invalid_argument(std::string(role) +
+                                        " does not match its BFV HPU_MEM allocation");
+        }
+    } catch (const std::out_of_range&) {
+        throw std::invalid_argument(std::string(role) + " is absent from this BFV HPU_MEM image");
+    }
+}
+
+void validate_twiddle_resource(const hpu::runtime::HpuMemImage& image, const std::string& id,
+                               const hpu::runtime::HpuMemSpan& span, std::size_t word_count,
+                               const char* role)
+{
+    require_resource_id(id, role);
+    try {
+        const auto& allocation = image.allocation(id);
+        if (!same_span(allocation.span, span) || allocation.word_count != word_count ||
+            allocation.kind != hpu::runtime::AllocationKind::twiddle || !allocation.read_only) {
             throw std::invalid_argument(std::string(role) +
                                         " does not match its BFV HPU_MEM allocation");
         }
@@ -222,6 +243,36 @@ BfvOperationPlan::append_mod_switch(std::string step_id, const PreparedBfvRnsObj
     return output;
 }
 
+PreparedBfvRnsObject BfvOperationPlan::append_rotate_rows(
+    std::string step_id, const PreparedBfvRnsObject& ciphertext, int steps,
+    const PreparedEvaluationKey& galois_key,
+    const PreparedKeySwitchConstants& keyswitch_constants,
+    const std::vector<PreparedFusedAutomorphismTwiddles>& fused_twiddles,
+    const PreparedBfvRnsObject& coefficient_workspace, std::string output_id)
+{
+    const std::size_t degree =
+        ciphertext.components.empty() ? 0 : ciphertext.components.front().degree;
+    return append_galois(BfvOperationKind::rotate_rows, std::move(step_id), ciphertext,
+                         hpu::scheme::bfv::row_rotation_galois_element(degree, steps), galois_key,
+                         keyswitch_constants, fused_twiddles, coefficient_workspace,
+                         std::move(output_id));
+}
+
+PreparedBfvRnsObject BfvOperationPlan::append_rotate_columns(
+    std::string step_id, const PreparedBfvRnsObject& ciphertext,
+    const PreparedEvaluationKey& galois_key,
+    const PreparedKeySwitchConstants& keyswitch_constants,
+    const std::vector<PreparedFusedAutomorphismTwiddles>& fused_twiddles,
+    const PreparedBfvRnsObject& coefficient_workspace, std::string output_id)
+{
+    const std::size_t degree =
+        ciphertext.components.empty() ? 0 : ciphertext.components.front().degree;
+    return append_galois(BfvOperationKind::rotate_columns, std::move(step_id), ciphertext,
+                         hpu::scheme::bfv::column_rotation_galois_element(degree), galois_key,
+                         keyswitch_constants, fused_twiddles, coefficient_workspace,
+                         std::move(output_id));
+}
+
 const std::vector<BfvOperationStep>& BfvOperationPlan::steps() const noexcept
 {
     return steps_;
@@ -254,8 +305,17 @@ void BfvOperationPlan::validate_value(const PreparedBfvRnsObject& object,
                                       hpu::runtime::PolynomialDomain domain,
                                       bool require_prepared_plaintext, const char* role) const
 {
+    validate_value_representation(object, component_count, domain, 1,
+                                  require_prepared_plaintext, role);
+}
+
+void BfvOperationPlan::validate_value_representation(
+    const PreparedBfvRnsObject& object, std::size_t component_count,
+    hpu::runtime::PolynomialDomain domain, std::uint64_t key_domain,
+    bool require_prepared_plaintext, const char* role) const
+{
     if (object.id.empty() || object.components.size() != component_count ||
-        object.domain != domain || object.key_domain != 1) {
+        object.domain != domain || object.key_domain != key_domain) {
         throw std::invalid_argument(std::string(role) +
                                     " has an incompatible shape or representation");
     }
@@ -474,6 +534,125 @@ PreparedBfvRnsObject BfvOperationPlan::append_plain_binary(BfvOperationKind kind
     step.kind = kind;
     step.inputs = {describe(ciphertext), describe(plaintext)};
     step.output = describe(output);
+    commit_step(std::move(step));
+    return output;
+}
+
+PreparedBfvRnsObject BfvOperationPlan::append_galois(
+    BfvOperationKind kind, std::string step_id, const PreparedBfvRnsObject& ciphertext,
+    std::uint32_t galois_element, const PreparedEvaluationKey& galois_key,
+    const PreparedKeySwitchConstants& keyswitch_constants,
+    const std::vector<PreparedFusedAutomorphismTwiddles>& fused_twiddles,
+    const PreparedBfvRnsObject& coefficient_workspace, std::string output_id)
+{
+    require_new_step(step_id);
+    if (kind != BfvOperationKind::rotate_rows && kind != BfvOperationKind::rotate_columns) {
+        throw std::invalid_argument("invalid BFV Galois operation kind");
+    }
+    validate_value(ciphertext, 2, hpu::runtime::PolynomialDomain::coefficient, false,
+                   "BFV Galois input");
+    const std::size_t degree = image_builder_.registry().poly_modulus_degree;
+    const std::uint64_t ring_order = 2ULL * degree;
+    if (galois_element >= ring_order ||
+        std::gcd<std::uint64_t>(galois_element, ring_order) != 1) {
+        throw std::invalid_argument("BFV Galois element is invalid");
+    }
+    if (kind == BfvOperationKind::rotate_columns &&
+        galois_element != hpu::scheme::bfv::column_rotation_galois_element(degree)) {
+        throw std::invalid_argument("BFV RotateColumns has the wrong Galois element");
+    }
+    validate_value_representation(coefficient_workspace, 2,
+                                  hpu::runtime::PolynomialDomain::coefficient,
+                                  galois_element, false, "BFV Galois workspace");
+    require_same_level(ciphertext, coefficient_workspace, "BFV Galois workspace");
+
+    const auto& level = image_builder_.level_chain().require(ciphertext.parms_id);
+    validate_canonical_twiddles(level);
+    if (galois_key.data_parms_id != level.parms_id ||
+        galois_key.chain_index != level.chain_index ||
+        keyswitch_constants.data_parms_id != level.parms_id ||
+        keyswitch_constants.chain_index != level.chain_index) {
+        throw std::invalid_argument("BFV Galois resources do not match the ciphertext level");
+    }
+    if (galois_key.rns_layout.q_mod_ids != level.keyswitch_layout.q_mod_ids ||
+        galois_key.rns_layout.p_mod_ids != level.keyswitch_layout.p_mod_ids ||
+        galois_key.rns_layout.key_digits != level.keyswitch_layout.key_digits ||
+        galois_key.digits.size() != level.keyswitch_layout.key_digits.size()) {
+        throw std::invalid_argument("BFV Galois key has the wrong RNS layout");
+    }
+    require_resource_id(galois_key.id, "BFV Galois key");
+    const auto expected_key_modulus_ids = full_keyswitch_modulus_ids(level);
+    for (std::size_t digit = 0; digit < galois_key.digits.size(); ++digit) {
+        if (galois_key.digits[digit].size() != 2) {
+            throw std::invalid_argument("BFV Galois-key digit needs two components");
+        }
+        for (std::size_t component = 0; component < 2; ++component) {
+            const auto& polynomial = galois_key.digits[digit][component];
+            if (polynomial.id != galois_key.id + "/d" + std::to_string(digit) + "/c" +
+                                     std::to_string(component) ||
+                polynomial.degree != degree || polynomial.modulus_ids != expected_key_modulus_ids ||
+                polynomial.limbs.size() != expected_key_modulus_ids.size()) {
+                throw std::invalid_argument("BFV Galois key has an invalid allocation shape");
+            }
+            for (std::size_t basis = 0; basis < polynomial.limbs.size(); ++basis) {
+                const auto& allocation = image_builder_.image().allocation(
+                    polynomial.id + "/mod" + std::to_string(polynomial.modulus_ids[basis]));
+                if (!same_span(allocation.span, polynomial.limbs[basis]) ||
+                    allocation.word_count != degree ||
+                    allocation.kind != hpu::runtime::AllocationKind::evaluation_key ||
+                    !allocation.read_only) {
+                    throw std::invalid_argument("BFV Galois key does not belong to this image");
+                }
+            }
+        }
+    }
+    validate_constant_resource(image_builder_.image(), keyswitch_constants.id,
+                               keyswitch_constants.values, "BFV Galois KeySwitch constants");
+    if (keyswitch_constants.hardware_prefix != keyswitch_constants.id + "/hardware" ||
+        keyswitch_constants.hardware_constant_polynomial_count == 0 ||
+        keyswitch_constants.hardware_workspace_polynomial_count == 0) {
+        throw std::invalid_argument("BFV Galois constants lack hardware-expanded resources");
+    }
+    if (fused_twiddles.size() != level.keyswitch_layout.q_mod_ids.size()) {
+        throw std::invalid_argument("BFV Galois fused-twiddle count does not match active Q");
+    }
+    std::vector<std::string> fused_ids;
+    fused_ids.reserve(fused_twiddles.size());
+    const std::size_t stages = ntt_stage_count(degree);
+    for (std::size_t basis = 0; basis < fused_twiddles.size(); ++basis) {
+        const auto& table = fused_twiddles[basis];
+        const int modulus_id = level.keyswitch_layout.q_mod_ids[basis];
+        const std::uint32_t modulus = level.q_moduli[basis];
+        if (table.id.empty() || table.modulus_id != static_cast<std::uint8_t>(modulus_id) ||
+            table.modulus != modulus || table.inverse_stages.size() != stages ||
+            hpu::model::pow_mod(table.modified_psi, galois_element, modulus) !=
+                table.canonical_psi) {
+            throw std::invalid_argument("BFV Galois fused twiddles do not match the operation");
+        }
+        for (std::size_t stage = 0; stage < stages; ++stage) {
+            validate_twiddle_resource(image_builder_.image(),
+                                       table.id + "/stage" + std::to_string(stage),
+                                       table.inverse_stages[stage], degree / 2,
+                                       "BFV Galois fused twiddle stage");
+        }
+        validate_twiddle_resource(image_builder_.image(), table.id + "/post_untwist_scale",
+                                   table.post_untwist_scale, degree,
+                                   "BFV Galois fused post-untwist table");
+        fused_ids.push_back(table.id);
+    }
+
+    auto output = image_builder_.reserve_ciphertext(std::move(output_id), level);
+    BfvOperationStep step;
+    step.id = std::move(step_id);
+    step.kind = kind;
+    step.inputs = {describe(ciphertext)};
+    step.workspaces = {describe(coefficient_workspace)};
+    step.output = describe(output);
+    step.resources.requires_canonical_twiddles = true;
+    step.resources.galois_element = galois_element;
+    step.resources.evaluation_key_id = galois_key.id;
+    step.resources.keyswitch_constants_id = keyswitch_constants.id;
+    step.resources.fused_twiddle_ids = std::move(fused_ids);
     commit_step(std::move(step));
     return output;
 }

@@ -247,6 +247,26 @@ void bind_transform_limb(OperationBindingBuilder& bindings, const std::string& i
     bindings.store(0, output_id);
 }
 
+void bind_automorphism_limb(OperationBindingBuilder& bindings, const std::string& input_id,
+                            const std::string& output_id, int modulus_id,
+                            const std::string& fused_twiddle_prefix, std::size_t degree)
+{
+    bindings.load(0, input_id);
+    const std::size_t stages = ntt_stage_count(degree);
+    bindings.load_words(3, canonical_twiddle_id(modulus_id, false, "pre_twist"), degree);
+    for (std::size_t stage = 0; stage < stages; ++stage) {
+        bindings.load_words(3, canonical_twiddle_id(
+                                   modulus_id, false, "stage" + std::to_string(stage)),
+                            degree / 2);
+    }
+    for (std::size_t stage = 0; stage < stages; ++stage) {
+        bindings.load_words(3, fused_twiddle_prefix + "/stage" + std::to_string(stage),
+                            degree / 2);
+    }
+    bindings.load_words(3, fused_twiddle_prefix + "/post_untwist_scale", degree);
+    bindings.store(0, output_id);
+}
+
 void bind_bconv(OperationBindingBuilder& bindings, const std::vector<int>& sources,
                 const std::vector<int>& targets, const std::vector<std::string>& source_ids,
                 const std::vector<std::string>& target_ids, const std::string& normalized_prefix,
@@ -292,6 +312,120 @@ std::vector<std::string> value_limb_ids(const BfvPlannedValue& value, std::size_
         result.push_back(limb_id(value, component, context));
     }
     return result;
+}
+
+void bind_bfv_galois_keyswitch(OperationBindingBuilder& bindings, const BfvOperationStep& step,
+                               const BfvLevelDescriptor& level, std::size_t degree)
+{
+    const auto& layout = level.keyswitch_layout;
+    const auto& q = layout.q_mod_ids;
+    const auto& p = layout.p_mod_ids;
+    if (p.size() != 1) {
+        throw std::invalid_argument("BFV rotation KeySwitch requires one special prime");
+    }
+    std::vector<int> q_p = q;
+    q_p.insert(q_p.end(), p.begin(), p.end());
+    const auto& switching = step.workspaces.front();
+    const std::string prefix = step.resources.keyswitch_constants_id + "/hardware";
+    const std::string normalized = prefix + "/workspace/bconv/normalized";
+
+    for (std::size_t digit = 0; digit < layout.key_digits.size(); ++digit) {
+        const auto& sources = layout.key_digits[digit];
+        std::vector<int> targets;
+        for (int context : q) {
+            if (std::find(sources.begin(), sources.end(), context) == sources.end()) {
+                targets.push_back(context);
+            }
+        }
+        targets.insert(targets.end(), p.begin(), p.end());
+        const std::string digit_prefix = prefix + "/modup/d" + std::to_string(digit);
+        const auto switching_ids = value_limb_ids(switching, 1, sources);
+        for (std::size_t index = 0; index < sources.size(); ++index) {
+            bindings.load(0, switching_ids[index]);
+            bindings.store(0, workspace_mod_id(prefix, "modup", sources[index]));
+        }
+        bind_bconv(bindings, sources, targets, switching_ids,
+                   workspace_ids(prefix, "modup", targets), normalized, digit_prefix,
+                   digit_prefix);
+        for (int context : q_p) {
+            const auto id = workspace_mod_id(prefix, "modup", context);
+            bind_transform_limb(bindings, id, id, context, degree, false);
+        }
+        for (int component = 0; component < 2; ++component) {
+            const auto accumulator_role = "accumulator/c" + std::to_string(component);
+            for (int context : q_p) {
+                bindings.load(0, workspace_mod_id(prefix, "modup", context));
+                bindings.load(1, step.resources.evaluation_key_id + "/d" +
+                                     std::to_string(digit) + "/c" +
+                                     std::to_string(component) + "/mod" +
+                                     std::to_string(context));
+                if (digit != 0) {
+                    bindings.load(2, workspace_mod_id(prefix, accumulator_role, context));
+                }
+                bindings.store(2, workspace_mod_id(prefix, accumulator_role, context));
+            }
+        }
+    }
+    for (int component = 0; component < 2; ++component) {
+        const auto accumulator_role = "accumulator/c" + std::to_string(component);
+        for (int context : q_p) {
+            const auto id = workspace_mod_id(prefix, accumulator_role, context);
+            bind_transform_limb(bindings, id, id, context, degree, true);
+        }
+    }
+
+    const int p_context = p.front();
+    const std::string moddown_prefix = prefix + "/moddown";
+    for (int component = 0; component < 2; ++component) {
+        const auto accumulator_role = "accumulator/c" + std::to_string(component);
+        for (int context : q_p) {
+            const auto accumulator = workspace_mod_id(prefix, accumulator_role, context);
+            bindings.load(0, accumulator);
+            bindings.load(1, prefix + "/half/mod" + std::to_string(context));
+            bindings.store(0, accumulator);
+        }
+        bind_bconv(bindings, {p_context}, q,
+                   workspace_ids(prefix, accumulator_role, {p_context}),
+                   workspace_ids(prefix, "moddown/correction", q), normalized,
+                   moddown_prefix, moddown_prefix);
+        for (int context : q) {
+            const auto accumulator = workspace_mod_id(prefix, accumulator_role, context);
+            bindings.load(0, accumulator);
+            bindings.load(1, workspace_mod_id(prefix, "moddown/correction", context));
+            bindings.load(2, moddown_prefix + "/p_inverse/mod" + std::to_string(context));
+            bindings.store(0, component == 1 ? limb_id(step.output, 1, context) : accumulator);
+        }
+    }
+    for (int context : q) {
+        bindings.load(0, workspace_mod_id(prefix, "accumulator/c0", context));
+        bindings.load(1, limb_id(switching, 0, context));
+        bindings.store(2, limb_id(step.output, 0, context));
+    }
+}
+
+void bind_bfv_galois(OperationBindingBuilder& bindings, const BfvOperationStep& step,
+                     const BfvLevelDescriptor& level, std::size_t degree)
+{
+    if (step.inputs.size() != 1 || step.inputs[0].component_count != 2 ||
+        step.workspaces.size() != 1 || step.workspaces[0].component_count != 2 ||
+        step.workspaces[0].domain != hpu::runtime::PolynomialDomain::coefficient ||
+        step.workspaces[0].key_domain != step.resources.galois_element ||
+        step.output.component_count != 2 || step.resources.evaluation_key_id.empty() ||
+        step.resources.keyswitch_constants_id.empty() ||
+        step.resources.fused_twiddle_ids.size() != level.keyswitch_layout.q_mod_ids.size() ||
+        !step.resources.requires_canonical_twiddles) {
+        throw std::invalid_argument("invalid BFV rotation relocation manifest");
+    }
+    for (std::size_t component = 0; component < 2; ++component) {
+        for (std::size_t basis = 0; basis < level.keyswitch_layout.q_mod_ids.size(); ++basis) {
+            const int context = level.keyswitch_layout.q_mod_ids[basis];
+            bind_automorphism_limb(bindings, limb_id(step.inputs[0], component, context),
+                                   limb_id(step.workspaces[0], component, context), context,
+                                   step.resources.fused_twiddle_ids[basis], degree);
+        }
+    }
+    bind_bfv_galois_keyswitch(bindings, step, level, degree);
+    bindings.finish();
 }
 
 void bind_bfv_multiply(OperationBindingBuilder& bindings, const BfvOperationStep& step,
@@ -713,6 +847,10 @@ BfvRelocationSchedule build_bfv_relocation_schedule(const BfvLoweredProgram& pro
         case BfvOperationKind::mod_switch:
             bind_mod_switch(bindings, step, level,
                             level_chain.require(step.output.metadata.parms_id));
+            break;
+        case BfvOperationKind::rotate_rows:
+        case BfvOperationKind::rotate_columns:
+            bind_bfv_galois(bindings, step, level, degree);
             break;
         }
         first_program_dma_index += instructions.size();
