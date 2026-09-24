@@ -214,6 +214,44 @@ Rescale 也各自保持 canonical NTT 输入/输出。因此它比原专用复�
 ./build/hpu_ckks_polynomial_example --print-asm
 ```
 
+生成两个 CKKS application 的 Nexus AM 交付包：
+
+```bash
+cmake --build build -j --target hpu_ckks_delivery
+```
+
+产物分别写入：
+
+```text
+outputs/ckks_polynomial_x2_plus_one/
+outputs/ckks_composed_application/
+```
+
+也可以只导出一个示例：
+
+```bash
+./build/hpu_ckks_polynomial_example \
+  --emit-dir outputs/ckks_polynomial_x2_plus_one
+./build/hpu_ckks_composed_application_example \
+  --emit-dir outputs/ckks_composed_application
+```
+
+每个目录包含：
+
+- `<stem>.c/.h`：包含 fixed-span `hpu_run_<stem>()` 的 Nexus AM C 接口；
+- `<stem>.asm/.inst32/.cmd26`：汇编、32-bit 指令和 26-bit command payload；
+- `dma_relocation_manifest.csv`：每条 DMA 指令对应的 HPU_MEM allocation 和 span；
+- `test_data/hardware/hpu_mem_image.u32.bin`：执行前加载的完整 little-endian
+  uint32 HPU_MEM image；
+- `test_data/hardware/line_map.csv` 和 `hpu_mem_config.json`：allocation、line offset、
+  line count、容量和 ABI；
+- `test_data/hardware/images/expected_output_*.u32.bin`：软件执行器生成的各个
+  `dstore` 目标 golden，映射记录在 `expected_outputs.csv`。
+
+示例每次运行都会重新生成 SEAL key 和加密随机数，因此不同运行的二进制不保证
+逐字相同；同一次导出的程序、初始 image、DMA manifest 和 expected output 是一套
+相互匹配的交付数据。
+
 生成流里的 DMA 指令使用 ABI 规定的 `x10/x11` offset/count 寄存器。
 `build_ckks_relocation_schedule` 已根据 HPU_MEM allocation manifest 为模表及所有
 planner operation 的每条 DMA 绑定具体 span。
@@ -296,5 +334,6 @@ host/lowering 当作 no-op，不生成 KeySwitch。Negate 则始终停留在 can
 当前冻结的 SEAL 4.4.4 只产生单 special-prime KeySwitch，因此多 P 已移出近期主线，
 保留为未来脱离当前 SEAL 兼容范围后的独立扩展。多层软件执行验证已经覆盖
 Q4→Q3→Q2，slot-step Rotate/Conjugate/Negate 也已接入；显式 application lowering、
-完整 DMA relocation 和 fixed-span runtime artifact 已形成闭环。下一步是落盘交付
-artifact，并接入 Linux runtime/驱动完成真实 RISC-V/RTL 执行验证。
+完整 DMA relocation、fixed-span runtime artifact 和 Nexus AM 交付目录已经形成闭环。
+下一步是由 IT 将生成的 C 源码和 HPU_MEM image 接入 Nexus AM 应用，再通过 Linux
+runtime/驱动完成真实 RISC-V/RTL 执行验证。

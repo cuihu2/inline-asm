@@ -1,4 +1,5 @@
 #include "hpu/seal/application_image.hpp"
+#include "hpu/seal/ckks_delivery.hpp"
 #include "hpu/seal/ckks_context.hpp"
 #include "hpu/seal/operation_codegen.hpp"
 #include "hpu/seal/operation_plan.hpp"
@@ -11,13 +12,40 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace {
+
+constexpr const char* kArtifactStem = "ckks_composed_application";
+
+struct Options {
+    bool print_asm = false;
+    std::optional<std::filesystem::path> emit_directory;
+};
+
+Options parse_options(int argc, char** argv)
+{
+    Options options;
+    for (int index = 1; index < argc; ++index) {
+        const std::string argument = argv[index];
+        if (argument == "--print-asm") {
+            options.print_asm = true;
+        } else if (argument == "--emit-dir" && index + 1 < argc) {
+            options.emit_directory = std::filesystem::path(argv[++index]);
+        } else {
+            throw std::invalid_argument(
+                "usage: hpu_ckks_composed_application_example "
+                "[--print-asm] [--emit-dir PATH]");
+        }
+    }
+    return options;
+}
 
 void require(bool condition, const char* message)
 {
@@ -51,12 +79,7 @@ void require(bool condition, const char* message)
 int main(int argc, char** argv)
 {
     try {
-        const bool print_asm = argc == 2
-            && std::string(argv[1]) == "--print-asm";
-        if (argc > 2 || (argc == 2 && !print_asm)) {
-            throw std::invalid_argument(
-                "usage: hpu_ckks_composed_application_example [--print-asm]");
-        }
+        const Options options = parse_options(argc, argv);
 
         // Teaching-sized parameters keep the example fast. The planner and
         // runtime APIs are identical for the deployment degree N=65536.
@@ -261,8 +284,14 @@ int main(int argc, char** argv)
             lowered, relocation);
         const auto artifacts =
             hpu::seal_adapter::render_ckks_runtime_artifacts(
-                "ckks_composed_application", runtime,
+                kArtifactStem, runtime,
                 image_builder.image().capacity_lines());
+        if (options.emit_directory) {
+            const auto& expected_words = software_executor.memory().words();
+            hpu::seal_adapter::write_ckks_delivery_package(
+                *options.emit_directory, kArtifactStem, lowered, runtime,
+                artifacts, image_builder.image(), &expected_words);
+        }
 
         std::cout << std::setprecision(8)
                   << "y=x*(RotateLeft(x,1)+Conjugate(x))+1\n"
@@ -282,7 +311,14 @@ int main(int argc, char** argv)
                   << "B, source=" << artifacts.source.size()
                   << "B, manifest="
                   << artifacts.resolved_dma_manifest.size() << "B\n";
-        if (print_asm) {
+        if (options.emit_directory) {
+            std::cout << "Artifacts emitted under: "
+                      << options.emit_directory->string() << '\n';
+        } else {
+            std::cout
+                << "Pass --emit-dir PATH to write deployment artifacts.\n";
+        }
+        if (options.print_asm) {
             std::cout << "\n--- generated HPU inline-assembly body ---\n"
                       << lowered.body_asm;
         } else {

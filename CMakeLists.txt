@@ -335,6 +335,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
             src/hpu/seal/bfv_operation_plan.cpp
             src/hpu/seal/bfv_operation_relocation.cpp
             src/hpu/seal/bfv_operation_runtime.cpp
+            src/hpu/seal/ckks_delivery.cpp
             src/hpu/seal/operation_codegen.cpp
             src/hpu/seal/operation_relocation.cpp
             src/hpu/seal/operation_runtime.cpp
@@ -348,6 +349,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
             hpu_seal_ckks
             hpu_encode
             hpu_fhe_codegen
+            hpu_filesystem_compat
     )
 
     add_executable(hpu_ckks_polynomial_example
@@ -364,6 +366,21 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
     target_link_libraries(hpu_ckks_composed_application_example
             PRIVATE
             hpu_seal_ckks_codegen
+    )
+
+    add_custom_target(hpu_ckks_delivery
+            COMMAND $<TARGET_FILE:hpu_ckks_polynomial_example>
+                    --emit-dir
+                    ${CMAKE_CURRENT_SOURCE_DIR}/outputs/ckks_polynomial_x2_plus_one
+            COMMAND $<TARGET_FILE:hpu_ckks_composed_application_example>
+                    --emit-dir
+                    ${CMAKE_CURRENT_SOURCE_DIR}/outputs/ckks_composed_application
+            DEPENDS
+                    hpu_ckks_polynomial_example
+                    hpu_ckks_composed_application_example
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            COMMENT "Generating CKKS application delivery packages under outputs/"
+            VERBATIM
     )
 
     add_executable(hpu_bfv_multiply_modswitch_example
@@ -388,6 +405,11 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
         add_test(
                 NAME hpu_ckks_composed_application_example
                 COMMAND hpu_ckks_composed_application_example)
+        add_test(
+                NAME hpu_ckks_composed_application_example_artifacts
+                COMMAND hpu_ckks_composed_application_example
+                        --emit-dir
+                        ${CMAKE_CURRENT_BINARY_DIR}/ckks_composed_application_example_artifacts)
 
         add_test(
                 NAME hpu_bfv_multiply_modswitch_example

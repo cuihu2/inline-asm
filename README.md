@@ -127,6 +127,17 @@ ctest --test-dir build -L legacy-fixed-profile --output-on-failure
 集成测试仍保持默认启用。测试源码中用于覆盖 shape 的固定数字只是局部测试向量，
 不构成应用 profile。
 
+启用 SEAL integration 后，可生成当前 CKKS application-plan 路径的 Nexus AM 交付包：
+
+```bash
+cmake --build build -j --target hpu_ckks_delivery
+```
+
+该目标将指令、C wrapper、DMA relocation、初始 HPU_MEM image、allocation line map
+和软件执行器 expected output 写入 `outputs/ckks_polynomial_x2_plus_one/` 与
+`outputs/ckks_composed_application/`。详细格式见
+`doc/CKKS_HPU_GETTING_STARTED.md`。
+
 SEAL v4.4.4 源码以普通目录 `third_party/modified-SEAL` 固定在本仓库中，不再使用
 submodule。HPU 对 SEAL 的后续修改直接由 Inline-asm 的提交历史维护，因此普通
 `git clone`/`git pull` 已包含完整依赖。
