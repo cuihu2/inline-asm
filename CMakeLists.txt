@@ -366,6 +366,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
 
     add_library(hpu_seal_ckks_codegen STATIC
             src/hpu/seal/bgv_arithmetic_application.cpp
+            src/hpu/seal/bgv_plain_operation_plan.cpp
             src/hpu/seal/bgv_keyswitch_application.cpp
             src/hpu/seal/bgv_modswitch_application.cpp
             src/hpu/seal/bfv_operation_codegen.cpp
@@ -403,6 +404,22 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
             hpu_seal_ckks_codegen
     )
 
+    add_executable(hpu_bgv_plain_chain_example
+            examples/bgv_plain_chain_application.cpp
+    )
+    target_link_libraries(hpu_bgv_plain_chain_example
+            PRIVATE
+            hpu_seal_ckks_codegen
+    )
+
+    add_executable(hpu_bgv_rotate_chain_example
+            examples/bgv_rotate_chain_application.cpp
+    )
+    target_link_libraries(hpu_bgv_rotate_chain_example
+            PRIVATE
+            hpu_seal_ckks_codegen
+    )
+
     add_executable(hpu_bfv_multiply_modswitch_example
             examples/bfv_multiply_modswitch_application.cpp
     )
@@ -422,6 +439,21 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
     )
 
     if(BUILD_TESTING)
+        add_test(NAME hpu_bgv_plain_chain_example
+                COMMAND hpu_bgv_plain_chain_example)
+        add_test(NAME hpu_bgv_rotate_chain_example
+                COMMAND hpu_bgv_rotate_chain_example)
+
+        add_executable(hpu_seal_bgv_plain_operation_plan_test
+                test/seal_bgv_plain_operation_plan_test.cpp
+        )
+        target_link_libraries(hpu_seal_bgv_plain_operation_plan_test
+                PRIVATE
+                hpu_seal_ckks_codegen
+        )
+        add_test(NAME hpu_seal_bgv_plain_operation_plan_test
+                COMMAND hpu_seal_bgv_plain_operation_plan_test)
+
         add_executable(hpu_seal_bgv_rotation_application_test
                 test/seal_bgv_rotation_application_test.cpp
         )

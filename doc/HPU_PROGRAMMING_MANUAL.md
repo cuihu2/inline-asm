@@ -875,7 +875,7 @@ twiddle、预制常量及输出装入 HPU_MEM，逐条核对编码后 custom1 �
 `correction_factor` 由 host 用 `modswitch_correction_factor` 更新；它不是密文系数的
 CPU 运算。这个单次操作包只加载一次模表，最后发一次 `psync`。目前已做
 codegen/编码/DMA 生命周期检查、HPU_MEM 常量与 modified-SEAL 两级逐 limb 差分；
-尚无 BGV 多算子 planner、逐指令软件执行或实体 HPU 执行证据。
+尚未接入跨 level 通用 BGV 多算子 planner、逐指令软件执行或实体 HPU 执行证据。
 
 #### SEAL-facing BGV NTT KeySwitch 指令体
 
@@ -892,7 +892,7 @@ N=128/65536 的编码与生命周期测试，以及 modified-SEAL 顶层/降一�
 Relinearize 逐 limb 公式差分。单次三分量产品的 Relinearize 应用包现已装入
 evaluation key、`P` 修正常量和工作区；逐条 custom1 DMA 与镜像 span 对齐，
 可渲染 RV runtime 入口和 resolved DMA manifest。顶层与降一级的镜像内容经
-HPU 物理 NTT 数学模型对照 modified-SEAL。尚无 BGV 多算子 planner、逐指令
+HPU 物理 NTT 数学模型对照 modified-SEAL。尚未接入通用 BGV 多算子 planner、逐指令
 软件执行或实体 HPU 执行证据。
 当前镜像把各 active Q 与 P 的双向 twiddle 全部预存；`N=65536,Q=3,P=1`
 总计需 136193 个 256B line（其中 twiddle 73728 line）。容量估算 API 在
@@ -933,8 +933,21 @@ BGV 行旋转与列交换使用同一自同构 + Galois KeySwitch 单次包：�
 写入 KeySwitch 输入；`c1` 作为切换分量，零基分量与旋转后的 `c0`
 构成最终输出。Galois key 按元素 `k` 选取，`correction_factor` 不变。
 正/负行步长及列交换已在顶层/降一级与 modified-SEAL 逐 limb 差分；
-`N=65536,Q=3,P=1` 镜像容量估算为 169985 line。多算子 planner、
+`N=65536,Q=3,P=1` 镜像容量估算为 169985 line。通用多算子 planner、
 逐指令软件执行与实体 HPU 验证仍待完成。
+
+`BgvLinearOperationPlan`（兼容名 `BgvPlainOperationPlan`）已支持同 level
+线性链中的 `AddPlain/SubPlain/MultiplyPlain`、密文 `Add/Sub`、
+行旋转及列交换：
+每个步骤独立占用可写输出 span，
+下一步骤的 DMA 直接从该 span 加载，程序只在开头加载一次模表并于
+末尾 `psync` 一次。密文 Add/Sub 的不等 factor 平衡在 HPU `PMUL` 中
+执行，输出 factor 被逐步跟踪，后续明文按当时 factor 预制；
+CPU 不计算中间密文。旋转步骤复用单次 Galois 包的编码片段、
+twiddle、key 与工作区，通过 DMA 重定位直接读取前一步输出，且不重复
+加载模表或发出中间 `psync`。`hpu_bgv_plain_chain_example` 与
+`hpu_bgv_rotate_chain_example` 分别展示纯明文链和旋转链。
+该限定计划尚未覆盖密文乘法或跨 level ModSwitch。
 
 ### 8.8 BFV comparison-free BEHZ、重线形化和 ModSwitch
 

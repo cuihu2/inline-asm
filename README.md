@@ -365,10 +365,10 @@ MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、KeySwitch 和 Relinearizat
 
 - **方案元数据与 BGV ModSwitch：**
   CKKS 的 `scale` 和 BGV 的 `correction_factor` 不编码进 HPU 指令，由方案层 API 与未来 runtime/compiler 保存。BGV 使用 `Q|P|t` context 顺序；降层时先计算 `u=-c_last*q_last^-1 mod t`，再对每个保留 limb 计算 `(c_i-c_last-q_last*u)*q_last^-1 mod q_i`。默认 `t=65537` 可由 PE 直接加载。
-  SEAL-facing BGV ModSwitch 另外提供 NTT 域生成器：只逆变换被丢弃的 limb，系数域修正经规范化和 NTT 后与保留 limb 相减。单次操作已具备预制 HPU_MEM、逐条 resolved DMA span 和可渲染的 RV runtime 包，并与 modified-SEAL 做两级逐 limb 差分；尚无 BGV 多算子 planner、软件指令解释执行或实体 HPU 验证。
-  BGV NTT KeySwitch 已覆盖 singleton-Q digit 累加及 `u=-c_P*P^-1 mod t` 修正；输入、输出保持 canonical HPU NTT。单次重线性化已把 evaluation key、常量和工作区绑定成 HPU_MEM 运行包，并在顶层/降一级使用镜像内容与 modified-SEAL 做逐 limb 对照；尚无 BGV 多算子 planner、逐指令软件执行或实体 HPU 验证。
+  SEAL-facing BGV ModSwitch 另外提供 NTT 域生成器：只逆变换被丢弃的 limb，系数域修正经规范化和 NTT 后与保留 limb 相减。单次操作已具备预制 HPU_MEM、逐条 resolved DMA span 和可渲染的 RV runtime 包，并与 modified-SEAL 做两级逐 limb 差分；尚未接入 BGV 跨 level 的通用多算子 planner，也无逐指令软件执行或实体 HPU 验证。
+  BGV NTT KeySwitch 已覆盖 singleton-Q digit 累加及 `u=-c_P*P^-1 mod t` 修正；输入、输出保持 canonical HPU NTT。单次重线性化已把 evaluation key、常量和工作区绑定成 HPU_MEM 运行包，并在顶层/降一级使用镜像内容与 modified-SEAL 做逐 limb 对照；尚未接入通用 BGV 多算子 planner、逐指令软件执行或实体 HPU 验证。
   单次 BGV NTT Multiply+Relinearize 现在把 `CMULT -> KeySwitch` 接在同一指令流中：三分量 tensor 由 HPU 写入同一镜像 span，随后直接被 KeySwitch 读取；中间没有 CPU 乘法、host copy 或 `psync`。`N=65536,Q=3,P=1` 的软件镜像需 148481 line，平台须提供相应 window；实体 DMA/window 仍待验证。
-  BGV Add/Sub/Negate 与预制明文的 AddPlain/SubPlain/MultiplyPlain 已有单次 HPU_MEM 包；不同 `correction_factor` 的 Add/Sub 会把平衡标量以预制对象加载，再在 PE 以 `PMUL` 缩放密文 limb。AddPlain/SubPlain 在准备镜像时按 factor 缩放明文，密文运算仍由 HPU 执行。行旋转与列交换也已有“改根 INTT → canonical NTT → Galois KeySwitch”的不中断单次包；元数据由 host 记录，顶层和降一级已与 modified-SEAL 差分。BGV 多算子 planner 与实体 HPU 验证仍待实现。
+  BGV Add/Sub/Negate 与预制明文的 AddPlain/SubPlain/MultiplyPlain 已有单次 HPU_MEM 包；不同 `correction_factor` 的 Add/Sub 会把平衡标量以预制对象加载，再在 PE 以 `PMUL` 缩放密文 limb。AddPlain/SubPlain 在准备镜像时按 factor 缩放明文，密文运算仍由 HPU 执行。行旋转与列交换也已有“改根 INTT → canonical NTT → Galois KeySwitch”的不中断单次包；元数据由 host 记录，顶层和降一级已与 modified-SEAL 差分。新增 `BgvLinearOperationPlan` 支持同 level 的预制明文 Add/Sub/Multiply、密文 Add/Sub、行旋转及列交换的线性链，逐步跟踪 factor，并生成单次 RV runtime；示例为 `hpu_bgv_plain_chain_example` 与 `hpu_bgv_rotate_chain_example`。密文乘法、跨 level ModSwitch 的通用 BGV planner 与实体 HPU 验证仍待实现。
 
 - **BFV comparison-free 单 kernel 乘法：**
   BFV 固定使用 `Q|Pks|B|m_sk|t`。输入先执行不带 `m_tilde/SmMRq` 的 `Q -> Bsk` FastBConv，再在 Q/Bsk 下做 tensor product、FastFloor 和 branchless-SK；校正为 `out=y+alpha*(-B) mod Q`。三分量 Q 结果写回统一 HPU_MEM 后立即由同一指令流执行 Q/Pks Relinearization，中间没有 `psync`、host copy 或 window 切换，完整流只有末尾一个 `psync`。默认统一镜像为 30913 line，低于配置的 65536-line 上限。BFV ModSwitch 仍是独立算子，复用 `round(c/q_last)`。
