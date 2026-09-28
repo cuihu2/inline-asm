@@ -1,5 +1,6 @@
 #include "hpu/seal/bgv_plain_operation_plan.hpp"
 
+#include "hpu/seal/bgv_modswitch_application.hpp"
 #include "hpu/seal/ntt_bridge.hpp"
 #include "scheme/bgv/basic_arithmetic.hpp"
 #include "scheme/bfv/galois.hpp"
@@ -84,6 +85,20 @@ public:
         }
     }
 
+    void replay(const BgvModSwitchDmaBinding& binding,
+                const std::string& relocated_id)
+    {
+        if (binding.direction == hpu::Mnemonic::kDload) {
+            load(binding.object_slot, relocated_id,
+                 static_cast<hpu::DataType>(binding.type_or_release),
+                 static_cast<hpu::DloadFlag>(binding.flag));
+        } else if (binding.direction == hpu::Mnemonic::kDstore) {
+            store(binding.object_slot, relocated_id);
+        } else {
+            throw std::logic_error("BGV ModSwitch has a non-DMA binding");
+        }
+    }
+
     std::vector<BgvKeySwitchDmaBinding> finish()
     {
         if (bindings_.size() != encoded_.size()) {
@@ -126,9 +141,9 @@ private:
 
 BgvPlainOperationPlan::BgvPlainOperationPlan(
     const ::seal::SEALContext& context, const ::seal::Ciphertext& input)
-    : context_(context), input_(input)
+    : context_(context), input_(input), planned_parms_id_(input.parms_id())
 {
-    const auto source = context_.get_context_data(input_.parms_id());
+    const auto source = context_.get_context_data(planned_parms_id_);
     if (!source || source->parms().scheme() != ::seal::scheme_type::bgv ||
         !::seal::is_valid_for(input_, context_) || !input_.is_ntt_form() ||
         input_.size() != 2) {
@@ -161,7 +176,7 @@ void BgvPlainOperationPlan::append(
     const ::seal::Plaintext& plaintext)
 {
     require_step_id(id);
-    const auto source = context_.get_context_data(input_.parms_id());
+    const auto source = context_.get_context_data(planned_parms_id_);
     if (!::seal::is_valid_for(plaintext, context_) || plaintext.is_ntt_form() ||
         plaintext.coeff_count() > source->parms().poly_modulus_degree()) {
         throw std::invalid_argument("BGV linear-chain plaintext is invalid");
@@ -175,7 +190,7 @@ void BgvPlainOperationPlan::append(
 {
     require_step_id(id);
     if (!::seal::is_valid_for(right, context_) || !right.is_ntt_form() ||
-        right.size() != 2 || right.parms_id() != input_.parms_id()) {
+        right.size() != 2 || right.parms_id() != planned_parms_id_) {
         throw std::invalid_argument(
             "BGV linear-chain binary operand must be a matching two-component NTT ciphertext");
     }
@@ -217,7 +232,7 @@ void BgvPlainOperationPlan::append_rotation(
     const ::seal::GaloisKeys& keys)
 {
     require_step_id(id);
-    const auto source = context_.get_context_data(input_.parms_id());
+    const auto source = context_.get_context_data(planned_parms_id_);
     if (!source->qualifiers().using_batching ||
         keys.parms_id() != context_.key_parms_id()) {
         throw std::invalid_argument(
@@ -245,6 +260,18 @@ void BgvPlainOperationPlan::append_rotate_columns(
 {
     append_rotation(std::move(id), BgvPlainOperationKind::rotate_columns,
                     0, keys);
+}
+
+void BgvPlainOperationPlan::append_modswitch_to_next(std::string id)
+{
+    require_step_id(id);
+    const auto source = context_.get_context_data(planned_parms_id_);
+    if (!source || !source->next_context_data()) {
+        throw std::invalid_argument("BGV linear-chain has no next level");
+    }
+    steps_.push_back({std::move(id), BgvPlainOperationKind::modswitch_to_next,
+                      {}, {}, {}, 0});
+    planned_parms_id_ = source->next_context_data()->parms_id();
 }
 
 const std::vector<BgvPlainOperationStep>&
@@ -309,23 +336,35 @@ BgvKeySwitchApplication BgvPlainOperationPlan::lower(
         input_.correction_factor());
     std::vector<hpu::scheme::bgv::CorrectionBalance> balances(steps_.size());
     std::vector<std::optional<BgvKeySwitchApplication>> rotations(steps_.size());
+    std::vector<std::optional<BgvModSwitchApplication>> modswitches(steps_.size());
+    std::vector<std::size_t> step_q_counts;
     std::vector<std::string> output_prefixes;
+    auto current_parms_id = input_.parms_id();
     for (std::size_t index = 0; index < steps_.size(); ++index) {
         const auto& step = steps_[index];
         const std::string step_prefix = "steps/" + step.id;
+        const auto current_data = context_.get_context_data(current_parms_id);
+        const auto& active_moduli = current_data->parms().coeff_modulus();
+        const std::size_t active_q_count = active_moduli.size();
+        step_q_counts.push_back(active_q_count);
         const bool binary = step.kind == BgvPlainOperationKind::add_ciphertext ||
             step.kind == BgvPlainOperationKind::subtract_ciphertext;
         const bool rotation = step.kind == BgvPlainOperationKind::rotate_rows ||
             step.kind == BgvPlainOperationKind::rotate_columns;
+        const bool modswitch = step.kind == BgvPlainOperationKind::modswitch_to_next;
         if (rotation) {
             const auto rotation_capacity = estimate_bgv_rotation_image_lines(
-                degree, q_count, key_moduli.size());
+                degree, active_q_count, key_moduli.size());
+            ::seal::Ciphertext shape;
+            shape.resize(context_, current_parms_id, 2);
+            shape.is_ntt_form() = true;
+            shape.correction_factor() = current_factor;
             rotations[index] = step.kind == BgvPlainOperationKind::rotate_rows
                 ? build_bgv_rotate_rows_application(
-                    context_, input_, step.galois_keys,
+                    context_, shape, step.galois_keys,
                     step.rotation_steps, rotation_capacity)
                 : build_bgv_rotate_columns_application(
-                    context_, input_, step.galois_keys, rotation_capacity);
+                    context_, shape, step.galois_keys, rotation_capacity);
             for (const auto& allocation : rotations[index]->image.allocations()) {
                 const auto& id = allocation.id;
                 if (id == "constants/modulus_table" ||
@@ -343,6 +382,33 @@ BgvKeySwitchApplication BgvPlainOperationPlan::lower(
                                   allocation.kind);
                 }
             }
+        } else if (modswitch) {
+            ::seal::Ciphertext shape;
+            shape.resize(context_, current_parms_id, 2);
+            shape.is_ntt_form() = true;
+            shape.correction_factor() = current_factor;
+            modswitches[index] = build_bgv_modswitch_application(
+                context_, shape, capacity_lines);
+            for (const auto& allocation : modswitches[index]->image.allocations()) {
+                const auto& id = allocation.id;
+                if (id == "constants/modulus_table" ||
+                    id.rfind("input/c", 0) == 0 ||
+                    id.rfind("output/c", 0) == 0) {
+                    continue;
+                }
+                const auto relocated_id = step_prefix + "/modswitch/" + id;
+                if (allocation.read_only) {
+                    image.add(relocated_id,
+                              allocation_words(modswitches[index]->image, allocation),
+                              allocation.kind);
+                } else {
+                    image.reserve(relocated_id, allocation.word_count,
+                                  allocation.kind);
+                }
+            }
+            current_factor = static_cast<std::uint32_t>(
+                modswitches[index]->correction_factor);
+            current_parms_id = modswitches[index]->destination_parms_id;
         } else if (binary) {
             const auto balance = hpu::scheme::bgv::balance_correction_factors(
                 current_factor,
@@ -352,7 +418,7 @@ BgvKeySwitchApplication BgvPlainOperationPlan::lower(
             for (std::size_t component = 0; component < 2; ++component) {
                 const auto prepared = ciphertext_component_to_hpu(
                     step.ciphertext, component, context_);
-                for (std::size_t basis = 0; basis < q_count; ++basis) {
+                for (std::size_t basis = 0; basis < active_q_count; ++basis) {
                     const auto first = prepared.words.begin() +
                         static_cast<std::ptrdiff_t>(basis * degree);
                     image.add(mod_id(step_prefix + "/right/c" +
@@ -361,8 +427,8 @@ BgvKeySwitchApplication BgvPlainOperationPlan::lower(
                               hpu::runtime::AllocationKind::ciphertext);
                 }
             }
-            for (std::size_t basis = 0; basis < q_count; ++basis) {
-                const auto q = narrow(q_moduli[basis].value());
+            for (std::size_t basis = 0; basis < active_q_count; ++basis) {
+                const auto q = narrow(active_moduli[basis].value());
                 if (balance.left_scalar != 1) {
                     image.add(mod_id(step_prefix + "/balance/left", basis),
                               std::vector<std::uint32_t>(degree,
@@ -386,9 +452,9 @@ BgvKeySwitchApplication BgvPlainOperationPlan::lower(
                          current_factor) % t);
                 }
             }
-            evaluator.transform_to_ntt_inplace(prepared, input_.parms_id());
+            evaluator.transform_to_ntt_inplace(prepared, current_parms_id);
             const auto physical = plaintext_to_hpu(prepared, context_);
-            for (std::size_t basis = 0; basis < q_count; ++basis) {
+            for (std::size_t basis = 0; basis < active_q_count; ++basis) {
                 const auto first = physical.words.begin() +
                     static_cast<std::ptrdiff_t>(basis * degree);
                 image.add(mod_id(step_prefix + "/plain", basis),
@@ -400,7 +466,9 @@ BgvKeySwitchApplication BgvPlainOperationPlan::lower(
             ? "output" : "steps/" + step.id + "/output";
         output_prefixes.push_back(output_prefix);
         for (std::size_t component = 0; component < 2; ++component) {
-            for (std::size_t basis = 0; basis < q_count; ++basis) {
+            const auto output_q_count = modswitch
+                ? active_q_count - 1 : active_q_count;
+            for (std::size_t basis = 0; basis < output_q_count; ++basis) {
                 image.reserve(mod_id(output_prefix + "/c" +
                                          std::to_string(component), basis),
                               degree, hpu::runtime::AllocationKind::output);
@@ -417,26 +485,27 @@ BgvKeySwitchApplication BgvPlainOperationPlan::lower(
                              hpu::DloadFlag::small_bank));
     for (std::size_t index = 0; index < steps_.size(); ++index) {
         const auto& step = steps_[index];
+        const auto active_q_count = step_q_counts[index];
         switch (step.kind) {
         case BgvPlainOperationKind::add:
             append_source(hpu::scheme::ckks::generate_add_plain_body_asm(
-                static_cast<int>(q_count), false, false));
+                static_cast<int>(active_q_count), false, false));
             break;
         case BgvPlainOperationKind::subtract:
             append_source(hpu::scheme::ckks::generate_subtract_plain_body_asm(
-                static_cast<int>(q_count), false, false));
+                static_cast<int>(active_q_count), false, false));
             break;
         case BgvPlainOperationKind::multiply:
             append_source(hpu::scheme::ckks::generate_multiply_plain_body_asm(
-                static_cast<int>(q_count), false, false));
+                static_cast<int>(active_q_count), false, false));
             break;
         case BgvPlainOperationKind::add_ciphertext:
             append_source(hpu::scheme::bgv::generate_add_body_asm(
-                static_cast<int>(q_count), balances[index], false, false));
+                static_cast<int>(active_q_count), balances[index], false, false));
             break;
         case BgvPlainOperationKind::subtract_ciphertext:
             append_source(hpu::scheme::bgv::generate_subtract_body_asm(
-                static_cast<int>(q_count), balances[index], false, false));
+                static_cast<int>(active_q_count), balances[index], false, false));
             break;
         case BgvPlainOperationKind::rotate_rows:
         case BgvPlainOperationKind::rotate_columns: {
@@ -447,6 +516,19 @@ BgvKeySwitchApplication BgvPlainOperationPlan::lower(
                     hpu::Mnemonic::kPfree ||
                 standalone.back().instruction.mnemonic != hpu::Mnemonic::kPsync) {
                 throw std::logic_error("BGV standalone rotation prologue/epilogue changed");
+            }
+            instructions.insert(instructions.end(), standalone.begin() + 1,
+                                standalone.end() - 2);
+            break;
+        }
+        case BgvPlainOperationKind::modswitch_to_next: {
+            const auto& standalone = modswitches[index]->instructions;
+            if (standalone.size() < 3 ||
+                standalone.front().instruction.mnemonic != hpu::Mnemonic::kDload ||
+                standalone[standalone.size() - 2].instruction.mnemonic !=
+                    hpu::Mnemonic::kPfree ||
+                standalone.back().instruction.mnemonic != hpu::Mnemonic::kPsync) {
+                throw std::logic_error("BGV standalone ModSwitch prologue/epilogue changed");
             }
             instructions.insert(instructions.end(), standalone.begin() + 1,
                                 standalone.end() - 2);
@@ -466,6 +548,7 @@ BgvKeySwitchApplication BgvPlainOperationPlan::lower(
             ? "input" : output_prefixes[index - 1];
         const auto& output_prefix = output_prefixes[index];
         const std::string step_prefix = "steps/" + step.id;
+        const auto active_q_count = step_q_counts[index];
         const bool binary = step.kind == BgvPlainOperationKind::add_ciphertext ||
             step.kind == BgvPlainOperationKind::subtract_ciphertext;
         const bool rotation = step.kind == BgvPlainOperationKind::rotate_rows ||
@@ -492,10 +575,32 @@ BgvKeySwitchApplication BgvPlainOperationPlan::lower(
                 }
                 recipe.replay(binding, relocated_id);
             }
+        } else if (step.kind == BgvPlainOperationKind::modswitch_to_next) {
+            const auto& standalone = *modswitches[index];
+            if (standalone.dma.empty() ||
+                standalone.dma.front().allocation_id != "constants/modulus_table") {
+                throw std::logic_error("BGV ModSwitch DMA prologue changed");
+            }
+            for (std::size_t dma_index = 1;
+                 dma_index < standalone.dma.size(); ++dma_index) {
+                const auto& binding = standalone.dma[dma_index];
+                const auto& id = binding.allocation_id;
+                std::string relocated_id;
+                if (id.rfind("input/c", 0) == 0) {
+                    relocated_id = input_prefix +
+                        id.substr(std::string("input").size());
+                } else if (id.rfind("output/c", 0) == 0) {
+                    relocated_id = output_prefix +
+                        id.substr(std::string("output").size());
+                } else {
+                    relocated_id = step_prefix + "/modswitch/" + id;
+                }
+                recipe.replay(binding, relocated_id);
+            }
         } else if (binary) {
             const auto& balance = balances[index];
             for (std::size_t component = 0; component < 2; ++component) {
-                for (std::size_t basis = 0; basis < q_count; ++basis) {
+                for (std::size_t basis = 0; basis < active_q_count; ++basis) {
                     const auto suffix = "/c" + std::to_string(component);
                     recipe.load(0, mod_id(input_prefix + suffix, basis));
                     if (balance.left_scalar != 1) {
@@ -509,7 +614,7 @@ BgvKeySwitchApplication BgvPlainOperationPlan::lower(
                 }
             }
         } else {
-            for (std::size_t basis = 0; basis < q_count; ++basis) {
+            for (std::size_t basis = 0; basis < active_q_count; ++basis) {
                 recipe.load(0, mod_id(input_prefix + "/c0", basis));
                 recipe.load(1, mod_id(step_prefix + "/plain", basis));
                 recipe.store(2, mod_id(output_prefix + "/c0", basis));
@@ -520,7 +625,10 @@ BgvKeySwitchApplication BgvPlainOperationPlan::lower(
         }
     }
     auto bindings = recipe.finish();
-    return {std::move(image), input_.parms_id(), current_factor,
+    if (current_parms_id != planned_parms_id_) {
+        throw std::logic_error("BGV linear-chain level tracking disagrees with plan");
+    }
+    return {std::move(image), current_parms_id, current_factor,
             std::move(instructions), std::move(bindings)};
 }
 

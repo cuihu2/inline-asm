@@ -439,7 +439,7 @@ auto artifacts = render_bgv_keyswitch_runtime_artifacts("bgv_rows", rows);
   `N=65536,Q=3,P=1` 估算需 169985 个 256B line。尚无逐指令软件
   执行或实体 HPU 验证。
 
-#### 2.2.10 BGV 同 level 线性操作计划
+#### 2.2.10 BGV 跨 level 线性操作计划
 
 `include/hpu/seal/bgv_linear_operation_plan.hpp`
 
@@ -450,6 +450,7 @@ plan.append_add_plain("add_bias", bias);
 plan.append_multiply_plain("multiply_polynomial", multiplier);
 plan.append_subtract("subtract_ciphertext", another_ciphertext);
 plan.append_rotate_rows("rotate_left_1", 1, galois_keys);
+plan.append_modswitch_to_next("drop_level");
 plan.append_rotate_columns("swap_rows", galois_keys);
 plan.append_subtract_plain("subtract_offset", offset);
 auto package = plan.lower(capacity_lines);
@@ -457,8 +458,9 @@ auto runtime = render_bgv_keyswitch_runtime_artifacts("bgv_plain_chain", package
 ```
 
 - `BgvLinearOperationPlan` 是原 `BgvPlainOperationPlan` 的语义化别名。
-  计划接受同 level 的二分量 BGV NTT 密文，并支持预制明文
-  Add/Sub/Multiply、密文 Add/Sub、行旋转及列交换；不自动 ModSwitch。
+  计划接受二分量 BGV NTT 密文，并支持预制明文 Add/Sub/Multiply、
+  密文 Add/Sub、行旋转、列交换及显式 `append_modswitch_to_next`。
+  追加密文操作时，右操作数必须处于计划当前 level。
 - 密文 Add/Sub 遇到不同 `correction_factor` 时逐步求平衡标量，
   由 HPU `PMUL` 缩放并 `PADD/PSUB`。输出 factor 会更新；其后的
   AddPlain/SubPlain 按更新后的 factor 模 `t` 预制明文。MultiplyPlain
@@ -468,6 +470,9 @@ auto runtime = render_bgv_keyswitch_runtime_artifacts("bgv_plain_chain", package
 - 旋转重定位已验证的单次 Galois 包：改根 twiddle、Galois key、KeySwitch
   工作区分别归属该步骤，输入绑定前一步输出；旋转保持 level 与 factor。
   多个旋转步骤在同一镜像中有独立资源命名。
+- ModSwitch 重定位单次 NTT 包，输出少一个 Q limb，随后按新 level
+  预制明文及旋转资源；`parms_id` 和 `correction_factor` 与 modified-SEAL
+  同步推进。模表仍只加载一次，所有步骤共用一个 HPU_MEM 与末尾同步。
 - `examples/bgv_plain_chain_application.cpp` 展示
   `((x + 3) * (2x + 1)) - 5`。运行
   `./build-seal/hpu_bgv_plain_chain_example`；加 `--print-dma` 可查看
@@ -475,7 +480,8 @@ auto runtime = render_bgv_keyswitch_runtime_artifacts("bgv_plain_chain", package
   非平凡 factor、密文 Add/Sub 与后继 AddPlain 的组合另有测试。
   `./build-seal/hpu_bgv_rotate_chain_example` 演示
   `RotateRows(x + 3, 1) + 5`；计划测试还覆盖连续行旋转与列交换。
-  该计划目前不包含密文乘法或 ModSwitch，也尚未经过逐指令
+  计划测试另覆盖两次连续跨 level ModSwitch 与后继明文/旋转操作。
+  该计划目前不包含密文乘法，也尚未经过逐指令
   软件执行或实体 HPU 验证。
 
 ### 2.3 NTT 表示桥：仿 SEAL NTT 表示转换

@@ -1,4 +1,5 @@
 #include "hpu/seal/bgv_linear_operation_plan.hpp"
+#include "hpu/seal/bgv_modswitch_application.hpp"
 #include "hpu/seal/ntt_bridge.hpp"
 #include "scheme/bgv/basic_arithmetic.hpp"
 #include "scheme/bfv/galois.hpp"
@@ -157,6 +158,66 @@ void check_rotation_splice(
         }
     }
     require(found, "BGV rotation instruction/DMA splice differs from standalone");
+}
+
+void check_modswitch_splice(
+    const hpu::seal_adapter::BgvKeySwitchApplication& combined,
+    const hpu::seal_adapter::BgvModSwitchApplication& standalone,
+    const std::string& step_id, const std::string& input_prefix,
+    const std::string& output_prefix)
+{
+    const auto relocated_prefix = "steps/" + step_id + "/modswitch/";
+    for (const auto& allocation : standalone.image.allocations()) {
+        const auto& id = allocation.id;
+        if (id == "constants/modulus_table" ||
+            id.rfind("input/c", 0) == 0 || id.rfind("output/c", 0) == 0) {
+            continue;
+        }
+        const auto& relocated = combined.image.allocation(relocated_prefix + id);
+        require(relocated.word_count == allocation.word_count &&
+                    relocated.read_only == allocation.read_only,
+                "BGV ModSwitch resource shape changed during composition");
+        if (allocation.read_only) {
+            require(words(combined.image, relocated_prefix + id) ==
+                        words(standalone.image, id),
+                    "BGV ModSwitch constants changed during composition");
+        }
+    }
+    const auto middle_count = standalone.instructions.size() - 3;
+    bool found = false;
+    for (std::size_t index = 0;
+         index + middle_count <= combined.instructions.size(); ++index) {
+        bool equal = true;
+        for (std::size_t offset = 0; offset < middle_count; ++offset) {
+            equal &= combined.instructions[index + offset].word ==
+                standalone.instructions[offset + 1].word;
+        }
+        if (!equal) continue;
+        for (std::size_t dma_index = 1;
+             dma_index < standalone.dma.size(); ++dma_index) {
+            const auto& binding = standalone.dma[dma_index];
+            const auto& id = binding.allocation_id;
+            std::string relocated;
+            if (id.rfind("input/c", 0) == 0) {
+                relocated = input_prefix + id.substr(std::string("input").size());
+            } else if (id.rfind("output/c", 0) == 0) {
+                relocated = output_prefix + id.substr(std::string("output").size());
+            } else {
+                relocated = relocated_prefix + id;
+            }
+            bool matched = false;
+            for (const auto& combined_binding : combined.dma) {
+                matched |= combined_binding.instruction_index ==
+                               index + binding.instruction_index - 1 &&
+                    combined_binding.direction == binding.direction &&
+                    combined_binding.object_slot == binding.object_slot &&
+                    combined_binding.allocation_id == relocated;
+            }
+            if (!matched) { equal = false; break; }
+        }
+        if (equal) { found = true; break; }
+    }
+    require(found, "BGV ModSwitch instruction/DMA splice differs from standalone");
 }
 
 } // namespace
@@ -423,6 +484,112 @@ int main()
             rejected = true;
         }
         require(rejected, "BGV plan accepted zero-step row rotation");
+
+        seal::Ciphertext top_input;
+        encryptor.encrypt_symmetric(seal::Plaintext("1x^3 + 3"), top_input);
+        seal::Ciphertext lower_right;
+        encryptor.encrypt_zero_symmetric(input.parms_id(), lower_right);
+        hpu::seal_adapter::BgvLinearOperationPlan level_plan(context, top_input);
+        level_plan.append_add_plain("pre_level", plain);
+        level_plan.append_modswitch_to_next("drop_one");
+        level_plan.append_add_plain("middle", seal::Plaintext("7"));
+        level_plan.append_add("lower_binary", lower_right);
+        level_plan.append_rotate_rows("lower_row", 1, galois_keys);
+        level_plan.append_modswitch_to_next("drop_two");
+        level_plan.append_subtract_plain("last", seal::Plaintext("2"));
+        rejected = false;
+        try {
+            level_plan.append_modswitch_to_next("too_far");
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        require(rejected, "BGV plan accepted ModSwitch past the last level");
+        rejected = false;
+        try {
+            level_plan.append_add("wrong_after_drop", input);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        require(rejected, "BGV plan accepted old-level binary operand");
+
+        const auto level_package = level_plan.lower(8192);
+        seal::Ciphertext oracle = top_input;
+        evaluator.add_plain_inplace(oracle, plain);
+        const auto standalone_drop_one =
+            hpu::seal_adapter::build_bgv_modswitch_application(
+                context, oracle, 8192);
+        check_modswitch_splice(level_package, standalone_drop_one, "drop_one",
+                               "steps/pre_level/output", "steps/drop_one/output");
+        evaluator.mod_switch_to_next_inplace(oracle);
+        const auto before_middle = oracle;
+        evaluator.add_plain_inplace(oracle, seal::Plaintext("7"));
+        const auto after_middle = oracle;
+        const auto lower_source = context.get_context_data(oracle.parms_id());
+        for (std::size_t basis = 0;
+             basis < lower_source->parms().coeff_modulus().size(); ++basis) {
+            const auto q = static_cast<std::uint32_t>(
+                lower_source->parms().coeff_modulus()[basis].value());
+            const auto prepared = words(level_package.image,
+                "steps/middle/plain/mod" + std::to_string(basis));
+            const auto before = hpu::seal_adapter::ciphertext_component_to_hpu(
+                before_middle, 0, context);
+            const auto after = hpu::seal_adapter::ciphertext_component_to_hpu(
+                after_middle, 0, context);
+            for (std::size_t k = 0; k < degree; ++k) {
+                require((static_cast<std::uint64_t>(
+                    before.words[basis * degree + k]) + prepared[k]) % q ==
+                    after.words[basis * degree + k],
+                    "BGV AddPlain after ModSwitch differs from SEAL");
+            }
+        }
+        evaluator.add_inplace(oracle, lower_right);
+        check_binary_step(context, level_package, after_middle, lower_right,
+                          oracle, "lower_binary", false);
+        const auto standalone_lower_row =
+            hpu::seal_adapter::build_bgv_rotate_rows_application(
+                context, oracle, galois_keys, 1,
+                hpu::seal_adapter::estimate_bgv_rotation_image_lines(
+                    degree, lower_source->parms().coeff_modulus().size(),
+                    context.key_context_data()->parms().coeff_modulus().size()));
+        check_rotation_splice(level_package, standalone_lower_row, "lower_row",
+                              "steps/lower_binary/output", "steps/lower_row/output");
+        evaluator.rotate_rows_inplace(oracle, 1, galois_keys);
+        const auto standalone_drop_two =
+            hpu::seal_adapter::build_bgv_modswitch_application(
+                context, oracle, 8192);
+        check_modswitch_splice(level_package, standalone_drop_two, "drop_two",
+                               "steps/lower_row/output", "steps/drop_two/output");
+        evaluator.mod_switch_to_next_inplace(oracle);
+        const auto before_last = oracle;
+        evaluator.sub_plain_inplace(oracle, seal::Plaintext("2"));
+        require(level_package.parms_id == oracle.parms_id() &&
+                    level_package.correction_factor == oracle.correction_factor(),
+                "BGV multi-level plan metadata differs from SEAL");
+        const auto final_source = context.get_context_data(oracle.parms_id());
+        for (std::size_t basis = 0;
+             basis < final_source->parms().coeff_modulus().size(); ++basis) {
+            const auto q = static_cast<std::uint32_t>(
+                final_source->parms().coeff_modulus()[basis].value());
+            const auto prepared = words(level_package.image,
+                "steps/last/plain/mod" + std::to_string(basis));
+            const auto before = hpu::seal_adapter::ciphertext_component_to_hpu(
+                before_last, 0, context);
+            const auto after = hpu::seal_adapter::ciphertext_component_to_hpu(
+                oracle, 0, context);
+            for (std::size_t k = 0; k < degree; ++k) {
+                require((static_cast<std::uint64_t>(
+                    before.words[basis * degree + k]) + q - prepared[k]) % q ==
+                    after.words[basis * degree + k],
+                    "BGV SubPlain after two ModSwitches differs from SEAL");
+            }
+        }
+        std::size_t level_psync = 0;
+        for (const auto& instruction : level_package.instructions) {
+            level_psync += instruction.instruction.mnemonic == hpu::Mnemonic::kPsync;
+        }
+        require(level_psync == 1 &&
+                    level_package.spans().size() == level_package.dma.size(),
+                "BGV multi-level plan has an incomplete command stream");
         std::cout << "BGV plain operation plan tests passed\n";
         return 0;
     } catch (const std::exception& error) {

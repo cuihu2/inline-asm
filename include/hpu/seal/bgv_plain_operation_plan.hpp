@@ -12,7 +12,7 @@ namespace hpu::seal_adapter {
 
 enum class BgvPlainOperationKind {
     add, subtract, multiply, add_ciphertext, subtract_ciphertext,
-    rotate_rows, rotate_columns
+    rotate_rows, rotate_columns, modswitch_to_next
 };
 
 struct BgvPlainOperationStep {
@@ -41,6 +41,7 @@ public:
                             const ::seal::GaloisKeys& keys);
     void append_rotate_columns(std::string id,
                                const ::seal::GaloisKeys& keys);
+    void append_modswitch_to_next(std::string id);
 
     const std::vector<BgvPlainOperationStep>& steps() const noexcept;
     BgvKeySwitchApplication lower(std::uint64_t capacity_lines) const;
@@ -56,6 +57,7 @@ private:
 
     const ::seal::SEALContext& context_;
     ::seal::Ciphertext input_;
+    ::seal::parms_id_type planned_parms_id_{};
     std::vector<BgvPlainOperationStep> steps_;
 };
 
