@@ -875,7 +875,7 @@ twiddle、预制常量及输出装入 HPU_MEM，逐条核对编码后 custom1 �
 `correction_factor` 由 host 用 `modswitch_correction_factor` 更新；它不是密文系数的
 CPU 运算。这个单次操作包只加载一次模表，最后发一次 `psync`。目前已做
 codegen/编码/DMA 生命周期检查、HPU_MEM 常量与 modified-SEAL 两级逐 limb 差分；
-尚未接入跨 level 通用 BGV 多算子 planner、逐指令软件执行或实体 HPU 执行证据。
+现已接入 BGV 线性 planner，仍无逐指令软件执行或实体 HPU 执行证据。
 
 #### SEAL-facing BGV NTT KeySwitch 指令体
 
@@ -892,8 +892,8 @@ N=128/65536 的编码与生命周期测试，以及 modified-SEAL 顶层/降一�
 Relinearize 逐 limb 公式差分。单次三分量产品的 Relinearize 应用包现已装入
 evaluation key、`P` 修正常量和工作区；逐条 custom1 DMA 与镜像 span 对齐，
 可渲染 RV runtime 入口和 resolved DMA manifest。顶层与降一级的镜像内容经
-HPU 物理 NTT 数学模型对照 modified-SEAL。尚未接入通用 BGV 多算子 planner、逐指令
-软件执行或实体 HPU 执行证据。
+HPU 物理 NTT 数学模型对照 modified-SEAL。单次 KeySwitch 由线性 planner 的
+Multiply+Relinearize 和旋转步骤复用；仍无逐指令软件执行或实体 HPU 执行证据。
 当前镜像把各 active Q 与 P 的双向 twiddle 全部预存；`N=65536,Q=3,P=1`
 总计需 136193 个 256B line（其中 twiddle 73728 line）。容量估算 API 在
 构建前精确检查 `capacity_lines`。若平台允许更大的 HPU_MEM window，可直接
@@ -911,8 +911,8 @@ HPU NTT 密文。先在各 active Q 下执行逐点 tensor product，得到三�
 `correction_factor_a*correction_factor_b mod t` 元数据更新，不计算 tensor
 或 KeySwitch 系数。顶层和降一级的 tensor 与 modified-SEAL 逐 limb 一致，
 后半段复用已验证的单次 KeySwitch DMA 后缀。`N=65536,Q=3,P=1` 的镜像
-需 148481 个 256B line，含 508 条 resolved DMA 绑定；仍无逐指令软件解释
-或实体 HPU 执行证据。
+需 148481 个 256B line，含 508 条 resolved DMA 绑定。线性 planner 可将
+乘法、ModSwitch 及后继算子拼入单次程序；仍无逐指令软件解释或实体 HPU 执行证据。
 
 #### SEAL-facing BGV NTT Add/Sub/Negate
 

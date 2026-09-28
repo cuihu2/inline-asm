@@ -227,6 +227,26 @@ void BgvPlainOperationPlan::append_subtract(
     append(std::move(id), BgvPlainOperationKind::subtract_ciphertext, right);
 }
 
+void BgvPlainOperationPlan::append_multiply(
+    std::string id, const ::seal::Ciphertext& right,
+    const ::seal::RelinKeys& keys)
+{
+    require_step_id(id);
+    if (!::seal::is_valid_for(right, context_) || !right.is_ntt_form() ||
+        right.size() != 2 || right.parms_id() != planned_parms_id_ ||
+        keys.parms_id() != context_.key_parms_id() ||
+        !keys.has_key(2)) {
+        throw std::invalid_argument(
+            "BGV linear-chain multiplication requires a matching ciphertext and relinearization key");
+    }
+    BgvPlainOperationStep step;
+    step.id = std::move(id);
+    step.kind = BgvPlainOperationKind::multiply_ciphertext;
+    step.ciphertext = right;
+    step.relin_keys = keys;
+    steps_.push_back(std::move(step));
+}
+
 void BgvPlainOperationPlan::append_rotation(
     std::string id, BgvPlainOperationKind kind, int steps,
     const ::seal::GaloisKeys& keys)
@@ -336,6 +356,7 @@ BgvKeySwitchApplication BgvPlainOperationPlan::lower(
         input_.correction_factor());
     std::vector<hpu::scheme::bgv::CorrectionBalance> balances(steps_.size());
     std::vector<std::optional<BgvKeySwitchApplication>> rotations(steps_.size());
+    std::vector<std::optional<BgvKeySwitchApplication>> multiplications(steps_.size());
     std::vector<std::optional<BgvModSwitchApplication>> modswitches(steps_.size());
     std::vector<std::size_t> step_q_counts;
     std::vector<std::string> output_prefixes;
@@ -352,7 +373,35 @@ BgvKeySwitchApplication BgvPlainOperationPlan::lower(
         const bool rotation = step.kind == BgvPlainOperationKind::rotate_rows ||
             step.kind == BgvPlainOperationKind::rotate_columns;
         const bool modswitch = step.kind == BgvPlainOperationKind::modswitch_to_next;
-        if (rotation) {
+        const bool multiplication =
+            step.kind == BgvPlainOperationKind::multiply_ciphertext;
+        if (multiplication) {
+            ::seal::Ciphertext shape;
+            shape.resize(context_, current_parms_id, 2);
+            shape.is_ntt_form() = true;
+            shape.correction_factor() = current_factor;
+            multiplications[index] = build_bgv_multiply_relinearize_application(
+                context_, shape, step.ciphertext, step.relin_keys, capacity_lines);
+            for (const auto& allocation : multiplications[index]->image.allocations()) {
+                const auto& id = allocation.id;
+                if (id == "constants/modulus_table" ||
+                    id.rfind("input/left/c", 0) == 0 ||
+                    id.rfind("output/c", 0) == 0) {
+                    continue;
+                }
+                const auto relocated_id = step_prefix + "/multiply/" + id;
+                if (allocation.read_only) {
+                    image.add(relocated_id,
+                              allocation_words(multiplications[index]->image, allocation),
+                              allocation.kind);
+                } else {
+                    image.reserve(relocated_id, allocation.word_count,
+                                  allocation.kind);
+                }
+            }
+            current_factor = static_cast<std::uint32_t>(
+                multiplications[index]->correction_factor);
+        } else if (rotation) {
             const auto rotation_capacity = estimate_bgv_rotation_image_lines(
                 degree, active_q_count, key_moduli.size());
             ::seal::Ciphertext shape;
@@ -534,6 +583,19 @@ BgvKeySwitchApplication BgvPlainOperationPlan::lower(
                                 standalone.end() - 2);
             break;
         }
+        case BgvPlainOperationKind::multiply_ciphertext: {
+            const auto& standalone = multiplications[index]->instructions;
+            if (standalone.size() < 3 ||
+                standalone.front().instruction.mnemonic != hpu::Mnemonic::kDload ||
+                standalone[standalone.size() - 2].instruction.mnemonic !=
+                    hpu::Mnemonic::kPfree ||
+                standalone.back().instruction.mnemonic != hpu::Mnemonic::kPsync) {
+                throw std::logic_error("BGV standalone multiplication prologue/epilogue changed");
+            }
+            instructions.insert(instructions.end(), standalone.begin() + 1,
+                                standalone.end() - 2);
+            break;
+        }
         }
     }
     append_source(hpu::pfree(4) + hpu::psync());
@@ -553,7 +615,29 @@ BgvKeySwitchApplication BgvPlainOperationPlan::lower(
             step.kind == BgvPlainOperationKind::subtract_ciphertext;
         const bool rotation = step.kind == BgvPlainOperationKind::rotate_rows ||
             step.kind == BgvPlainOperationKind::rotate_columns;
-        if (rotation) {
+        if (step.kind == BgvPlainOperationKind::multiply_ciphertext) {
+            const auto& standalone = *multiplications[index];
+            if (standalone.dma.empty() ||
+                standalone.dma.front().allocation_id != "constants/modulus_table") {
+                throw std::logic_error("BGV multiplication DMA prologue changed");
+            }
+            for (std::size_t dma_index = 1;
+                 dma_index < standalone.dma.size(); ++dma_index) {
+                const auto& binding = standalone.dma[dma_index];
+                const auto& id = binding.allocation_id;
+                std::string relocated_id;
+                if (id.rfind("input/left/c", 0) == 0) {
+                    relocated_id = input_prefix +
+                        id.substr(std::string("input/left").size());
+                } else if (id.rfind("output/c", 0) == 0) {
+                    relocated_id = output_prefix +
+                        id.substr(std::string("output").size());
+                } else {
+                    relocated_id = step_prefix + "/multiply/" + id;
+                }
+                recipe.replay(binding, relocated_id);
+            }
+        } else if (rotation) {
             const auto& standalone = *rotations[index];
             if (standalone.dma.empty() ||
                 standalone.dma.front().allocation_id != "constants/modulus_table") {

@@ -92,28 +92,29 @@ void check_binary_step(
     }
 }
 
-void check_rotation_splice(
+void check_keyswitch_splice(
     const hpu::seal_adapter::BgvKeySwitchApplication& combined,
     const hpu::seal_adapter::BgvKeySwitchApplication& standalone,
     const std::string& step_id, const std::string& input_prefix,
-    const std::string& output_prefix)
+    const std::string& output_prefix, const std::string& operation,
+    const std::string& standalone_input_prefix)
 {
-    const auto relocated_prefix = "steps/" + step_id + "/rotation/";
+    const auto relocated_prefix = "steps/" + step_id + "/" + operation + "/";
     for (const auto& allocation : standalone.image.allocations()) {
         const auto& id = allocation.id;
         if (id == "constants/modulus_table" ||
-            id.rfind("input/original/c", 0) == 0 ||
+            id.rfind(standalone_input_prefix + "/c", 0) == 0 ||
             id.rfind("output/c", 0) == 0) {
             continue;
         }
         const auto& relocated = combined.image.allocation(relocated_prefix + id);
         require(relocated.word_count == allocation.word_count &&
                     relocated.read_only == allocation.read_only,
-                "BGV rotation resource shape changed during plan composition");
+                "BGV KeySwitch resource shape changed during plan composition");
         if (allocation.read_only) {
             require(words(combined.image, relocated_prefix + id) ==
                         words(standalone.image, id),
-                    "BGV rotation key/twiddle changed during plan composition");
+                    "BGV KeySwitch key/twiddle changed during plan composition");
         }
     }
     const auto middle_count = standalone.instructions.size() - 3;
@@ -131,9 +132,9 @@ void check_rotation_splice(
             const auto& binding = standalone.dma[dma_index];
             const auto& id = binding.allocation_id;
             std::string relocated;
-            if (id.rfind("input/original/c", 0) == 0) {
+            if (id.rfind(standalone_input_prefix + "/c", 0) == 0) {
                 relocated = input_prefix +
-                    id.substr(std::string("input/original").size());
+                    id.substr(standalone_input_prefix.size());
             } else if (id.rfind("output/c", 0) == 0) {
                 relocated = output_prefix + id.substr(std::string("output").size());
             } else {
@@ -157,7 +158,27 @@ void check_rotation_splice(
             break;
         }
     }
-    require(found, "BGV rotation instruction/DMA splice differs from standalone");
+    require(found, "BGV KeySwitch instruction/DMA splice differs from standalone");
+}
+
+void check_rotation_splice(
+    const hpu::seal_adapter::BgvKeySwitchApplication& combined,
+    const hpu::seal_adapter::BgvKeySwitchApplication& standalone,
+    const std::string& step_id, const std::string& input_prefix,
+    const std::string& output_prefix)
+{
+    check_keyswitch_splice(combined, standalone, step_id, input_prefix,
+                           output_prefix, "rotation", "input/original");
+}
+
+void check_multiply_splice(
+    const hpu::seal_adapter::BgvKeySwitchApplication& combined,
+    const hpu::seal_adapter::BgvKeySwitchApplication& standalone,
+    const std::string& step_id, const std::string& input_prefix,
+    const std::string& output_prefix)
+{
+    check_keyswitch_splice(combined, standalone, step_id, input_prefix,
+                           output_prefix, "multiply", "input/left");
 }
 
 void check_modswitch_splice(
@@ -590,6 +611,100 @@ int main()
         require(level_psync == 1 &&
                     level_package.spans().size() == level_package.dma.size(),
                 "BGV multi-level plan has an incomplete command stream");
+
+        seal::RelinKeys relin_keys;
+        generator.create_relin_keys(relin_keys);
+        seal::Ciphertext top_right;
+        encryptor.encrypt_symmetric(seal::Plaintext("5"), top_right);
+        hpu::seal_adapter::BgvLinearOperationPlan multiply_plan(context, top_input);
+        multiply_plan.append_add_plain("pre_multiply", seal::Plaintext("3"));
+        multiply_plan.append_multiply("top_multiply", top_right, relin_keys);
+        multiply_plan.append_modswitch_to_next("drop_after_multiply");
+        multiply_plan.append_multiply("lower_multiply", lower_right, relin_keys);
+        multiply_plan.append_add_plain("post_multiply", seal::Plaintext("9"));
+        rejected = false;
+        try {
+            multiply_plan.append_multiply("old_level_multiply", top_right,
+                                          relin_keys);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        require(rejected, "BGV plan accepted old-level multiplication operand");
+        rejected = false;
+        try {
+            multiply_plan.append_multiply("missing_key", lower_right,
+                                          seal::RelinKeys{});
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        require(rejected, "BGV plan accepted a missing relinearization key");
+
+        const auto multiply_package = multiply_plan.lower(16384);
+        seal::Ciphertext multiply_oracle = top_input;
+        evaluator.add_plain_inplace(multiply_oracle, seal::Plaintext("3"));
+        const auto standalone_top_multiply =
+            hpu::seal_adapter::build_bgv_multiply_relinearize_application(
+                context, multiply_oracle, top_right, relin_keys, 16384);
+        check_multiply_splice(multiply_package, standalone_top_multiply,
+                              "top_multiply", "steps/pre_multiply/output",
+                              "steps/top_multiply/output");
+        evaluator.multiply_inplace(multiply_oracle, top_right);
+        evaluator.relinearize_inplace(multiply_oracle, relin_keys);
+        const auto standalone_drop_after_multiply =
+            hpu::seal_adapter::build_bgv_modswitch_application(
+                context, multiply_oracle, 16384);
+        check_modswitch_splice(multiply_package, standalone_drop_after_multiply,
+                               "drop_after_multiply",
+                               "steps/top_multiply/output",
+                               "steps/drop_after_multiply/output");
+        evaluator.mod_switch_to_next_inplace(multiply_oracle);
+        const auto standalone_lower_multiply =
+            hpu::seal_adapter::build_bgv_multiply_relinearize_application(
+                context, multiply_oracle, lower_right, relin_keys, 16384);
+        check_multiply_splice(multiply_package, standalone_lower_multiply,
+                              "lower_multiply", "steps/drop_after_multiply/output",
+                              "steps/lower_multiply/output");
+        evaluator.multiply_inplace(multiply_oracle, lower_right);
+        evaluator.relinearize_inplace(multiply_oracle, relin_keys);
+        const auto before_post_multiply = multiply_oracle;
+        evaluator.add_plain_inplace(multiply_oracle, seal::Plaintext("9"));
+        require(multiply_package.parms_id == multiply_oracle.parms_id() &&
+                    multiply_package.correction_factor ==
+                        multiply_oracle.correction_factor(),
+                "BGV multiplication-chain metadata differs from SEAL");
+        const auto multiply_source = context.get_context_data(
+            multiply_oracle.parms_id());
+        const auto before_post_physical =
+            hpu::seal_adapter::ciphertext_component_to_hpu(
+                before_post_multiply, 0, context);
+        const auto after_post_physical =
+            hpu::seal_adapter::ciphertext_component_to_hpu(
+                multiply_oracle, 0, context);
+        for (std::size_t basis = 0;
+             basis < multiply_source->parms().coeff_modulus().size(); ++basis) {
+            const auto q = static_cast<std::uint32_t>(
+                multiply_source->parms().coeff_modulus()[basis].value());
+            const auto prepared = words(multiply_package.image,
+                "steps/post_multiply/plain/mod" + std::to_string(basis));
+            for (std::size_t k = 0; k < degree; ++k) {
+                require((static_cast<std::uint64_t>(
+                    before_post_physical.words[basis * degree + k]) +
+                    prepared[k]) % q ==
+                    after_post_physical.words[basis * degree + k],
+                    "BGV AddPlain after multiplication differs from SEAL");
+            }
+        }
+        std::size_t multiply_psync = 0;
+        std::size_t multiply_modtable_load = 0;
+        for (const auto& encoded : multiply_package.instructions) {
+            multiply_psync += encoded.instruction.mnemonic == hpu::Mnemonic::kPsync;
+            multiply_modtable_load +=
+                encoded.instruction.mnemonic == hpu::Mnemonic::kDload &&
+                encoded.instruction.obj_id == 4 && encoded.instruction.type == 2;
+        }
+        require(multiply_psync == 1 && multiply_modtable_load == 1 &&
+                    multiply_package.spans().size() == multiply_package.dma.size(),
+                "BGV multiplication chain has an incomplete command stream");
         std::cout << "BGV plain operation plan tests passed\n";
         return 0;
     } catch (const std::exception& error) {

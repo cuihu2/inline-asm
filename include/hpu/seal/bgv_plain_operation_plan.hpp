@@ -12,7 +12,7 @@ namespace hpu::seal_adapter {
 
 enum class BgvPlainOperationKind {
     add, subtract, multiply, add_ciphertext, subtract_ciphertext,
-    rotate_rows, rotate_columns, modswitch_to_next
+    rotate_rows, rotate_columns, modswitch_to_next, multiply_ciphertext
 };
 
 struct BgvPlainOperationStep {
@@ -22,11 +22,12 @@ struct BgvPlainOperationStep {
     ::seal::Ciphertext ciphertext;
     ::seal::GaloisKeys galois_keys;
     int rotation_steps = 0;
+    ::seal::RelinKeys relin_keys;
 };
 
-// Linear same-level chain over one two-component BGV ciphertext. Plaintexts
-// secondary ciphertexts and Galois keys are prepared before execution; intermediate
-// ciphertexts remain in HPU_MEM. Binary Add/Sub balance correction factors.
+// Linear chain over one two-component BGV ciphertext. Secondary ciphertexts,
+// plaintexts, and switching keys are prepared before execution; intermediate
+// ciphertexts remain in HPU_MEM. Level and correction factor advance per step.
 class BgvPlainOperationPlan {
 public:
     BgvPlainOperationPlan(const ::seal::SEALContext& context,
@@ -37,6 +38,8 @@ public:
     void append_multiply_plain(std::string id, const ::seal::Plaintext& plaintext);
     void append_add(std::string id, const ::seal::Ciphertext& right);
     void append_subtract(std::string id, const ::seal::Ciphertext& right);
+    void append_multiply(std::string id, const ::seal::Ciphertext& right,
+                         const ::seal::RelinKeys& keys);
     void append_rotate_rows(std::string id, int steps,
                             const ::seal::GaloisKeys& keys);
     void append_rotate_columns(std::string id,

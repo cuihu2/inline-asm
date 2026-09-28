@@ -449,6 +449,7 @@ plan.append_add("mix_ciphertext", another_ciphertext);
 plan.append_add_plain("add_bias", bias);
 plan.append_multiply_plain("multiply_polynomial", multiplier);
 plan.append_subtract("subtract_ciphertext", another_ciphertext);
+plan.append_multiply("multiply_ciphertext", another_ciphertext, relin_keys);
 plan.append_rotate_rows("rotate_left_1", 1, galois_keys);
 plan.append_modswitch_to_next("drop_level");
 plan.append_rotate_columns("swap_rows", galois_keys);
@@ -459,7 +460,8 @@ auto runtime = render_bgv_keyswitch_runtime_artifacts("bgv_plain_chain", package
 
 - `BgvLinearOperationPlan` 是原 `BgvPlainOperationPlan` 的语义化别名。
   计划接受二分量 BGV NTT 密文，并支持预制明文 Add/Sub/Multiply、
-  密文 Add/Sub、行旋转、列交换及显式 `append_modswitch_to_next`。
+  密文 Add/Sub、`append_multiply`（含重线性化）、行旋转、列交换及显式
+  `append_modswitch_to_next`。
   追加密文操作时，右操作数必须处于计划当前 level。
 - 密文 Add/Sub 遇到不同 `correction_factor` 时逐步求平衡标量，
   由 HPU `PMUL` 缩放并 `PADD/PSUB`。输出 factor 会更新；其后的
@@ -473,6 +475,10 @@ auto runtime = render_bgv_keyswitch_runtime_artifacts("bgv_plain_chain", package
 - ModSwitch 重定位单次 NTT 包，输出少一个 Q limb，随后按新 level
   预制明文及旋转资源；`parms_id` 和 `correction_factor` 与 modified-SEAL
   同步推进。模表仍只加载一次，所有步骤共用一个 HPU_MEM 与末尾同步。
+- 密文乘法重定位单次 `CMULT -> KeySwitch` 包：左输入绑定前一步输出，
+  右输入与 relinearization key 预制在镜像中，三分量 tensor 保持为 HPU
+  生成并由后续 KeySwitch 读取的可变 span。乘法后的 factor 按模 `t`
+  更新，可接 ModSwitch、明文操作或下一次乘法。未引入 CPU 中间密文计算。
 - `examples/bgv_plain_chain_application.cpp` 展示
   `((x + 3) * (2x + 1)) - 5`。运行
   `./build-seal/hpu_bgv_plain_chain_example`；加 `--print-dma` 可查看
@@ -480,8 +486,10 @@ auto runtime = render_bgv_keyswitch_runtime_artifacts("bgv_plain_chain", package
   非平凡 factor、密文 Add/Sub 与后继 AddPlain 的组合另有测试。
   `./build-seal/hpu_bgv_rotate_chain_example` 演示
   `RotateRows(x + 3, 1) + 5`；计划测试还覆盖连续行旋转与列交换。
-  计划测试另覆盖两次连续跨 level ModSwitch 与后继明文/旋转操作。
-  该计划目前不包含密文乘法，也尚未经过逐指令
+  `./build-seal/hpu_bgv_multiply_chain_example` 演示
+  `ModSwitch((x + 5) * multiplier) + 7`，可用 `--print-dma` 查看重定位后的 span。
+  计划测试另覆盖两次连续跨 level ModSwitch，以及两次密文乘法、
+  中间 ModSwitch 与后继明文操作；尚未经过逐指令
   软件执行或实体 HPU 验证。
 
 ### 2.3 NTT 表示桥：仿 SEAL NTT 表示转换

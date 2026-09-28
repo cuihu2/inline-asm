@@ -420,6 +420,14 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
             hpu_seal_ckks_codegen
     )
 
+    add_executable(hpu_bgv_multiply_chain_example
+            examples/bgv_multiply_chain_application.cpp
+    )
+    target_link_libraries(hpu_bgv_multiply_chain_example
+            PRIVATE
+            hpu_seal_ckks_codegen
+    )
+
     add_executable(hpu_bfv_multiply_modswitch_example
             examples/bfv_multiply_modswitch_application.cpp
     )
@@ -443,6 +451,8 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
                 COMMAND hpu_bgv_plain_chain_example)
         add_test(NAME hpu_bgv_rotate_chain_example
                 COMMAND hpu_bgv_rotate_chain_example)
+        add_test(NAME hpu_bgv_multiply_chain_example
+                COMMAND hpu_bgv_multiply_chain_example)
 
         add_executable(hpu_seal_bgv_plain_operation_plan_test
                 test/seal_bgv_plain_operation_plan_test.cpp
