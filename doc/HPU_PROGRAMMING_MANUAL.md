@@ -363,6 +363,11 @@ for i = 0 .. L-1:
     P[pdst][i] = P[psrc1][i] * P[psrc2][i] mod q
 ```
 
+PE 算术路径允许两个乘数分别为任意 `uint32`，结果仍归一化到 `[0,q)`。
+跨模数读取的系数可先执行 `pmul pdst, psrc, 1`，再交给要求规范余数的
+`padd`、`psub` 或 NTT。该能力已由 PE 边界仿真及编码指令链临时验证；
+CPU 取指和实体 DMA 不在该验证范围内。
+
 **立即数模式操作**
 
 ```text
@@ -403,6 +408,8 @@ for i = 0 .. L-1:
 ```
 
 `pdst` 是读写累加器，执行前必须已经包含当前模数下的有效数据。第一个累加项通常使用 `pmul` 初始化，后续项使用 `pmac`。
+两个乘数可以是任意 `uint32`，但累加器必须是当前模数下的规范余数；
+不可用 `pmac` 来直接规约非规范累加器。
 
 **示例**
 
@@ -814,7 +821,7 @@ canonical HPU NTT 多项式并逐 limb 运算，不生成 NTT/INTT。Add/Sub 及
 要求 host 检查 scale 兼容；MultiplyPlain 的软件 scale 更新为
 `ciphertext_scale * plaintext_scale`。这些元数据不进入 HPU 指令流。
 
-### 8.7 BGV 乘法和 ModSwitch
+### 8.7 BGV legacy 乘法和 ModSwitch
 
 BGV 固定模上下文顺序为：
 
@@ -849,6 +856,85 @@ correction_factor_out = correction_factor_in * q_last^-1 mod t
 
 该流程不需要比较或条件选择，但要求 `gcd(q_last,t)=1`。完整中间值和常量位于
 `outputs/bgv_modswitch/test_data/`。
+
+#### SEAL-facing BGV NTT ModSwitch 生成器
+
+`generate_modswitch_ntt_body_asm` 是独立于上述系数域 legacy 流程的组合层。
+输入、输出均为 canonical HPU NTT；使用显式 Q MOD_ID 列表与固定的 `t` MOD_ID，
+因此 Q 降 level 时不会重编号 `t`。每个密文分量仅对被丢弃的 `q_last` limb 执行
+PINTT，并在系数域计算 `u=-c_last*q_last^-1 mod t`。对每个保留的 `q_i`，先用
+`pmul p1,p1,1` 将跨模数读取的 `c_last` 归一化，再计算
+`delta_i=c_last+q_last*u mod q_i`，把 `delta_i` 做 canonical PNTT，最后在 NTT
+域计算 `(c_i-NTT(delta_i))*q_last^-1 mod q_i`。PNTT 的 pre-twist PMUL 前修正量已
+归一化。该流不对保留的 `c_i` 做不必要的 PINTT/PNTT。
+
+`build_bgv_modswitch_application` 将原密文、`c_last`/`u` 工作区、canonical
+twiddle、预制常量及输出装入 HPU_MEM，逐条核对编码后 custom1 与 resolved span。
+`render_bgv_modswitch_runtime_artifacts` 输出固定指令字、span 数组、
+`hpu_run_<stem>()` 入口和 DMA manifest。常量均按 `N` 个 32-bit word 展开。
+`correction_factor` 由 host 用 `modswitch_correction_factor` 更新；它不是密文系数的
+CPU 运算。这个单次操作包只加载一次模表，最后发一次 `psync`。目前已做
+codegen/编码/DMA 生命周期检查、HPU_MEM 常量与 modified-SEAL 两级逐 limb 差分；
+尚无 BGV 多算子 planner、逐指令软件执行或实体 HPU 执行证据。
+
+#### SEAL-facing BGV NTT KeySwitch 指令体
+
+`generate_keyswitch_ntt_body_asm` 接收 singleton-Q digit 的 `RnsDecompositionLayout`
+和固定 `t` MOD_ID。对切换分量的每个 `q_j` limb 做一次 PINTT；同模数目标直接
+使用原 NTT limb，跨 `Q_i`/`P` 目标先以 `PMUL(x,1)` 规约再 PNTT，并分别累加
+evaluation key 的两个 NTT 分量。对每个特殊素数 `P` 累加器做 PINTT，计算
+`u=-c_P*P^-1 mod t`，然后在各 `Q_i` 下构造
+`delta_i=c_P+P*u mod q_i`。输出为
+`base_i+(acc_i-NTT(delta_i))*P^-1 mod q_i`，保持 canonical HPU NTT。
+Relinearize 的 `base=(c0,c1)`、切换分量为 `c2`；Galois 的输入需要先完成
+自同构。指令体可嵌套在应用内，默认不重复加载模表或发 `psync`。当前通过
+N=128/65536 的编码与生命周期测试，以及 modified-SEAL 顶层/降一级
+Relinearize 逐 limb 公式差分。单次三分量产品的 Relinearize 应用包现已装入
+evaluation key、`P` 修正常量和工作区；逐条 custom1 DMA 与镜像 span 对齐，
+可渲染 RV runtime 入口和 resolved DMA manifest。顶层与降一级的镜像内容经
+HPU 物理 NTT 数学模型对照 modified-SEAL。尚无 BGV 多算子 planner、逐指令
+软件执行或实体 HPU 执行证据。
+当前镜像把各 active Q 与 P 的双向 twiddle 全部预存；`N=65536,Q=3,P=1`
+总计需 136193 个 256B line（其中 twiddle 73728 line）。容量估算 API 在
+构建前精确检查 `capacity_lines`。若平台允许更大的 HPU_MEM window，可直接
+按估计值配置；旧 65536-line 软件 profile 不是该应用的硬件上限。实体
+DMA/window 仍需单独验证。`N=65536,Q=3,P=1` 的真实软件镜像已按精确
+136193-line 容量生成，包含 475 条 resolved DMA 绑定。
+
+#### SEAL-facing BGV NTT Multiply+Relinearize
+
+`generate_ciphertext_multiply_ntt_body_asm` 直接消费两个二分量 canonical
+HPU NTT 密文。先在各 active Q 下执行逐点 tensor product，得到三分量 NTT
+中间结果，再执行上述 BGV 专用 KeySwitch。应用包的三分量 span 由 HPU
+`DSTORE` 写入并由 KeySwitch `DLOAD` 重用；全流只加载一次模表，末尾一个
+`psync`。host 只做输入/evaluation key 的表示准备和
+`correction_factor_a*correction_factor_b mod t` 元数据更新，不计算 tensor
+或 KeySwitch 系数。顶层和降一级的 tensor 与 modified-SEAL 逐 limb 一致，
+后半段复用已验证的单次 KeySwitch DMA 后缀。`N=65536,Q=3,P=1` 的镜像
+需 148481 个 256B line，含 508 条 resolved DMA 绑定；仍无逐指令软件解释
+或实体 HPU 执行证据。
+
+#### SEAL-facing BGV NTT Add/Sub/Negate
+
+BGV `Add/Sub` 在两输入 `correction_factor` 相同时直接在 canonical HPU
+NTT 下逐 limb 执行 `PADD/PSUB`；不同时，host 仅按 modified-SEAL 的扩展
+Euclid 规则求出 `(factor_out,scalar_left,scalar_right)`，各 Q limb 的实际
+密文缩放由 HPU `PMUL` 执行，再进行 `PADD/PSUB`。`Negate` 复用逐点
+`0-c` 流程且保持 factor 不变。单次应用包预制标量 splat、输入与输出镜像，
+逐条绑定 custom1 DMA，并提供可渲染的 RV runtime。顶层、降一级及多个
+非相等因子组合均与 modified-SEAL 逐 limb 对齐。预制明文的
+`AddPlain/SubPlain/MultiplyPlain` 也提供单次镜像：Add/Sub 在镜像准备阶段
+按 ciphertext factor 模 `t` 缩放明文并转成 HPU NTT，HPU 只更新 `c0`；
+MultiplyPlain 在 HPU 上逐点乘两个密文分量。顶层与降一级均与
+modified-SEAL 差分。
+
+BGV 行旋转与列交换使用同一自同构 + Galois KeySwitch 单次包：每个
+`c0/c1` 的 Q limb 经改根 INTT 得到 `sigma_k` 系数，再经 canonical NTT
+写入 KeySwitch 输入；`c1` 作为切换分量，零基分量与旋转后的 `c0`
+构成最终输出。Galois key 按元素 `k` 选取，`correction_factor` 不变。
+正/负行步长及列交换已在顶层/降一级与 modified-SEAL 逐 limb 差分；
+`N=65536,Q=3,P=1` 镜像容量估算为 169985 line。多算子 planner、
+逐指令软件执行与实体 HPU 验证仍待完成。
 
 ### 8.8 BFV comparison-free BEHZ、重线形化和 ModSwitch
 

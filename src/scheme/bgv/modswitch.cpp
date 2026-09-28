@@ -2,6 +2,7 @@
 
 #include "util/bconv.hpp"
 #include "util/hpu_asm.hpp"
+#include "util/ntt.hpp"
 #include "util/validation.hpp"
 
 #include <sstream>
@@ -15,6 +16,27 @@ bool valid_config(int num_q, int num_p, int num_components)
 {
     return num_q >= 2 && num_components > 0
         && hpu::has_mod_context_capacity(num_q, num_p, 1);
+}
+
+bool valid_ntt_layout(int N, const NttModSwitchLayout& layout, int num_components)
+{
+    if (!hpu::is_valid_ntt_size(N) || num_components <= 0 ||
+        layout.q_mod_ids.size() < 2 ||
+        layout.q_mod_ids.size() >= static_cast<std::size_t>(hpu::kMaxModContexts) ||
+        layout.plaintext_mod_id < 0 ||
+        layout.plaintext_mod_id >= hpu::kMaxModContexts) {
+        return false;
+    }
+    std::vector<bool> seen(hpu::kMaxModContexts);
+    seen[static_cast<std::size_t>(layout.plaintext_mod_id)] = true;
+    for (int context : layout.q_mod_ids) {
+        if (context < 0 || context >= hpu::kMaxModContexts ||
+            seen[static_cast<std::size_t>(context)]) {
+            return false;
+        }
+        seen[static_cast<std::size_t>(context)] = true;
+    }
+    return true;
 }
 
 std::uint64_t inverse_mod(std::uint64_t value, std::uint64_t modulus)
@@ -174,6 +196,115 @@ std::uint64_t modswitch_correction_factor(
     return static_cast<std::uint64_t>(
         (static_cast<unsigned __int128>(factor % plaintext_modulus) * inverse)
         % plaintext_modulus);
+}
+
+NttModSwitchConstants prepare_ntt_modswitch_constants(
+    const std::vector<std::uint32_t>& q_moduli,
+    std::uint32_t plaintext_modulus)
+{
+    if (q_moduli.size() < 2 || plaintext_modulus < 65537) {
+        throw std::invalid_argument("BGV NTT ModSwitch requires at least two Q limbs and an HPU plaintext modulus");
+    }
+    const std::uint32_t q_last = q_moduli.back();
+    if (q_last < 65537) {
+        throw std::invalid_argument("BGV NTT ModSwitch q_last is outside the HPU modulus range");
+    }
+    NttModSwitchConstants result;
+    const auto inverse_t = inverse_mod(q_last, plaintext_modulus);
+    result.neg_q_last_inverse_mod_t = static_cast<std::uint32_t>(
+        plaintext_modulus - inverse_t);
+    result.q_last_mod_q.reserve(q_moduli.size() - 1);
+    result.q_last_inverse_mod_q.reserve(q_moduli.size() - 1);
+    for (std::size_t index = 0; index + 1 < q_moduli.size(); ++index) {
+        const std::uint32_t q = q_moduli[index];
+        if (q < 65537) {
+            throw std::invalid_argument("BGV NTT ModSwitch Q modulus is outside the HPU range");
+        }
+        result.q_last_mod_q.push_back(q_last % q);
+        result.q_last_inverse_mod_q.push_back(
+            static_cast<std::uint32_t>(inverse_mod(q_last, q)));
+    }
+    return result;
+}
+
+std::string generate_modswitch_ntt_body_asm(
+    int N,
+    const NttModSwitchLayout& layout,
+    int num_components,
+    bool append_psync,
+    bool manage_modulus_table)
+{
+    if (!valid_ntt_layout(N, layout, num_components)) {
+        return "        /* Invalid SEAL-facing BGV NTT ModSwitch layout */\n";
+    }
+
+    constexpr int value = 0;
+    constexpr int auxiliary = 1;
+    constexpr int twiddle = 3;
+    constexpr int modulus_table = 4;
+    const int dropped_context = layout.q_mod_ids.back();
+    std::ostringstream asm_code;
+    asm_code << "        /* BGV MODSWITCH NTT: drop q_last; retain canonical HPU NTT output */\n";
+    asm_code << "        /* DMA constants: -q_last^-1 mod t, q_last mod q_i, q_last^-1 mod q_i. */\n";
+    if (manage_modulus_table) {
+        asm_code << hpu::dload(modulus_table, hpu::DataType::mod_ctx,
+                               hpu::DloadFlag::small_bank);
+    }
+
+    for (int component = 0; component < num_components; ++component) {
+        asm_code << "        /* component " << component << ": only dropped NTT limb -> coefficients */\n";
+        asm_code << hpu::pmodld(dropped_context);
+        asm_code << "        // dload c_last in canonical HPU NTT layout\n";
+        asm_code << hpu::dload(value, hpu::DataType::poly);
+        asm_code << generate_hpu_intt_body_asm(N, value, twiddle, false);
+        asm_code << "        // dstore c_last coefficient scratch (bit-reversed physical order)\n";
+        asm_code << hpu::dstore(value, 1);
+
+        asm_code << "        /* u_t = -c_last * q_last^-1 mod t; wide PMUL input is legal */\n";
+        asm_code << hpu::pmodld(layout.plaintext_mod_id);
+        asm_code << "        // dload c_last coefficient scratch, then prepared -q_last^-1 mod t\n";
+        asm_code << hpu::dload(value, hpu::DataType::poly);
+        asm_code << hpu::dload(auxiliary, hpu::DataType::poly);
+        asm_code << hpu::pmul(value, value, auxiliary);
+        asm_code << hpu::pfree(auxiliary);
+        asm_code << "        // dstore canonical u_t coefficient scratch\n";
+        asm_code << hpu::dstore(value, 1);
+
+        for (std::size_t index = 0; index + 1 < layout.q_mod_ids.size(); ++index) {
+            const int q_context = layout.q_mod_ids[index];
+            asm_code << "        /* component " << component << ", retained q MOD_ID "
+                     << q_context << ": coefficient correction -> NTT */\n";
+            asm_code << hpu::pmodld(q_context);
+            asm_code << "        // dload u_t and prepared q_last mod q_i; PMUL reduces u_t under q_i\n";
+            asm_code << hpu::dload(value, hpu::DataType::poly);
+            asm_code << hpu::dload(auxiliary, hpu::DataType::poly);
+            asm_code << hpu::pmul(value, value, auxiliary);
+            asm_code << hpu::pfree(auxiliary);
+            asm_code << "        // dload c_last coefficients and canonicalize under q_i before PADD\n";
+            asm_code << hpu::dload(auxiliary, hpu::DataType::poly);
+            asm_code << hpu::pmul_imm(auxiliary, auxiliary, 1);
+            asm_code << hpu::padd(value, value, auxiliary);
+            asm_code << hpu::pfree(auxiliary);
+            asm_code << generate_hpu_ntt_body_asm(N, value, twiddle, false);
+            asm_code << "        // dload original retained c_i in canonical HPU NTT layout\n";
+            asm_code << hpu::dload(auxiliary, hpu::DataType::poly);
+            asm_code << hpu::psub(auxiliary, auxiliary, value);
+            asm_code << hpu::pfree(value);
+            asm_code << "        // dload prepared q_last^-1 mod q_i and store output NTT limb\n";
+            asm_code << hpu::dload(value, hpu::DataType::poly);
+            asm_code << hpu::pmul(auxiliary, auxiliary, value);
+            asm_code << hpu::pfree(value);
+            asm_code << hpu::dstore(auxiliary, 1);
+        }
+    }
+
+    if (manage_modulus_table) {
+        asm_code << hpu::pfree(modulus_table);
+    }
+    if (append_psync) {
+        asm_code << hpu::psync();
+    }
+    return asm_code.str();
 }
 
 } // namespace hpu::scheme::bgv

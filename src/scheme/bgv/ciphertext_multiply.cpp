@@ -1,6 +1,8 @@
 #include "scheme/bgv/ciphertext_multiply.hpp"
 
 #include "operator/ciphertext_multiply.hpp"
+#include "poly/cmult.hpp"
+#include "scheme/bgv/keyswitch.hpp"
 #include "util/hpu_asm.hpp"
 #include "util/validation.hpp"
 
@@ -18,6 +20,40 @@ bool valid_config(int N, int num_q, int num_p, int dnum)
 }
 
 } // namespace
+
+std::string generate_ciphertext_multiply_ntt_body_asm(
+    int N, const hpu::RnsDecompositionLayout& layout, int plaintext_mod_id,
+    bool append_psync, bool manage_modulus_table)
+{
+    bool prefix_q = true;
+    for (std::size_t index = 0; index < layout.q_mod_ids.size(); ++index) {
+        prefix_q = prefix_q && layout.q_mod_ids[index] == static_cast<int>(index);
+    }
+    if (!hpu::is_seal_single_p_rns_decomposition_layout(N, layout) ||
+        !prefix_q || plaintext_mod_id < 0 ||
+        plaintext_mod_id >= hpu::kMaxModContexts ||
+        plaintext_mod_id == layout.p_mod_ids.front()) {
+        return "        /* Invalid SEAL-facing BGV NTT Multiply layout */\n";
+    }
+    for (int q_id : layout.q_mod_ids) {
+        if (q_id == plaintext_mod_id) {
+            return "        /* Invalid SEAL-facing BGV NTT Multiply t MOD_ID */\n";
+        }
+    }
+    std::ostringstream asm_code;
+    asm_code << "        /* BGV MULTIPLY NTT: tensor -> BGV special-P KeySwitch */\n";
+    if (manage_modulus_table) {
+        asm_code << hpu::dload(4, hpu::DataType::mod_ctx,
+                               hpu::DloadFlag::small_bank);
+    }
+    asm_code << ::generate_hpu_cmult_body_asm(
+        static_cast<int>(layout.q_mod_ids.size()), false, false);
+    asm_code << generate_keyswitch_ntt_body_asm(
+        N, layout, plaintext_mod_id, false, false);
+    if (manage_modulus_table) asm_code << hpu::pfree(4);
+    if (append_psync) asm_code << hpu::psync();
+    return asm_code.str();
+}
 
 std::string generate_ciphertext_multiply_body_asm(
     int N,
