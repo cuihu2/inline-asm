@@ -188,7 +188,7 @@ Rescale 也各自保持 canonical NTT 输入/输出。因此它比原专用复�
 ./build/hpu_ckks_composed_application_example
 ```
 
-完整讲解见 `doc/CKKS_COMPOSED_APPLICATION_EXAMPLE.md`。
+完整讲解见 [CKKS 复合应用示例](../examples/CKKS_COMPOSED_APPLICATION_EXAMPLE.md)。
 
 `hpu_ckks_polynomial_example` 会打印：
 
@@ -252,7 +252,7 @@ outputs/ckks_composed_application/
 `--emit-dir` 要求目标目录不存在；重复生成同一目录请使用 `hpu_ckks_delivery` 构建目标。
 校验命令为 `./build/hpu_validate_package outputs/ckks_composed_application`。
 旧版扁平目录需先移走再生成。完整规范与 IT 样例接口见
-[HPU_APPLICATION_PACKAGE_V1.md](HPU_APPLICATION_PACKAGE_V1.md)。
+[HPU_APPLICATION_PACKAGE_V1.md](../delivery/HPU_APPLICATION_PACKAGE_V1.md)。
 
 示例每次运行都会重新生成 SEAL key 和加密随机数，因此不同运行的二进制不保证
 逐字相同；同一次导出的程序、初始 image、DMA manifest 和 expected output 是一套

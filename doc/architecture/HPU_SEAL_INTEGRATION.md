@@ -1,8 +1,8 @@
-# HPU + modified-SEAL CKKS Bootstrap
+# HPU + modified-SEAL 集成设计
 
 ## Scope
 
-This bootstrap keeps Microsoft SEAL as the host-side CKKS authority and uses the
+This integration keeps Microsoft SEAL as the host-side FHE authority and uses the
 HPU for selected evaluator kernels. The first functional target is:
 
 1. SEALContext, KeyGenerator, CKKSEncoder and Encryptor on the CPU.
@@ -181,7 +181,8 @@ out-of-capacity spans are rejected before artifact generation.
 reference for this path. It plans `Multiply -> ModSwitch -> AddPlain`, prepares
 the destination-level plaintext before execution, and can emit assembly,
 instruction/command bits, the C run wrapper, resolved DMA manifest, and the
-HPU_MEM image with `--emit-dir`. See `doc/BFV_APPLICATION_EXAMPLE.md`.
+HPU_MEM image with `--emit-dir`. See the
+[BFV application example](../examples/BFV_APPLICATION_EXAMPLE.md).
 The same example executes the prepared image with `BfvSoftwareExecutor` and
 compares both final ciphertext components word-for-word with an independent
 modified-SEAL oracle. The executor implements comparison-free BEHZ,
@@ -350,7 +351,8 @@ ctest --test-dir build-seal \
 ```
 
 The N=65536 walkthrough program is built as
-`hpu_ckks_polynomial_example`; see `doc/CKKS_HPU_GETTING_STARTED.md`.
+`hpu_ckks_polynomial_example`; see the
+[CKKS getting started guide](../getting-started/CKKS_HPU_GETTING_STARTED.md).
 
 Generate the full-size reference profile separately because it is much larger
 than the default demo package:

@@ -7,7 +7,7 @@
 代码按照功能依赖分层，并分别维护在 `include` 及 `src` 目录下，包含四层生成模块，以及独立的编码、reference 与测试辅助模块：
 
 ### 1) 基础工具层 (`util`)
-- **`util/hpu_asm.hpp/cpp`**：基础 HPU 汇编助记符封装和生成接口，遵循 `doc/HPU_PROGRAMMING_MANUAL.md`。
+- **`util/hpu_asm.hpp/cpp`**：基础 HPU 汇编助记符封装和生成接口，遵循 `doc/reference/HPU_PROGRAMMING_MANUAL.md`。
 - **`util/validation.hpp`**：共享参数校验，包括 2 的幂、NTT 对象容量、模上下文容量、RNS digit 配置和素数检查。
 - **`util/ntt.hpp/cpp`**：按 stage 推进的基于对象槽位语义的 NTT / INTT 汇编生成。
 - **`util/mm.hpp/cpp`**：对象槽位级别的四则运算，特别是逐点向量乘法、乘加积累等（`pmul` / `pmac`）。
@@ -67,9 +67,12 @@
 - **`hpu_reference_vectors`**：构建后生成的 reference 数据工具；它不生成 HPU 指令，也不替代 `src/main.cpp`。
 
 ### 8) 项目文档 (`doc`)
-- **`doc/HPU_PROGRAMMING_MANUAL.md`**：11 条 HPU 指令、对象/DMA 绑定及 CKKS/BGV/BFV 方案算子。
-- **`doc/HPU_TEST_DELIVERY.md`**：生成与编码流程、测试数据、autotest 对照、验收命令和硬件联调签字项。
-- **`doc/HPU_LATEST_SPEC_AUDIT.md`**：项目与最新飞书集成/控制/RV/PE 文档的逐项符合性审计、来源和修改顺序。
+
+- **[`doc/README.md`](doc/README.md)**：按应用开发、IT 测试、runtime 对接和维护任务提供文档入口。
+- **`doc/getting-started/`、`doc/examples/`**：入门流程和可运行的 CKKS/BFV 应用示例。
+- **`doc/reference/`、`doc/architecture/`**：当前 API、HPU 指令规范和 SEAL 集成设计。
+- **`doc/delivery/`**：通用应用包规范及旧固定参数交付流程。
+- **`doc/audits/`**：按日期保存的规范符合性审计快照。
 
 ### 9) 三个程序入口
 
@@ -143,7 +146,7 @@ cmake --build build -j --target hpu_fhe_delivery
 CKKS、BFV、BGV 都会运行各自的 host 软件执行器，并把每个 plan 输出与独立
 modified-SEAL oracle 逐 word 比较；任一比较失败都不会发布交付包。
 重复构建会先生成并校验新包，再替换同名的有效应用包。
-IT 编写样例及 Nexus AM 消费格式见 [通用应用交付说明](doc/HPU_APPLICATION_PACKAGE_V1.md)。
+IT 编写样例及 Nexus AM 消费格式见 [通用应用交付说明](doc/delivery/HPU_APPLICATION_PACKAGE_V1.md)。
 这一步产出的是指令、数据和 C 源码；机器可执行 ELF/BIN 由 Nexus AM 侧编译生成。
 
 SEAL v4.4.4 源码以普通目录 `third_party/modified-SEAL` 固定在本仓库中，不再使用
@@ -165,17 +168,17 @@ ctest --test-dir build-seal -R hpu_seal_ckks_context_test --output-on-failure
 ```
 
 具体边界、硬件 NTT 模型、runtime 语义及完整命令见
-`doc/HPU_SEAL_BOOTSTRAP.md`。
+`doc/architecture/HPU_SEAL_INTEGRATION.md`。
 
 从工程搭建开始的简明介绍，以及 `f(x)=x^2+1` 的可运行 CKKS/HPU 示例见
-`doc/CKKS_HPU_GETTING_STARTED.md`。
+`doc/getting-started/CKKS_HPU_GETTING_STARTED.md`。
 
 面向顶层应用开发者的多分支 planner 示例见
-`doc/CKKS_COMPOSED_APPLICATION_EXAMPLE.md`。它实现
+`doc/examples/CKKS_COMPOSED_APPLICATION_EXAMPLE.md`。它实现
 `x*(RotateLeft(x,1)+Conjugate(x))+1`，覆盖 Galois key/workspace、分支合并、
 Multiply→Relinearize→Rescale、完整 DMA relocation 和 runtime artifacts。
 
-BFV 顶层示例见 `doc/BFV_APPLICATION_EXAMPLE.md`。它实现
+BFV 顶层示例见 `doc/examples/BFV_APPLICATION_EXAMPLE.md`。它实现
 `ModSwitch(left*right)+3`，演示预制目标 level plaintext、融合
 Multiply/Relinearize、显式 ModSwitch，以及 `.asm/.inst32/.cmd26`、运行包装、
 resolved DMA manifest 和 HPU_MEM 镜像的生成。示例还通过 `BfvSoftwareExecutor`
@@ -186,7 +189,7 @@ BFV application image 可按预定 RotateRows 步长或 RotateColumns 准备对�
 level-specific GaloisKey 与 modified-root INTT twiddle。BFV planner 已支持
 RotateRows 与 RotateColumns，并完成汇编、DMA relocation、runtime 编码与软件执行；
 正向/负向行旋转和换列均与 modified-SEAL 逐系数对拍。
-可运行的 rotation 应用见 `doc/BFV_ROTATION_APPLICATION_EXAMPLE.md`，计算
+可运行的 rotation 应用见 `doc/examples/BFV_ROTATION_APPLICATION_EXAMPLE.md`，计算
 `RotateRows(x,2)+RotateColumns(x)`，展示两条 Galois 分支合并、编码与 DMA 产物生成。
 
 当前 HPU_MEM 软件执行器已经对 CKKS Add/Subtract/MultiplyPlain/AddPlain/
@@ -407,7 +410,7 @@ MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、KeySwitch 和 Relinearizat
 调用方需要保证：
 
 - `N` 为 2 的幂且 `128 <= N <= 65536`；下界来自 NTT 的 128-register batch，上界来自普通 bank 的 1024 line
-- ISA 提供 8 个逻辑对象号 `p0..p7`；当前复合算子最多同时使用 `p0..p4`，具体角色见 `doc/HPU_PROGRAMMING_MANUAL.md` 附录 C
+- ISA 提供 8 个逻辑对象号 `p0..p7`；当前复合算子最多同时使用 `p0..p4`，具体角色见 `doc/reference/HPU_PROGRAMMING_MANUAL.md` 附录 C
 - 复杂硬件算子（CKKS Rescale、BGV/BFV ModSwitch、BFV BEHZ、PMULT/CMULT/MODUP/MODDOWN）使用 `dload/dstore` 流式搬运，不在本地长期保留多基对象；CKKS/BGV/BFV Encode/Decode 是纯 host API
 - `dload type=2, flag[0]=1` 将模表逻辑对象分配到 small Bank 5；DMA 与后续指令的一致性由硬件维护，可直接使用 `pmodld MOD_ID` 激活表项
 - 每个可编码算子同时生成 `.inst32` 和 `.cmd26`；`cmd26[25]` 区分计算类 custom2 和 DMA 类 custom1，两类指令都直接携带 `inst[31:7]`；custom1 payload 按 `reserved/OBJ_ID/RS2/RS1/TYPE_OR_REL/DIR/reserved/flag` 排列，寄存器值提供 offset/count
@@ -423,7 +426,7 @@ MM、BConv、ModUp、PMULT、CMULT、ModDown、Auto、KeySwitch 和 Relinearizat
 
 ## 6. 当前交付边界
 
-软件侧已完成纯 host 的 CKKS/BGV/BFV Encode/Decode，以及公共算子、CKKS Rescale/Multiply、BGV Multiply/ModSwitch、BFV comparison-free 单 kernel Multiply/Relinearization 和 ModSwitch 的指令生成、编码、reference golden、独立 `uint32` 硬件镜像、`q32+mu48+reserved48` 模上下文、物理 twiddle、256B line 映射、生命周期门禁和 RV 可执行后端。BFV 主硬件包使用零噪声精确功能 key，另有非零误差 host smoke；两者都标记为 `FUNCTIONAL_TEST_ONLY`。硬件 qualification 仍需目标 RTL/板级运行和外部 monitor 证据。详细签字项见 `doc/HPU_TEST_DELIVERY.md`。
+软件侧已完成纯 host 的 CKKS/BGV/BFV Encode/Decode，以及公共算子、CKKS Rescale/Multiply、BGV Multiply/ModSwitch、BFV comparison-free 单 kernel Multiply/Relinearization 和 ModSwitch 的指令生成、编码、reference golden、独立 `uint32` 硬件镜像、`q32+mu48+reserved48` 模上下文、物理 twiddle、256B line 映射、生命周期门禁和 RV 可执行后端。BFV 主硬件包使用零噪声精确功能 key，另有非零误差 host smoke；两者都标记为 `FUNCTIONAL_TEST_ONLY`。硬件 qualification 仍需目标 RTL/板级运行和外部 monitor 证据。详细签字项见 `doc/delivery/HPU_TEST_DELIVERY.md`。
 
 当前 golden 使用确定性零噪声和 P 可整除的功能测试评估密钥，适合 UT/IT 的
 逐字定位，不是安全性或噪声预算测试向量。Nexus-AM 的 host 模式只验证 testcase、

@@ -1156,7 +1156,7 @@ ctest --test-dir build --output-on-failure
 4. cache maintenance、中断和 fault 的 runtime 实现。
 
 这些事项不由指令编码器证明；当前软件完成度与剩余 RTL/板级签字项以
-`HPU_TEST_DELIVERY.md` 为准，它们不是 ABI 的备选解释。
+[Legacy 测试交付说明](../delivery/HPU_TEST_DELIVERY.md) 为准，它们不是 ABI 的备选解释。
 
 ## 附录 C：DLOAD/DSTORE 数据绑定
 

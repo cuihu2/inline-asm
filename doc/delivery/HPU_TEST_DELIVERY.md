@@ -177,7 +177,7 @@ embedding，BGV/BFV 对 `N` 个槽位执行 generator-3 两行 batching；Decode
 Q/Bsk tensor product、FastFloor 和 branchless-SK 生成三分量 Q 密文；同一指令流
 随即从相同 HPU_MEM span 执行 Q/Pks Relinearization，只有最终一个 `psync`，没有
 host copy 或第二次 window commit。随后可独立执行 rounded ModSwitch。完整边界见
-`HPU_PROGRAMMING_MANUAL.md` 第 8.8 节。
+[HPU 编程手册](../reference/HPU_PROGRAMMING_MANUAL.md) 第 8.8 节。
 
 生成器和 reference 共同检查 `N` 为 2 的幂且 `ceil(N/64) <= 1024`，对应当前普通 bank 的最大可承载次数 `N=65536`。`dnum` 必须整除 `num_q`；BFV 上下文必须满足
 `num_q+num_p+bfv_num_b+2<=64`。BGV/BFV batching 要求 `t` 为 PE 范围内素数、

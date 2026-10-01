@@ -1005,18 +1005,18 @@ SEAL 仅作为逐字 oracle 与最终解密验证；HPU 软件执行器运行整
 `./build-seal/hpu_ckks_composed_application_example`。它演示
 Rotate/Conjugate→Add→Multiply→Relinearize→Rescale→AddPlain 的完整 planner、
 relocation 和 runtime artifact 流程；详细说明见
-`doc/CKKS_COMPOSED_APPLICATION_EXAMPLE.md`。
+[CKKS 复合应用说明](../examples/CKKS_COMPOSED_APPLICATION_EXAMPLE.md)。
 
 BFV 顶层应用参考 `examples/bfv_multiply_modswitch_application.cpp`。它实现
 `ModSwitch(left*right)+3`，其中 bias 在目标 level 预制，并把同一 plan 降低为完整
 relocation/runtime。传入 `--emit-dir PATH` 可输出 `.asm/.inst32/.cmd26`、生成的
 `hpu_run_*()` C 包装、resolved DMA CSV 和 HPU_MEM uint32 镜像；完整说明见
-`doc/BFV_APPLICATION_EXAMPLE.md`。
+[BFV 应用说明](../examples/BFV_APPLICATION_EXAMPLE.md)。
 
 BFV rotation 应用参考 `examples/bfv_rotation_application.cpp`。它将
 `RotateRows(x,2)` 与 `RotateColumns(x)` 两个分支合并为一次 Add，展示预制
 GaloisKey、modified-root twiddle、key-domain workspace、完整编码与 relocation；
-调用说明见 `doc/BFV_ROTATION_APPLICATION_EXAMPLE.md`。
+调用说明见 [BFV rotation 应用说明](../examples/BFV_ROTATION_APPLICATION_EXAMPLE.md)。
 
 
 ## 通用应用交付接口
@@ -1033,4 +1033,4 @@ runtime、初始镜像、按算子顺序保存的 SEAL ciphertext oracle 和软�
 传入 `AllocationKind::workspace`。默认仍为 `output`。
 参数和请求中不包含 SecretKey。三种方案都要求 SEAL oracle 到 golden 的检查为
 `pass`，并要求对应软件执行器与 SEAL 的每一步 HPU 物理输出逐字一致。详见
-[HPU_APPLICATION_PACKAGE_V1.md](HPU_APPLICATION_PACKAGE_V1.md)。
+[HPU_APPLICATION_PACKAGE_V1.md](../delivery/HPU_APPLICATION_PACKAGE_V1.md)。

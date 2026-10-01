@@ -56,7 +56,7 @@ cmake --build build-seal -j --target hpu_bfv_delivery
 ./build-seal/hpu_validate_package outputs/bfv_multiply_modswitch_application
 ```
 
-接口及 Nexus AM 消费说明见 [HPU_APPLICATION_PACKAGE_V1.md](HPU_APPLICATION_PACKAGE_V1.md)。
+接口及 Nexus AM 消费说明见 [HPU_APPLICATION_PACKAGE_V1.md](../delivery/HPU_APPLICATION_PACKAGE_V1.md)。
 
 二进制镜像只写出 `used_lines()`，部署 backend 仍应按生成程序声明的 HPU_MEM capacity
 配置实际 window，并在上传镜像前初始化其余区域。
@@ -154,4 +154,4 @@ MultiplyPlain、ModSwitch、RotateRows 和 RotateColumns。使用旋转时，先
 尚未覆盖的算子，应同时补齐 image resource、
 planner metadata、codegen、relocation 和差分测试，而不是在顶层手写 DMA。
 
-完整的 rotation 分支示例见 `doc/BFV_ROTATION_APPLICATION_EXAMPLE.md`。
+完整的 rotation 分支示例见 [BFV_ROTATION_APPLICATION_EXAMPLE.md](BFV_ROTATION_APPLICATION_EXAMPLE.md)。

@@ -1,6 +1,6 @@
 # BFV Rotation 应用示例
 
-[`examples/bfv_rotation_application.cpp`](../examples/bfv_rotation_application.cpp) 演示一个保持
+[`examples/bfv_rotation_application.cpp`](../../examples/bfv_rotation_application.cpp) 演示一个保持
 同一 BFV level 的分支应用：
 
 ```text
@@ -31,7 +31,7 @@ cmake --build build-seal -j --target hpu_bfv_rotation_example
 `golden/`、参数/计算图与验证报告。行旋转、换列和相加的输出都与 SEAL 逐字比较；
 旋转的中间系数工作区通过 `AllocationKind::workspace` 标记。
 重复生成请执行 `cmake --build build-seal --target hpu_bfv_delivery`。
-格式与测试接口见 [HPU_APPLICATION_PACKAGE_V1.md](HPU_APPLICATION_PACKAGE_V1.md)。
+格式与测试接口见 [HPU_APPLICATION_PACKAGE_V1.md](../delivery/HPU_APPLICATION_PACKAGE_V1.md)。
 
 ## 应用调用顺序
 
