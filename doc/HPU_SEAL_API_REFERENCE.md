@@ -320,6 +320,178 @@ CkksValueMetadata infer_ckks_rescale_metadata(
   Rescale、跨层运算、scale 不匹配及乘法 scale 溢出都会在分配或执行前拒绝。
 - 这里只管理元数据，不自动插入 Rescale，也不改变算子的数学/表示域路径。
 
+#### 2.2.5 BGV 单次 ModSwitch 应用包
+
+`include/hpu/seal/bgv_modswitch_application.hpp`
+
+```cpp
+auto program = build_bgv_modswitch_application(context, ciphertext, capacity_lines);
+auto artifacts = render_bgv_modswitch_runtime_artifacts("bgv_modswitch", program);
+```
+
+- 要求 modified-SEAL 的 NTT 域 BGV 密文及直接下一层；全局模表按 `Qmax|P|t`
+  固定，降层后 `t` 的 MOD_ID 不变。输入经系数域桥转换为 canonical HPU NTT，
+  密文、twiddle、三个常量族、`c_last/u_t` 工作区及输出均装入 HPU_MEM。
+- `program.instructions` 包含可编码的完整单次操作流，`program.dma` 与
+  `program.spans()` 按 custom1 顺序给出 resolved 绑定；构建时逐条检查对象号、
+  load/store 类型、字数、只读属性和 span。渲染产生固定指令字、span 数组、
+  `hpu_run_<stem>()` 包装及 resolved DMA manifest。
+- `program.destination_parms_id` 与 `program.correction_factor` 是 host 元数据。
+  两级逐 limb 与 HPU 物理 NTT 差分已对齐 modified-SEAL；目前不支持 BGV
+  多算子组合计划，也未完成逐指令软件执行或实体 HPU 测试。
+
+#### 2.2.6 BGV 单次 KeySwitch / Relinearize 应用包
+
+`include/hpu/seal/bgv_keyswitch_application.hpp`
+
+```cpp
+auto program = build_bgv_keyswitch_application(
+    context, three_component_product, relin_keys, capacity_lines);
+auto artifacts = render_bgv_keyswitch_runtime_artifacts("bgv_relin", program);
+```
+
+- 要求 modified-SEAL 的三分量 NTT 域 BGV 乘积和同一 key context 的
+  `RelinKeys`。当前入口仅执行 Relinearize，不包含前置密文乘法或 Galois 自同构。
+- 全局 MOD_ID 固定为 `Qmax|P|t`；降层只缩短 active Q，P/t 不重编号。密文和
+  evaluation key 通过表示桥变换到 canonical HPU NTT，模表、双向 twiddle、
+  `-P^-1 mod t`、`P mod q_i`、`P^-1 mod q_i` 和全部工作区都在 HPU_MEM 中。
+- `program.dma`/`program.spans()` 与编码 custom1 逐条对应；渲染产物含固定
+  指令字、resolved span 数组、`hpu_run_<stem>()` 入口和 DMA manifest。
+  `parms_id` 与 `correction_factor` 保持原产品的 host 元数据，不经 PE 更新。
+- 顶层和降一级的镜像内容已在 HPU 物理 NTT 数学模型中与 modified-SEAL
+  Relinearize 逐 limb 对齐；尚无逐指令软件执行或实体 HPU 运行证据。
+- `estimate_bgv_keyswitch_image_lines(N, active_q, key_modulus_count)` 给出当前
+  all-resident 布局的精确容量，并在构建前检查 `capacity_lines`。例如
+  `N=65536,Q=3,P=1` 需 136193 个 256B line，超过旧的 65536-line 软件 profile；
+  若平台允许更大的 HPU_MEM window，可直接按估计值或以上配置，而无需为这一步
+  引入分段调度。目标 `N=65536,Q=3,P=1` 的真实镜像已按 136193 line 构建，
+  475 个 DMA 绑定和 runtime manifest 均通过软件检查；这不替代实体 DMA/window 验证。
+
+#### 2.2.7 BGV 连续 Multiply+Relinearize 应用包
+
+`include/hpu/seal/bgv_keyswitch_application.hpp`
+
+```cpp
+const auto lines = estimate_bgv_multiply_relinearize_image_lines(
+    degree, active_q_count, key_modulus_count);
+auto program = build_bgv_multiply_relinearize_application(
+    context, left, right, relin_keys, lines);
+auto artifacts = render_bgv_keyswitch_runtime_artifacts("bgv_multiply_relin", program);
+```
+
+- 输入为同 level 的两个二分量 modified-SEAL BGV NTT 密文；构建器将输入与
+  evaluation key 准备为 canonical HPU NTT。三分量乘积在镜像里只预留可写
+  span，不由 CPU 或 SEAL 预计算。`CMULT` 写入这些 span，KeySwitch 随即读取；
+  中间无 `psync`、host copy 或 window 切换。
+- 完整流只有一次模表加载与末尾 `psync`。`parms_id` 保持原 level，
+  `correction_factor` 在 host 更新为两输入因子的乘积模 `t`。
+- `N=65536,Q=3,P=1` 的实际镜像占 148481 个 256B line，包含 508 个
+  resolved DMA 绑定。顶层及降一级 tensor 与 modified-SEAL 差分一致，
+  KeySwitch 后缀与独立运行包逐条一致；尚无实体 HPU 执行证据。
+
+#### 2.2.8 BGV 单次密文和明文算术应用包
+
+`include/hpu/seal/bgv_arithmetic_application.hpp`
+
+```cpp
+auto add = build_bgv_add_application(context, left, right, capacity_lines);
+auto sub = build_bgv_subtract_application(context, left, right, capacity_lines);
+auto neg = build_bgv_negate_application(context, left, capacity_lines);
+auto add_plain = build_bgv_add_plain_application(context, left, plain, capacity_lines);
+auto sub_plain = build_bgv_subtract_plain_application(context, left, plain, capacity_lines);
+auto mul_plain = build_bgv_multiply_plain_application(context, left, plain, capacity_lines);
+auto artifacts = render_bgv_arithmetic_runtime_artifacts("bgv_add", add);
+```
+
+- 输入为同 level 的二分量 BGV NTT 密文。不同 `correction_factor` 的
+  Add/Sub 按 modified-SEAL 的平衡规则准备标量 splat，HPU 以 `PMUL`
+  缩放各 limb 后执行 `PADD/PSUB`；host 只保留输出 factor 元数据。
+- 每个包含固定 `Qmax|P|t` 模表、canonical HPU NTT 输入、输出和逐条
+  resolved DMA；不执行 CPU 密文加减或缩放。Negate 保持 factor 不变。
+- 已对顶层、降一级和不同 factor 组合做 modified-SEAL 逐 limb 差分；
+  尚无逐指令软件执行或实体 HPU 验证。
+- 明文输入须为有效的系数域 BGV `Plaintext`。构建镜像时将其预制为
+  canonical HPU NTT；AddPlain/SubPlain 先按密文 factor 模 `t` 缩放明文，
+  然后由 HPU 只更新 `c0` 并复制 `c1`。MultiplyPlain 对两个密文分量
+  做 `PMUL`，factor 保持不变。顶层及降一级已与 modified-SEAL 差分。
+
+#### 2.2.9 BGV 单次行旋转与列交换应用包
+
+`include/hpu/seal/bgv_keyswitch_application.hpp`
+
+```cpp
+auto rows = build_bgv_rotate_rows_application(context, ciphertext, galois_keys,
+                                              steps, capacity_lines);
+auto columns = build_bgv_rotate_columns_application(context, ciphertext,
+                                                    galois_keys, capacity_lines);
+auto lines = estimate_bgv_rotation_image_lines(degree, active_q_count,
+                                               key_modulus_count);
+auto artifacts = render_bgv_keyswitch_runtime_artifacts("bgv_rows", rows);
+```
+
+- 要求 batching、二分量 BGV NTT 密文及对应的 Galois key。行旋转使用
+  非零有符号步长，列交换对应 `X -> X^(2N-1)`。当前单次包只执行一个
+  Galois 元素；不自动合成缺失密钥的多步旋转。
+- HPU 以改根 INTT 实现自同构、canonical NTT 返回密文表示，再在同一
+  指令流中执行 BGV Galois KeySwitch；不通过 CPU 计算旋转后密文。
+  `parms_id` 与 `correction_factor` 保持不变，只有末尾一次 `psync`。
+- 正/负行步长及列交换在顶层和降一级与 modified-SEAL 逐 limb 差分；
+  `N=65536,Q=3,P=1` 估算需 169985 个 256B line。尚无逐指令软件
+  执行或实体 HPU 验证。
+
+#### 2.2.10 BGV 跨 level 线性操作计划
+
+`include/hpu/seal/bgv_linear_operation_plan.hpp`
+
+```cpp
+BgvLinearOperationPlan plan(context, encrypted);
+plan.append_add("mix_ciphertext", another_ciphertext);
+plan.append_add_plain("add_bias", bias);
+plan.append_multiply_plain("multiply_polynomial", multiplier);
+plan.append_subtract("subtract_ciphertext", another_ciphertext);
+plan.append_multiply("multiply_ciphertext", another_ciphertext, relin_keys);
+plan.append_rotate_rows("rotate_left_1", 1, galois_keys);
+plan.append_modswitch_to_next("drop_level");
+plan.append_rotate_columns("swap_rows", galois_keys);
+plan.append_subtract_plain("subtract_offset", offset);
+auto package = plan.lower(capacity_lines);
+auto runtime = render_bgv_keyswitch_runtime_artifacts("bgv_plain_chain", package);
+```
+
+- `BgvLinearOperationPlan` 是原 `BgvPlainOperationPlan` 的语义化别名。
+  计划接受二分量 BGV NTT 密文，并支持预制明文 Add/Sub/Multiply、
+  密文 Add/Sub、`append_multiply`（含重线性化）、行旋转、列交换及显式
+  `append_modswitch_to_next`。
+  追加密文操作时，右操作数必须处于计划当前 level。
+- 密文 Add/Sub 遇到不同 `correction_factor` 时逐步求平衡标量，
+  由 HPU `PMUL` 缩放并 `PADD/PSUB`。输出 factor 会更新；其后的
+  AddPlain/SubPlain 按更新后的 factor 模 `t` 预制明文。MultiplyPlain
+  不改变 factor。
+- 降低后只有一次模表加载和末尾一次 `psync`；每步的输出 HPU_MEM span
+  是下一步的输入 DMA span，没有 CPU 中间密文计算或复制。
+- 旋转重定位已验证的单次 Galois 包：改根 twiddle、Galois key、KeySwitch
+  工作区分别归属该步骤，输入绑定前一步输出；旋转保持 level 与 factor。
+  多个旋转步骤在同一镜像中有独立资源命名。
+- ModSwitch 重定位单次 NTT 包，输出少一个 Q limb，随后按新 level
+  预制明文及旋转资源；`parms_id` 和 `correction_factor` 与 modified-SEAL
+  同步推进。模表仍只加载一次，所有步骤共用一个 HPU_MEM 与末尾同步。
+- 密文乘法重定位单次 `CMULT -> KeySwitch` 包：左输入绑定前一步输出，
+  右输入与 relinearization key 预制在镜像中，三分量 tensor 保持为 HPU
+  生成并由后续 KeySwitch 读取的可变 span。乘法后的 factor 按模 `t`
+  更新，可接 ModSwitch、明文操作或下一次乘法。未引入 CPU 中间密文计算。
+- `examples/bgv_plain_chain_application.cpp` 展示
+  `((x + 3) * (2x + 1)) - 5`。运行
+  `./build-seal/hpu_bgv_plain_chain_example`；加 `--print-dma` 可查看
+  resolved DMA manifest。示例逐步与 modified-SEAL 差分；降一级的
+  非平凡 factor、密文 Add/Sub 与后继 AddPlain 的组合另有测试。
+  `./build-seal/hpu_bgv_rotate_chain_example` 演示
+  `RotateRows(x + 3, 1) + 5`；计划测试还覆盖连续行旋转与列交换。
+  `./build-seal/hpu_bgv_multiply_chain_example` 演示
+  `ModSwitch((x + 5) * multiplier) + 7`，可用 `--print-dma` 查看重定位后的 span。
+  计划测试另覆盖两次连续跨 level ModSwitch，以及两次密文乘法、
+  中间 ModSwitch 与后继明文操作；尚未经过逐指令
+  软件执行或实体 HPU 验证。
+
 ### 2.3 NTT 表示桥：仿 SEAL NTT 表示转换
 
 `include/hpu/seal/ntt_bridge.hpp`

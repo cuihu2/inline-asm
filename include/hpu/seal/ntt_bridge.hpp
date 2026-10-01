@@ -38,7 +38,7 @@ HpuRnsPolynomial bfv_multiply_plaintext_to_hpu(
     ::seal::parms_id_type parms_id,
     const ::seal::SEALContext& context);
 
-// Converts one CKKS ciphertext component from SEAL's NTT representation to the
+// Converts one CKKS/BGV ciphertext component from SEAL's NTT representation to the
 // HPU canonical physical NTT representation. Conversion intentionally goes via
 // coefficients so it is correct even when the two NTT orders differ.
 HpuRnsPolynomial ciphertext_component_to_hpu(

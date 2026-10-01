@@ -111,6 +111,8 @@ add_library(hpu_fhe_codegen STATIC
         src/scheme/ckks/relinearize.cpp
         src/scheme/ckks/rotate.cpp
         src/scheme/bgv/ciphertext_multiply.cpp
+        src/scheme/bgv/keyswitch.cpp
+        src/scheme/bgv/basic_arithmetic.cpp
         src/scheme/bgv/modswitch.cpp
         src/scheme/bfv/basic_arithmetic.cpp
         src/scheme/bfv/ciphertext_multiply.cpp
@@ -150,6 +152,38 @@ if(BUILD_TESTING)
             hpu_runtime_core
     )
     add_test(NAME hpu_runtime_application_test COMMAND hpu_runtime_application_test)
+
+    add_executable(hpu_runtime_software_executor_test
+            test/runtime_software_executor_test.cpp
+    )
+    target_link_libraries(hpu_runtime_software_executor_test
+            PRIVATE
+            hpu_runtime_core
+    )
+    add_test(NAME hpu_runtime_software_executor_test
+            COMMAND hpu_runtime_software_executor_test)
+
+    add_executable(hpu_bgv_modswitch_ntt_codegen_test
+            test/bgv_modswitch_ntt_codegen_test.cpp
+    )
+    target_link_libraries(hpu_bgv_modswitch_ntt_codegen_test
+            PRIVATE
+            hpu_fhe_codegen
+            hpu_encode
+    )
+    add_test(NAME hpu_bgv_modswitch_ntt_codegen_test
+            COMMAND hpu_bgv_modswitch_ntt_codegen_test)
+
+    add_executable(hpu_bgv_keyswitch_ntt_codegen_test
+            test/bgv_keyswitch_ntt_codegen_test.cpp
+    )
+    target_link_libraries(hpu_bgv_keyswitch_ntt_codegen_test
+            PRIVATE
+            hpu_fhe_codegen
+            hpu_encode
+    )
+    add_test(NAME hpu_bgv_keyswitch_ntt_codegen_test
+            COMMAND hpu_bgv_keyswitch_ntt_codegen_test)
 
     add_executable(hpu_ckks_application_codegen_test
             test/ckks_application_codegen_test.cpp
@@ -331,6 +365,10 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
     )
 
     add_library(hpu_seal_ckks_codegen STATIC
+            src/hpu/seal/bgv_arithmetic_application.cpp
+            src/hpu/seal/bgv_plain_operation_plan.cpp
+            src/hpu/seal/bgv_keyswitch_application.cpp
+            src/hpu/seal/bgv_modswitch_application.cpp
             src/hpu/seal/bfv_operation_codegen.cpp
             src/hpu/seal/bfv_operation_plan.cpp
             src/hpu/seal/bfv_operation_relocation.cpp
@@ -383,6 +421,30 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
             VERBATIM
     )
 
+    add_executable(hpu_bgv_plain_chain_example
+            examples/bgv_plain_chain_application.cpp
+    )
+    target_link_libraries(hpu_bgv_plain_chain_example
+            PRIVATE
+            hpu_seal_ckks_codegen
+    )
+
+    add_executable(hpu_bgv_rotate_chain_example
+            examples/bgv_rotate_chain_application.cpp
+    )
+    target_link_libraries(hpu_bgv_rotate_chain_example
+            PRIVATE
+            hpu_seal_ckks_codegen
+    )
+
+    add_executable(hpu_bgv_multiply_chain_example
+            examples/bgv_multiply_chain_application.cpp
+    )
+    target_link_libraries(hpu_bgv_multiply_chain_example
+            PRIVATE
+            hpu_seal_ckks_codegen
+    )
+
     add_executable(hpu_bfv_multiply_modswitch_example
             examples/bfv_multiply_modswitch_application.cpp
     )
@@ -402,6 +464,99 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
     )
 
     if(BUILD_TESTING)
+        add_test(NAME hpu_bgv_plain_chain_example
+                COMMAND hpu_bgv_plain_chain_example)
+        add_test(NAME hpu_bgv_rotate_chain_example
+                COMMAND hpu_bgv_rotate_chain_example)
+        add_test(NAME hpu_bgv_multiply_chain_example
+                COMMAND hpu_bgv_multiply_chain_example)
+
+        add_executable(hpu_seal_bgv_plain_operation_plan_test
+                test/seal_bgv_plain_operation_plan_test.cpp
+        )
+        target_link_libraries(hpu_seal_bgv_plain_operation_plan_test
+                PRIVATE
+                hpu_seal_ckks_codegen
+        )
+        add_test(NAME hpu_seal_bgv_plain_operation_plan_test
+                COMMAND hpu_seal_bgv_plain_operation_plan_test)
+
+        add_executable(hpu_seal_bgv_rotation_application_test
+                test/seal_bgv_rotation_application_test.cpp
+        )
+        target_link_libraries(hpu_seal_bgv_rotation_application_test
+                PRIVATE
+                hpu_seal_ckks_codegen
+        )
+        add_test(NAME hpu_seal_bgv_rotation_application_test
+                COMMAND hpu_seal_bgv_rotation_application_test)
+
+        add_executable(hpu_seal_bgv_arithmetic_application_test
+                test/seal_bgv_arithmetic_application_test.cpp
+        )
+        target_link_libraries(hpu_seal_bgv_arithmetic_application_test
+                PRIVATE
+                hpu_seal_ckks_codegen
+        )
+        add_test(NAME hpu_seal_bgv_arithmetic_application_test
+                COMMAND hpu_seal_bgv_arithmetic_application_test)
+
+        add_executable(hpu_seal_bgv_multiply_relinearize_application_test
+                test/seal_bgv_multiply_relinearize_application_test.cpp
+        )
+        target_link_libraries(hpu_seal_bgv_multiply_relinearize_application_test
+                PRIVATE
+                hpu_seal_ckks_codegen
+        )
+        add_test(NAME hpu_seal_bgv_multiply_relinearize_application_test
+                COMMAND hpu_seal_bgv_multiply_relinearize_application_test)
+        add_test(NAME hpu_seal_bgv_multiply_relinearize_target_capacity_test
+                COMMAND hpu_seal_bgv_multiply_relinearize_application_test --target-degree)
+
+        add_executable(hpu_seal_bgv_keyswitch_application_test
+                test/seal_bgv_keyswitch_application_test.cpp
+        )
+        target_link_libraries(hpu_seal_bgv_keyswitch_application_test
+                PRIVATE
+                hpu_seal_ckks_codegen
+        )
+        add_test(NAME hpu_seal_bgv_keyswitch_application_test
+                COMMAND hpu_seal_bgv_keyswitch_application_test)
+        add_test(NAME hpu_seal_bgv_keyswitch_target_capacity_test
+                COMMAND hpu_seal_bgv_keyswitch_application_test --target-degree)
+
+        add_executable(hpu_seal_bgv_modswitch_application_test
+                test/seal_bgv_modswitch_application_test.cpp
+        )
+        target_link_libraries(hpu_seal_bgv_modswitch_application_test
+                PRIVATE
+                hpu_seal_ckks_codegen
+        )
+        add_test(NAME hpu_seal_bgv_modswitch_application_test
+                COMMAND hpu_seal_bgv_modswitch_application_test)
+
+        add_executable(hpu_seal_bgv_modswitch_ntt_test
+                test/seal_bgv_modswitch_ntt_test.cpp
+        )
+        target_link_libraries(hpu_seal_bgv_modswitch_ntt_test
+                PRIVATE
+                hpu_fhe_codegen
+                hpu_hardware_model
+                SEAL::seal
+        )
+        add_test(NAME hpu_seal_bgv_modswitch_ntt_test
+                COMMAND hpu_seal_bgv_modswitch_ntt_test)
+
+        add_executable(hpu_seal_bgv_keyswitch_ntt_test
+                test/seal_bgv_keyswitch_ntt_test.cpp
+        )
+        target_link_libraries(hpu_seal_bgv_keyswitch_ntt_test
+                PRIVATE
+                SEAL::seal
+        )
+        add_test(NAME hpu_seal_bgv_keyswitch_ntt_test
+                COMMAND hpu_seal_bgv_keyswitch_ntt_test)
+
         add_test(
                 NAME hpu_ckks_composed_application_example
                 COMMAND hpu_ckks_composed_application_example)

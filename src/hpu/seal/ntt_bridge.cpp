@@ -185,7 +185,7 @@ HpuRnsPolynomial ciphertext_component_to_hpu(
     const ::seal::SEALContext& context)
 {
     if (!ciphertext.is_ntt_form()) {
-        throw std::invalid_argument("CKKS ciphertext must be in SEAL NTT form");
+        throw std::invalid_argument("ciphertext must be in SEAL NTT form");
     }
     if (component >= ciphertext.size()) {
         throw std::out_of_range("ciphertext component is out of range");

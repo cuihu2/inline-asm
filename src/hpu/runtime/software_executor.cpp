@@ -116,7 +116,8 @@ void HpuSoftwareExecutor::pointwise(
     const auto right_words = read(right, word_count);
     std::vector<std::uint32_t> output(word_count);
     for (std::size_t index = 0; index < word_count; ++index) {
-        if (left_words[index] >= q || right_words[index] >= q) {
+        if (operation != PointwiseOperation::multiply
+            && (left_words[index] >= q || right_words[index] >= q)) {
             throw std::invalid_argument("HPU pointwise operand is not reduced modulo q");
         }
         switch (operation) {
@@ -155,10 +156,9 @@ void HpuSoftwareExecutor::multiply_accumulate(
     const auto left_words = read(left, word_count);
     const auto right_words = read(right, word_count);
     for (std::size_t index = 0; index < word_count; ++index) {
-        if (accumulator_words[index] >= q || left_words[index] >= q
-            || right_words[index] >= q) {
+        if (accumulator_words[index] >= q) {
             throw std::invalid_argument(
-                "HPU multiply-accumulate operand is not reduced modulo q");
+                "HPU multiply-accumulate accumulator is not reduced modulo q");
         }
         const std::uint32_t product = static_cast<std::uint32_t>(
             (static_cast<std::uint64_t>(left_words[index])
