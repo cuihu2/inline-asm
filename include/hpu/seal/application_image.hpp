@@ -145,6 +145,8 @@ public:
     add_conjugation_twiddles(
         std::string id,
         const CkksLevelDescriptor& level);
+    // Use kind=workspace for internal scratch that is not a semantic output.
+    // Output allocations require goldens when writing an application package.
     PreparedRnsObject reserve_ciphertext(
         std::string id,
         const CkksLevelDescriptor& level,
@@ -152,14 +154,16 @@ public:
         double scale,
         hpu::runtime::PolynomialDomain domain =
             hpu::runtime::PolynomialDomain::canonical_ntt_physical,
-        std::uint64_t key_domain = 1);
+        std::uint64_t key_domain = 1,
+        hpu::runtime::AllocationKind kind = hpu::runtime::AllocationKind::output);
     PreparedRnsObject reserve_ciphertext(
         std::string id,
         const CkksValueMetadata& metadata,
         std::size_t component_count,
         hpu::runtime::PolynomialDomain domain =
             hpu::runtime::PolynomialDomain::canonical_ntt_physical,
-        std::uint64_t key_domain = 1);
+        std::uint64_t key_domain = 1,
+        hpu::runtime::AllocationKind kind = hpu::runtime::AllocationKind::output);
 
     const hpu::runtime::HpuMemImage& image() const noexcept;
     const CkksLevelChain& level_chain() const noexcept;

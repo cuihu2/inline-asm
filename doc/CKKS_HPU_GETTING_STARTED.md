@@ -236,17 +236,23 @@ outputs/ckks_composed_application/
   --emit-dir outputs/ckks_composed_application
 ```
 
-每个目录包含：
+每个目录采用与 BFV、BGV 相同的 application package v1 格式：
 
-- `<stem>.c/.h`：包含 fixed-span `hpu_run_<stem>()` 的 Nexus AM C 接口；
-- `<stem>.asm/.inst32/.cmd26`：汇编、32-bit 指令和 26-bit command payload；
-- `dma_relocation_manifest.csv`：每条 DMA 指令对应的 HPU_MEM allocation 和 span；
-- `test_data/hardware/hpu_mem_image.u32.bin`：执行前加载的完整 little-endian
-  uint32 HPU_MEM image；
-- `test_data/hardware/line_map.csv` 和 `hpu_mem_config.json`：allocation、line offset、
-  line count、容量和 ABI；
-- `test_data/hardware/images/expected_output_*.u32.bin`：软件执行器生成的各个
-  `dstore` 目标 golden，映射记录在 `expected_outputs.csv`。
+- `package.json`：方案、版本及各文件的路径入口；
+- `program/<stem>.c/.h/.asm/.inst32/.cmd26`：固定 span C 接口及指令流；
+- `program/dma_relocation_manifest.csv`：每条 DMA 与 allocation/span 的映射；
+- `memory/hpu_mem_image.u32.bin`：执行前加载的 little-endian uint32 镜像；
+- `memory/line_map.csv`、`memory/memory_manifest.csv`、`memory/abi.json`、
+  `memory/hpu_mem_config.json`：分配、容量及行地址 ABI；
+- `golden/golden_manifest.csv` 和 `golden/objects/`：每个算子输出的逐 limb golden，
+  已与 SEAL oracle、软件执行器逐字核对；scratch workspace 不作为语义输出；
+- `metadata/`、`oracle/report.json`、`semantic/decoded.json`、`provenance/`：
+  参数、计算图、验证证据、解码数据及文件校验和。
+
+`--emit-dir` 要求目标目录不存在；重复生成同一目录请使用 `hpu_ckks_delivery` 构建目标。
+校验命令为 `./build/hpu_validate_package outputs/ckks_composed_application`。
+旧版扁平目录需先移走再生成。完整规范与 IT 样例接口见
+[HPU_APPLICATION_PACKAGE_V1.md](HPU_APPLICATION_PACKAGE_V1.md)。
 
 示例每次运行都会重新生成 SEAL key 和加密随机数，因此不同运行的二进制不保证
 逐字相同；同一次导出的程序、初始 image、DMA manifest 和 expected output 是一套

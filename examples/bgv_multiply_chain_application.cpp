@@ -1,3 +1,5 @@
+#include "hpu/seal/application_delivery.hpp"
+#include "delivery_options.hpp"
 #include "hpu/seal/bgv_linear_operation_plan.hpp"
 
 #include <seal/seal.h>
@@ -9,11 +11,7 @@
 int main(int argc, char** argv)
 {
     try {
-        const bool print_dma = argc == 2 && std::string(argv[1]) == "--print-dma";
-        if (argc > 2 || (argc == 2 && !print_dma)) {
-            throw std::invalid_argument(
-                "usage: hpu_bgv_multiply_chain_example [--print-dma]");
-        }
+        const auto options = parse_delivery_options(argc, argv, "--print-dma");
         seal::EncryptionParameters parameters(seal::scheme_type::bgv);
         parameters.set_poly_modulus_degree(128);
         parameters.set_coeff_modulus({
@@ -48,11 +46,16 @@ int main(int argc, char** argv)
         // SEAL is an independent metadata oracle, not the execution path.
         seal::Evaluator evaluator(context);
         seal::Ciphertext oracle = input;
+        std::vector<seal::Ciphertext> expected_after_step;
         evaluator.add_plain_inplace(oracle, seal::Plaintext("5"));
+        expected_after_step.push_back(oracle);
         evaluator.multiply_inplace(oracle, multiplier);
         evaluator.relinearize_inplace(oracle, relin_keys);
+        expected_after_step.push_back(oracle);
         evaluator.mod_switch_to_next_inplace(oracle);
+        expected_after_step.push_back(oracle);
         evaluator.add_plain_inplace(oracle, seal::Plaintext("7"));
+        expected_after_step.push_back(oracle);
         if (package.parms_id != oracle.parms_id() ||
             package.correction_factor != oracle.correction_factor() ||
             package.spans().size() != package.dma.size() ||
@@ -66,7 +69,19 @@ int main(int argc, char** argv)
                   << package.instructions.size() << " encoded instructions, "
                   << package.dma.size() << " resolved DMA bindings, "
                   << package.image.used_lines() << " HPU_MEM lines\n";
-        if (print_dma) std::cout << runtime.resolved_dma_manifest;
+        if (options.print_program) std::cout << runtime.resolved_dma_manifest;
+        if (options.emit_directory) {
+            auto request = hpu::seal_adapter::make_bgv_application_package(
+                "bgv_multiply_chain", context, plan, package, expected_after_step);
+            seal::Decryptor decryptor(context, generator.secret_key());
+            seal::Plaintext decrypted;
+            decryptor.decrypt(expected_after_step.back(), decrypted);
+            std::vector<std::uint64_t> decoded;
+            seal::BatchEncoder(context).decode(decrypted, decoded);
+            request.semantic_report = hpu::seal_adapter::integer_delivery_semantics(decoded);
+            hpu::delivery::write_application_package(*options.emit_directory, request);
+            std::cout << "Artifacts emitted under: " << *options.emit_directory << '\n';
+        }
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "BGV multiplication-chain example failed: "

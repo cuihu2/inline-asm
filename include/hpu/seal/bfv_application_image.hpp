@@ -97,10 +97,13 @@ public:
     PreparedBfvModSwitchConstants add_mod_switch_constants(std::string id,
                                                            const BfvLevelDescriptor& source_level,
                                                            std::size_t component_capacity = 2);
+    // Use kind=workspace for internal scratch; output allocations require
+    // goldens when writing an application package.
     PreparedBfvRnsObject reserve_ciphertext(
         std::string id, const BfvLevelDescriptor& level, std::size_t component_count = 2,
         hpu::runtime::PolynomialDomain domain = hpu::runtime::PolynomialDomain::coefficient,
-        std::uint64_t key_domain = 1);
+        std::uint64_t key_domain = 1,
+        hpu::runtime::AllocationKind kind = hpu::runtime::AllocationKind::output);
 
     const hpu::runtime::HpuMemImage& image() const noexcept;
     const BfvLevelChain& level_chain() const noexcept;

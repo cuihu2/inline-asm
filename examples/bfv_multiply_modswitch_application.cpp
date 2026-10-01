@@ -1,3 +1,4 @@
+#include "hpu/seal/application_delivery.hpp"
 #include "hpu/seal/bfv_application_image.hpp"
 #include "hpu/seal/bfv_context.hpp"
 #include "hpu/seal/bfv_operation_codegen.hpp"
@@ -9,11 +10,9 @@
 #include <seal/seal.h>
 
 #include <algorithm>
-#include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
@@ -51,48 +50,6 @@ Options parse_options(int argc, char** argv)
         }
     }
     return options;
-}
-
-void write_text(const std::filesystem::path& path, const std::string& contents)
-{
-    std::ofstream output(path);
-    if (!output || !(output << contents)) {
-        throw std::runtime_error("failed to write " + path.string());
-    }
-}
-
-void emit_artifacts(const std::filesystem::path& directory,
-                    const hpu::seal_adapter::BfvLoweredProgram& lowered,
-                    const hpu::seal_adapter::BfvRuntimeProgram& runtime,
-                    const hpu::seal_adapter::BfvRuntimeArtifacts& artifacts,
-                    const hpu::runtime::HpuMemImage& image)
-{
-    std::filesystem::create_directories(directory);
-    const std::filesystem::path prefix = directory / kArtifactStem;
-    write_text(prefix.string() + ".asm", lowered.body_asm);
-
-    std::string inst32;
-    std::string command26;
-    inst32.reserve(runtime.instructions.size() * 33);
-    command26.reserve(runtime.instructions.size() * 27);
-    for (const auto& instruction : runtime.instructions) {
-        inst32 += std::bitset<32>(instruction.word).to_string() + '\n';
-        command26 += std::bitset<26>(instruction.command26).to_string() + '\n';
-    }
-    write_text(prefix.string() + ".inst32", inst32);
-    write_text(prefix.string() + ".cmd26", command26);
-    write_text(prefix.string() + ".h", artifacts.header);
-    write_text(prefix.string() + ".c", artifacts.source);
-    write_text(prefix.string() + ".resolved_dma.csv", artifacts.resolved_dma_manifest);
-
-    const auto image_path = prefix.string() + ".hpu_mem.u32.bin";
-    std::ofstream image_output(image_path, std::ios::binary);
-    const auto& words = image.words();
-    image_output.write(reinterpret_cast<const char*>(words.data()),
-                       static_cast<std::streamsize>(words.size() * sizeof(std::uint32_t)));
-    if (!image_output) {
-        throw std::runtime_error("failed to write " + image_path);
-    }
 }
 
 ::seal::Ciphertext import_hpu_ciphertext(const hpu::seal_adapter::PreparedBfvRnsObject& object,
@@ -164,7 +121,9 @@ int main(int argc, char** argv)
         ::seal::Ciphertext oracle;
         evaluator.multiply(encrypted_left, encrypted_right, oracle);
         evaluator.relinearize_inplace(oracle, relinearization_keys);
+        const auto oracle_product = oracle;
         evaluator.mod_switch_to_next_inplace(oracle);
+        const auto oracle_switched = oracle;
         evaluator.add_plain_inplace(oracle, bias_plaintext);
         ::seal::Decryptor decryptor(*bundle.context, key_generator.secret_key());
         ::seal::Plaintext decrypted;
@@ -252,8 +211,12 @@ int main(int argc, char** argv)
                 "BFV example runtime artifacts are incomplete");
 
         if (options.emit_directory) {
-            emit_artifacts(*options.emit_directory, lowered, runtime, artifacts,
-                           image_builder.image());
+            auto request = hpu::seal_adapter::make_bfv_application_package(
+                kArtifactStem, *bundle.context, lowered, runtime, artifacts,
+                image_builder.image(), {oracle_product, oracle_switched, oracle},
+                software_executor.memory().words());
+            request.semantic_report = hpu::seal_adapter::integer_delivery_semantics(decoded);
+            hpu::delivery::write_application_package(*options.emit_directory, request);
         }
 
         std::cout << "y=ModSwitch(left*right)+3\n"

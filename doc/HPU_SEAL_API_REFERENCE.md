@@ -1000,3 +1000,20 @@ BFV rotation 应用参考 `examples/bfv_rotation_application.cpp`。它将
 `RotateRows(x,2)` 与 `RotateColumns(x)` 两个分支合并为一次 Add，展示预制
 GaloisKey、modified-root twiddle、key-domain workspace、完整编码与 relocation；
 调用说明见 `doc/BFV_ROTATION_APPLICATION_EXAMPLE.md`。
+
+
+## 通用应用交付接口
+
+`#include "hpu/seal/application_delivery.hpp"`，链接 `hpu_seal_delivery`。
+`make_ckks_application_package`、`make_bfv_application_package` 接收 plan lowering、
+runtime、初始镜像、按算子顺序保存的 SEAL ciphertext oracle 和软件执行后的镜像。
+`make_bgv_application_package` 接收线性 plan、lower 后的 application 和 oracle 快照。
+它们返回同一种 `hpu::delivery::ApplicationPackageRequest`，由
+`write_application_package(directory, request)` 写出，再用
+`validate_application_package_on_disk(directory)` 独立校验。
+
+每个应用输出必须有 golden；显式预留的临时对象应在 `reserve_ciphertext` 最后一个参数中
+传入 `AllocationKind::workspace`。默认仍为 `output`。
+参数和请求中不包含 SecretKey。BGV 包的 `model_verified=false`，golden 来自独立
+SEAL oracle；CKKS/BFV 包还要求与软件执行器逐字一致。详见
+[HPU_APPLICATION_PACKAGE_V1.md](HPU_APPLICATION_PACKAGE_V1.md)。

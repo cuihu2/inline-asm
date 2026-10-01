@@ -1,5 +1,5 @@
 #include "hpu/seal/application_image.hpp"
-#include "hpu/seal/ckks_delivery.hpp"
+#include "hpu/seal/application_delivery.hpp"
 #include "hpu/seal/ckks_context.hpp"
 #include "hpu/seal/operation_codegen.hpp"
 #include "hpu/seal/operation_plan.hpp"
@@ -99,8 +99,11 @@ int main(int argc, char** argv)
         ::seal::Evaluator evaluator(*bundle.context);
         ::seal::Ciphertext host_result;
         evaluator.square(encrypted_input, host_result);
+        const auto oracle_square = host_result;
         evaluator.relinearize_inplace(host_result, relin_keys);
+        const auto oracle_relinearized = host_result;
         evaluator.rescale_to_next_inplace(host_result);
+        const auto oracle_rescaled = host_result;
         if (host_result.parms_id() != after_rescale.parms_id) {
             throw std::logic_error("SEAL rescale did not reach the expected Q3 level");
         }
@@ -238,11 +241,14 @@ int main(int argc, char** argv)
                 kArtifactStem, runtime_program,
                 image_builder.image().capacity_lines());
         if (options.emit_directory) {
-            const auto& expected_words = software_executor.memory().words();
-            hpu::seal_adapter::write_ckks_delivery_package(
-                *options.emit_directory, kArtifactStem, lowered,
-                runtime_program, artifacts, image_builder.image(),
-                &expected_words);
+            auto request = hpu::seal_adapter::make_ckks_application_package(
+                kArtifactStem, *bundle.context, lowered, runtime_program, artifacts,
+                image_builder.image(),
+                {oracle_square, oracle_relinearized, oracle_rescaled, host_result},
+                software_executor.memory().words());
+            request.semantic_report = hpu::seal_adapter::ckks_delivery_semantics(
+                decoded, input.size(), maximum_error, 5e-3);
+            hpu::delivery::write_application_package(*options.emit_directory, request);
         }
 
         const double predicted_scale = rescaled.scale;

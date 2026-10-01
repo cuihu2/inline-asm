@@ -1,3 +1,5 @@
+#include "hpu/seal/application_delivery.hpp"
+#include "delivery_options.hpp"
 #include "hpu/seal/bgv_plain_operation_plan.hpp"
 #include "hpu/seal/ntt_bridge.hpp"
 
@@ -58,12 +60,7 @@ std::vector<std::uint32_t> apply(
 int main(int argc, char** argv)
 {
     try {
-        const bool print_manifest = argc == 2 &&
-            std::string(argv[1]) == "--print-dma";
-        if (argc > 2 || (argc == 2 && !print_manifest)) {
-            throw std::invalid_argument(
-                "usage: hpu_bgv_plain_chain_example [--print-dma]");
-        }
+        const auto options = parse_delivery_options(argc, argv, "--print-dma");
         // Small parameters make the example quick; the API also accepts
         // N=65536 when the HPU_MEM window has enough lines.
         seal::EncryptionParameters parameters(seal::scheme_type::bgv);
@@ -173,7 +170,19 @@ int main(int argc, char** argv)
                   << " steps, " << package.instructions.size() << " encoded instructions, "
                   << package.dma.size() << " resolved DMA bindings, "
                   << package.image.used_lines() << " HPU_MEM lines\n";
-        if (print_manifest) std::cout << runtime.resolved_dma_manifest;
+        if (options.print_program) std::cout << runtime.resolved_dma_manifest;
+        if (options.emit_directory) {
+            auto request = hpu::seal_adapter::make_bgv_application_package(
+                "bgv_plain_chain", context, plan, package, expected_after_step);
+            seal::Decryptor decryptor(context, generator.secret_key());
+            seal::Plaintext decrypted;
+            decryptor.decrypt(expected_after_step.back(), decrypted);
+            std::vector<std::uint64_t> decoded;
+            seal::BatchEncoder(context).decode(decrypted, decoded);
+            request.semantic_report = hpu::seal_adapter::integer_delivery_semantics(decoded);
+            hpu::delivery::write_application_package(*options.emit_directory, request);
+            std::cout << "Artifacts emitted under: " << *options.emit_directory << '\n';
+        }
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "BGV plain-chain example failed: " << error.what() << '\n';

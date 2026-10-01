@@ -691,14 +691,14 @@ PreparedRnsObject CkksApplicationImageBuilder::reserve_ciphertext(
     std::size_t component_count,
     double scale,
     hpu::runtime::PolynomialDomain domain,
-    std::uint64_t key_domain)
+    std::uint64_t key_domain, hpu::runtime::AllocationKind kind)
 {
     const CkksLevelDescriptor& authoritative = require_level(level.parms_id);
     return reserve_ciphertext(
         std::move(id),
         CkksValueMetadata{
             authoritative.parms_id, authoritative.chain_index, scale},
-        component_count, domain, key_domain);
+        component_count, domain, key_domain, kind);
 }
 
 PreparedRnsObject CkksApplicationImageBuilder::reserve_ciphertext(
@@ -706,7 +706,7 @@ PreparedRnsObject CkksApplicationImageBuilder::reserve_ciphertext(
     const CkksValueMetadata& metadata,
     std::size_t component_count,
     hpu::runtime::PolynomialDomain domain,
-    std::uint64_t key_domain)
+    std::uint64_t key_domain, hpu::runtime::AllocationKind kind)
 {
     validate_ckks_metadata(level_chain_, metadata, "reserved CKKS ciphertext");
     const CkksLevelDescriptor& authoritative = require_level(metadata.parms_id);
@@ -714,6 +714,9 @@ PreparedRnsObject CkksApplicationImageBuilder::reserve_ciphertext(
     if (!data || component_count == 0) {
         throw std::invalid_argument("invalid reserved CKKS ciphertext shape");
     }
+    if (kind != hpu::runtime::AllocationKind::output &&
+        kind != hpu::runtime::AllocationKind::workspace)
+        throw std::invalid_argument("reserved ciphertext must be output or workspace");
     PreparedRnsObject result;
     result.id = std::move(id);
     result.parms_id = authoritative.parms_id;
@@ -730,7 +733,7 @@ PreparedRnsObject CkksApplicationImageBuilder::reserve_ciphertext(
             polynomial.modulus_ids.push_back(static_cast<std::uint8_t>(mod_id));
             polynomial.limbs.push_back(image_.reserve(
                 polynomial.id + "/mod" + std::to_string(mod_id), degree,
-                hpu::runtime::AllocationKind::output).span);
+                kind).span);
         }
         result.components.push_back(std::move(polynomial));
     }

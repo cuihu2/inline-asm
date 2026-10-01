@@ -11,7 +11,10 @@
 
 namespace hpu::seal_adapter {
 
-// Writes one self-contained CKKS application package. The initial image is the
+// Legacy flat CKKS package format, retained for source compatibility. New
+// applications should use application_delivery.hpp and the scheme-neutral
+// hpu::delivery::write_application_package (application package v1).
+// The initial image is the
 // exact uint32 DDR contents consumed by the generated program. When
 // expected_image_words is provided, every dstore destination is also exported
 // as a software-executor golden for hardware comparison.

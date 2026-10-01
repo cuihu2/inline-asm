@@ -41,19 +41,22 @@ HPU_MEM 占用、DMA 绑定数量和编码后的指令数量。替换为部署�
 
 ```bash
 ./build-seal/hpu_bfv_multiply_modswitch_example \
-  --emit-dir output/bfv_multiply_modswitch_application
+  --emit-dir outputs/bfv_multiply_modswitch_application
 ```
 
-输出目录包含：
+输出采用通用 application package v1：`program/` 存放指令、C/H wrapper 和
+`dma_relocation_manifest.csv`；`memory/` 存放初始镜像与映射；`golden/` 存放逐算子、
+逐 component/MOD_ID 的 coefficient-domain 预期输出。还包含参数、计算图、oracle、
+解码数据和校验清单。
 
-| 文件 | 内容 |
-| --- | --- |
-| `bfv_multiply_modswitch_application.asm` | 完整 HPU inline-assembly body |
-| `bfv_multiply_modswitch_application.inst32` | 每行一条 32-bit 指令码 |
-| `bfv_multiply_modswitch_application.cmd26` | 送往控制路径的 26-bit command |
-| `bfv_multiply_modswitch_application.h/.c` | 固定 span 表和 `hpu_run_*()` 包装 |
-| `bfv_multiply_modswitch_application.resolved_dma.csv` | 每条 DMA 的 operation、对象和 span 来源 |
-| `bfv_multiply_modswitch_application.hpu_mem.u32.bin` | 已使用 HPU_MEM 行的 little-endian uint32 镜像 |
+`--emit-dir` 要求新目录；重复生成两个 BFV 示例可执行：
+
+```bash
+cmake --build build-seal -j --target hpu_bfv_delivery
+./build-seal/hpu_validate_package outputs/bfv_multiply_modswitch_application
+```
+
+接口及 Nexus AM 消费说明见 [HPU_APPLICATION_PACKAGE_V1.md](HPU_APPLICATION_PACKAGE_V1.md)。
 
 二进制镜像只写出 `used_lines()`，部署 backend 仍应按生成程序声明的 HPU_MEM capacity
 配置实际 window，并在上传镜像前初始化其余区域。

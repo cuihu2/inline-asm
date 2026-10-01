@@ -324,12 +324,15 @@ PreparedEvaluationKey BfvApplicationImageBuilder::add_evaluation_key(
 
 PreparedBfvRnsObject BfvApplicationImageBuilder::reserve_ciphertext(
     std::string id, const BfvLevelDescriptor& level, std::size_t component_count,
-    hpu::runtime::PolynomialDomain domain, std::uint64_t key_domain)
+    hpu::runtime::PolynomialDomain domain, std::uint64_t key_domain, hpu::runtime::AllocationKind kind)
 {
     const BfvLevelDescriptor& authoritative = require_level(level.parms_id);
     if (component_count == 0) {
         throw std::invalid_argument("invalid reserved BFV ciphertext shape");
     }
+    if (kind != hpu::runtime::AllocationKind::output &&
+        kind != hpu::runtime::AllocationKind::workspace)
+        throw std::invalid_argument("reserved ciphertext must be output or workspace");
     PreparedBfvRnsObject result;
     result.id = std::move(id);
     result.parms_id = authoritative.parms_id;
@@ -345,7 +348,7 @@ PreparedBfvRnsObject BfvApplicationImageBuilder::reserve_ciphertext(
             polynomial.modulus_ids.push_back(static_cast<std::uint8_t>(mod_id));
             polynomial.limbs.push_back(image_
                                            .reserve(polynomial.id + "/mod" + std::to_string(mod_id),
-                                                    degree, hpu::runtime::AllocationKind::output)
+                                                    degree, kind)
                                            .span);
         }
         result.components.push_back(std::move(polynomial));

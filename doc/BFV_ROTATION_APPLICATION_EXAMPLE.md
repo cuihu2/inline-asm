@@ -24,12 +24,14 @@ cmake --build build-seal -j --target hpu_bfv_rotation_example
 
 ```bash
 ./build-seal/hpu_bfv_rotation_example --print-asm
-./build-seal/hpu_bfv_rotation_example --emit-dir output/bfv_rotation_application
+./build-seal/hpu_bfv_rotation_example --emit-dir outputs/bfv_rotation_application
 ```
 
-`--emit-dir` 输出 `.asm`、`.inst32`、`.cmd26`、生成的 `.h/.c` runtime wrapper、
-`.resolved_dma.csv` 和 `.hpu_mem.u32.bin`。输出文件共享
-`bfv_rotation_application` 前缀；二进制镜像只包含已使用的 HPU_MEM 行。
+`--emit-dir` 向新目录输出通用 application package v1，包括 `program/`、`memory/`、
+`golden/`、参数/计算图与验证报告。行旋转、换列和相加的输出都与 SEAL 逐字比较；
+旋转的中间系数工作区通过 `AllocationKind::workspace` 标记。
+重复生成请执行 `cmake --build build-seal --target hpu_bfv_delivery`。
+格式与测试接口见 [HPU_APPLICATION_PACKAGE_V1.md](HPU_APPLICATION_PACKAGE_V1.md)。
 
 ## 应用调用顺序
 

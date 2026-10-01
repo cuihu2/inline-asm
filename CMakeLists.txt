@@ -24,7 +24,7 @@ option(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE
         "Build the optional BFV/BGV/CKKS differential oracle against SEAL"
         OFF)
 option(HPU_ENABLE_SEAL_INTEGRATION
-        "Build the vendored modified-SEAL CKKS integration layer"
+        "Build the vendored modified-SEAL CKKS/BFV/BGV integration layer"
         OFF)
 option(HPU_ENABLE_SEAL_BFV_ORACLE
         "Deprecated alias for HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE"
@@ -60,6 +60,15 @@ target_include_directories(hpu_runtime_core
         PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+
+add_library(hpu_delivery_core STATIC
+        src/hpu/delivery/checksum.cpp
+        src/hpu/delivery/io.cpp
+        src/hpu/delivery/application_package.cpp)
+target_include_directories(hpu_delivery_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(hpu_delivery_core PUBLIC hpu_filesystem_compat hpu_runtime_core hpu_encode)
+add_executable(hpu_validate_package src/hpu/delivery/validate_main.cpp)
+target_link_libraries(hpu_validate_package PRIVATE hpu_delivery_core)
 
 if(HPU_ENABLE_SEAL_BFV_ORACLE)
     message(DEPRECATION
@@ -135,6 +144,14 @@ target_link_libraries(inline_asm_codegen
 )
 
 if(BUILD_TESTING)
+    find_package(Threads REQUIRED)
+    add_executable(delivery_io_test test/delivery_io_test.cpp)
+    target_link_libraries(delivery_io_test PRIVATE hpu_delivery_core Threads::Threads)
+    add_test(NAME delivery_io_test COMMAND delivery_io_test)
+    add_executable(application_package_test test/application_package_test.cpp)
+    target_link_libraries(application_package_test PRIVATE hpu_delivery_core)
+    add_test(NAME application_package_test COMMAND application_package_test)
+    set_tests_properties(delivery_io_test application_package_test PROPERTIES LABELS application-delivery)
     add_executable(hpu_hardware_ntt_model_test
             test/hardware_ntt_model_test.cpp
     )
@@ -374,6 +391,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
             src/hpu/seal/bfv_operation_relocation.cpp
             src/hpu/seal/bfv_operation_runtime.cpp
             src/hpu/seal/ckks_delivery.cpp
+            src/hpu/seal/application_delivery.cpp
             src/hpu/seal/operation_codegen.cpp
             src/hpu/seal/operation_relocation.cpp
             src/hpu/seal/operation_runtime.cpp
@@ -388,7 +406,9 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
             hpu_encode
             hpu_fhe_codegen
             hpu_filesystem_compat
+            hpu_delivery_core
     )
+    add_library(hpu_seal_delivery ALIAS hpu_seal_ckks_codegen)
 
     add_executable(hpu_ckks_polynomial_example
             examples/ckks_polynomial_x2_plus_one.cpp
@@ -404,21 +424,6 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
     target_link_libraries(hpu_ckks_composed_application_example
             PRIVATE
             hpu_seal_ckks_codegen
-    )
-
-    add_custom_target(hpu_ckks_delivery
-            COMMAND $<TARGET_FILE:hpu_ckks_polynomial_example>
-                    --emit-dir
-                    ${CMAKE_CURRENT_SOURCE_DIR}/outputs/ckks_polynomial_x2_plus_one
-            COMMAND $<TARGET_FILE:hpu_ckks_composed_application_example>
-                    --emit-dir
-                    ${CMAKE_CURRENT_SOURCE_DIR}/outputs/ckks_composed_application
-            DEPENDS
-                    hpu_ckks_polynomial_example
-                    hpu_ckks_composed_application_example
-            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-            COMMENT "Generating CKKS application delivery packages under outputs/"
-            VERBATIM
     )
 
     add_executable(hpu_bgv_plain_chain_example
@@ -463,7 +468,66 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
             hpu_filesystem_compat
     )
 
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(HPU_APPLICATION_OUTPUT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/outputs" CACHE PATH
+        "Directory for scheme-neutral application packages")
+    execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE HPU_PACKAGE_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    execute_process(COMMAND git status --porcelain WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE HPU_PACKAGE_STATUS OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(NOT HPU_PACKAGE_REVISION)
+        set(HPU_PACKAGE_REVISION "unknown")
+        set(HPU_PACKAGE_TREE "unknown")
+    elseif(HPU_PACKAGE_STATUS)
+        set(HPU_PACKAGE_TREE "dirty-at-configure")
+    else()
+        set(HPU_PACKAGE_TREE "clean-at-configure")
+    endif()
+    target_compile_definitions(hpu_seal_ckks_codegen PRIVATE
+        HPU_DELIVERY_REVISION="${HPU_PACKAGE_REVISION}"
+        HPU_DELIVERY_TREE_STATE="${HPU_PACKAGE_TREE}")
+    add_custom_target(hpu_ckks_delivery)
+    add_custom_target(hpu_bfv_delivery)
+    add_custom_target(hpu_bgv_delivery)
+    add_custom_target(hpu_fhe_delivery)
+    add_dependencies(hpu_fhe_delivery hpu_ckks_delivery hpu_bfv_delivery hpu_bgv_delivery)
+    function(hpu_application_delivery scheme case_name example)
+        add_custom_target(${case_name}_delivery
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_application_package.py
+                --example $<TARGET_FILE:${example}>
+                --validator $<TARGET_FILE:hpu_validate_package>
+                --output ${HPU_APPLICATION_OUTPUT_ROOT}/${case_name}
+            DEPENDS ${example} hpu_validate_package
+            COMMENT "Generating ${scheme} application package: ${case_name}"
+            VERBATIM)
+        add_dependencies(hpu_${scheme}_delivery ${case_name}_delivery)
+        if(BUILD_TESTING)
+            # Preserve existing CI test names while using isolated temporary directories.
+            set(delivery_test_name ${case_name}_delivery_test)
+            if(example STREQUAL "hpu_ckks_composed_application_example" OR
+               example STREQUAL "hpu_bfv_multiply_modswitch_example" OR
+               example STREQUAL "hpu_bfv_rotation_example")
+                set(delivery_test_name ${example}_artifacts)
+            endif()
+            add_test(NAME ${delivery_test_name}
+                COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/application_delivery_test.py
+                    $<TARGET_FILE:${example}> $<TARGET_FILE:hpu_validate_package> ${scheme})
+            set_tests_properties(${delivery_test_name} PROPERTIES LABELS application-delivery)
+        endif()
+    endfunction()
+    hpu_application_delivery(ckks ckks_polynomial_x2_plus_one hpu_ckks_polynomial_example)
+    hpu_application_delivery(ckks ckks_composed_application hpu_ckks_composed_application_example)
+    hpu_application_delivery(bfv bfv_multiply_modswitch_application hpu_bfv_multiply_modswitch_example)
+    hpu_application_delivery(bfv bfv_rotation_application hpu_bfv_rotation_example)
+    hpu_application_delivery(bgv bgv_plain_chain hpu_bgv_plain_chain_example)
+    hpu_application_delivery(bgv bgv_rotate_chain hpu_bgv_rotate_chain_example)
+    hpu_application_delivery(bgv bgv_multiply_chain hpu_bgv_multiply_chain_example)
+
     if(BUILD_TESTING)
+        add_executable(hpu_seal_application_delivery_test test/seal_application_delivery_test.cpp)
+        target_link_libraries(hpu_seal_application_delivery_test PRIVATE hpu_seal_delivery)
+        add_test(NAME hpu_seal_application_delivery_test COMMAND hpu_seal_application_delivery_test)
+        set_tests_properties(hpu_seal_application_delivery_test PROPERTIES LABELS application-delivery)
         add_test(NAME hpu_bgv_plain_chain_example
                 COMMAND hpu_bgv_plain_chain_example)
         add_test(NAME hpu_bgv_rotate_chain_example
@@ -560,29 +624,14 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
         add_test(
                 NAME hpu_ckks_composed_application_example
                 COMMAND hpu_ckks_composed_application_example)
-        add_test(
-                NAME hpu_ckks_composed_application_example_artifacts
-                COMMAND hpu_ckks_composed_application_example
-                        --emit-dir
-                        ${CMAKE_CURRENT_BINARY_DIR}/ckks_composed_application_example_artifacts)
 
         add_test(
                 NAME hpu_bfv_multiply_modswitch_example
                 COMMAND hpu_bfv_multiply_modswitch_example)
-        add_test(
-                NAME hpu_bfv_multiply_modswitch_example_artifacts
-                COMMAND hpu_bfv_multiply_modswitch_example
-                        --emit-dir
-                        ${CMAKE_CURRENT_BINARY_DIR}/bfv_multiply_modswitch_example_artifacts)
 
         add_test(
                 NAME hpu_bfv_rotation_example
                 COMMAND hpu_bfv_rotation_example)
-        add_test(
-                NAME hpu_bfv_rotation_example_artifacts
-                COMMAND hpu_bfv_rotation_example
-                        --emit-dir
-                        ${CMAKE_CURRENT_BINARY_DIR}/bfv_rotation_example_artifacts)
 
         add_executable(hpu_seal_ckks_context_test
                 test/seal_ckks_context_test.cpp

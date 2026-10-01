@@ -129,16 +129,20 @@ ctest --test-dir build -L legacy-fixed-profile --output-on-failure
 集成测试仍保持默认启用。测试源码中用于覆盖 shape 的固定数字只是局部测试向量，
 不构成应用 profile。
 
-启用 SEAL integration 后，可生成当前 CKKS application-plan 路径的 Nexus AM 交付包：
+启用 SEAL integration 后，可以统一生成 CKKS、BFV、BGV 应用交付包：
 
 ```bash
-cmake --build build -j --target hpu_ckks_delivery
+cmake -S . -B build -DHPU_ENABLE_SEAL_INTEGRATION=ON
+cmake --build build -j --target hpu_fhe_delivery
+# 单独生成一个方案：hpu_ckks_delivery / hpu_bfv_delivery / hpu_bgv_delivery
+./build/hpu_validate_package outputs/bfv_rotation_application
 ```
 
-该目标将指令、C wrapper、DMA relocation、初始 HPU_MEM image、allocation line map
-和软件执行器 expected output 写入 `outputs/ckks_polynomial_x2_plus_one/` 与
-`outputs/ckks_composed_application/`。详细格式见
-`doc/CKKS_HPU_GETTING_STARTED.md`。
+七个应用包写入 `outputs/<case>/`。每个包提供 `package.json`、指令和 C wrapper、
+初始 HPU_MEM 镜像、DMA 映射、逐算子输出 golden、参数、计算图和校验清单。
+重复构建会先生成并校验新包，再替换同名的有效应用包。
+IT 编写样例及 Nexus AM 消费格式见 [通用应用交付说明](doc/HPU_APPLICATION_PACKAGE_V1.md)。
+这一步产出的是指令、数据和 C 源码；机器可执行 ELF/BIN 由 Nexus AM 侧编译生成。
 
 SEAL v4.4.4 源码以普通目录 `third_party/modified-SEAL` 固定在本仓库中，不再使用
 submodule。HPU 对 SEAL 的后续修改直接由 Inline-asm 的提交历史维护，因此普通

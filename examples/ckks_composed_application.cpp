@@ -1,5 +1,5 @@
 #include "hpu/seal/application_image.hpp"
-#include "hpu/seal/ckks_delivery.hpp"
+#include "hpu/seal/application_delivery.hpp"
 #include "hpu/seal/ckks_context.hpp"
 #include "hpu/seal/operation_codegen.hpp"
 #include "hpu/seal/operation_plan.hpp"
@@ -134,8 +134,11 @@ int main(int argc, char** argv)
             encrypted_input, galois_keys, host_conjugated);
         evaluator.add(host_rotated, host_conjugated, host_mixed);
         evaluator.multiply(encrypted_input, host_mixed, host_result);
+        const auto oracle_tensor = host_result;
         evaluator.relinearize_inplace(host_result, relin_keys);
+        const auto oracle_relinearized = host_result;
         evaluator.rescale_to_next_inplace(host_result);
+        const auto oracle_rescaled = host_result;
         require(
             host_result.parms_id() == next.parms_id,
             "composed SEAL oracle reached the wrong level");
@@ -179,11 +182,11 @@ int main(int argc, char** argv)
         const auto rotation_workspace = image_builder.reserve_ciphertext(
             "scratch/rotate_left_1", prepared_input.metadata(), 2,
             hpu::runtime::PolynomialDomain::coefficient,
-            rotation_element);
+            rotation_element, hpu::runtime::AllocationKind::workspace);
         const auto conjugation_workspace = image_builder.reserve_ciphertext(
             "scratch/conjugate", prepared_input.metadata(), 2,
             hpu::runtime::PolynomialDomain::coefficient,
-            conjugation_element);
+            conjugation_element, hpu::runtime::AllocationKind::workspace);
 
         // This is the application-facing portion: build an explicit graph and
         // let the planner derive every output's component count, level, scale,
@@ -287,10 +290,15 @@ int main(int argc, char** argv)
                 kArtifactStem, runtime,
                 image_builder.image().capacity_lines());
         if (options.emit_directory) {
-            const auto& expected_words = software_executor.memory().words();
-            hpu::seal_adapter::write_ckks_delivery_package(
-                *options.emit_directory, kArtifactStem, lowered, runtime,
-                artifacts, image_builder.image(), &expected_words);
+            auto request = hpu::seal_adapter::make_ckks_application_package(
+                kArtifactStem, *bundle.context, lowered, runtime, artifacts,
+                image_builder.image(),
+                {host_rotated, host_conjugated, host_mixed, oracle_tensor,
+                 oracle_relinearized, oracle_rescaled, host_result},
+                software_executor.memory().words());
+            request.semantic_report = hpu::seal_adapter::ckks_delivery_semantics(
+                decoded, expected.size(), maximum_error, 1e-2);
+            hpu::delivery::write_application_package(*options.emit_directory, request);
         }
 
         std::cout << std::setprecision(8)
