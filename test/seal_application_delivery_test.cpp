@@ -122,8 +122,14 @@ void test_bgv()
     auto oracle = input;
     seal::Evaluator(context).add_plain_inplace(oracle, seal::Plaintext("3"));
     const auto request = make_bgv_application_package("bgv_test", context, plan, application, {oracle});
-    if (request.oracle_report_json.find("\"model_verified\":false") == std::string::npos)
-        throw std::runtime_error("BGV package claims nonexistent model verification");
+    if (request.oracle_report_json.find("\"overall_status\":\"pass\"") == std::string::npos ||
+        request.oracle_report_json.find("\"oracle_verified\":true") == std::string::npos ||
+        request.oracle_report_json.find("\"golden_matches_oracle\":true") == std::string::npos ||
+        request.oracle_report_json.find(
+            "\"name\":\"host_software_model_to_oracle\",\"required\":false,\"status\":\"not_run\"") ==
+            std::string::npos ||
+        request.oracle_report_json.find("\"model_verified\":null") == std::string::npos)
+        throw std::runtime_error("BGV package verification status is ambiguous");
     rejects([&] { make_bgv_application_package("bgv_test", context, plan, application, {}); }, "snapshot");
     oracle.correction_factor() = 2;
     rejects([&] { make_bgv_application_package("bgv_test", context, plan, application, {oracle}); }, "metadata");

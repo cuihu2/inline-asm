@@ -36,7 +36,18 @@ def main():
         assert report["hardware_verified"] is False
         assert report["rtl_verified"] is False
         assert report["instruction_execution_verified"] is False
-        assert report["model_verified"] == (scheme != "bgv")
+        assert report["verification_schema_version"] == 1
+        assert report["overall_status"] == "pass"
+        assert report["oracle_verified"] is True
+        assert report["golden_matches_oracle"] is True
+        assert report["checks"][0] == {
+            "name": "seal_oracle_to_golden", "required": True,
+            "status": "pass"}
+        assert report["checks"][1]["name"] == "host_software_model_to_oracle"
+        assert report["checks"][1]["required"] is False
+        assert report["checks"][1]["status"] == (
+            "pass" if scheme != "bgv" else "not_run")
+        assert report["model_verified"] == (True if scheme != "bgv" else None)
         assert report["raw_physical_words_equal"] == (True if scheme != "bgv" else None)
         golden = rows(package / descriptor["golden_manifest"])
         memory = rows(package / descriptor["memory_manifest"])

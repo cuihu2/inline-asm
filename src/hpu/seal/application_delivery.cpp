@@ -203,10 +203,18 @@ void output_metadata(std::ostringstream& graph, const std::string& id,
 void report(ApplicationPackageRequest& request, const char* model)
 {
     auto out = stream();
-    out << "{\"oracle\":\"modified-SEAL Evaluator\",\"golden_source\":\"SEAL ciphertext in HPU layout\","
+    out << "{\"verification_schema_version\":1,\"overall_status\":\"pass\","
+           "\"oracle\":\"modified-SEAL Evaluator\","
+           "\"golden_source\":\"SEAL ciphertext in HPU layout\","
+           "\"oracle_verified\":true,\"golden_matches_oracle\":true,"
+           "\"checks\":["
+           "{\"name\":\"seal_oracle_to_golden\",\"required\":true,\"status\":\"pass\"},"
+           "{\"name\":\"host_software_model_to_oracle\",\"required\":false,\"status\":"
+        << quoted(model ? "pass" : "not_run")
+        << ",\"model\":" << (model ? quoted(model) : "null") << "}],"
            "\"model\":" << (model ? quoted(model) : "null")
         << ",\"raw_physical_words_equal\":" << (model ? "true" : "null")
-        << ",\"model_verified\":" << (model ? "true" : "false")
+        << ",\"model_verified\":" << (model ? "true" : "null")
         << ",\"verified_limb_count\":" << request.outputs.size()
         << ",\"instruction_execution_verified\":false,\"rtl_verified\":false,\"hardware_verified\":false}\n";
     request.oracle_report_json = out.str();

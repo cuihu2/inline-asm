@@ -114,15 +114,30 @@ cmake --build build -j --target hpu_bgv_delivery
 
 ## 验证依据
 
-| 方案 | golden 来源 | 软件执行比较 | 包内记录 |
-| --- | --- | --- | --- |
-| CKKS | 独立 modified-SEAL Evaluator 每步结果，经 NTT bridge 转成 HPU 物理顺序 | 与 CkksSoftwareExecutor 每步输出逐字相等 | `model_verified=true` |
-| BFV | 独立 modified-SEAL Evaluator 每步 coefficient 结果 | 与 BfvSoftwareExecutor 每步输出逐字相等 | `model_verified=true` |
-| BGV | 独立 modified-SEAL Evaluator 每步结果，经 NTT bridge 转成 HPU 物理顺序 | 当前组合包没有完整 BGV 软件执行器比较 | `model_verified=false`、`raw_physical_words_equal=null` |
+三种方案使用相同的主验证规则：独立 modified-SEAL `Evaluator` 在每个 plan 算子后
+保存 ciphertext，适配器检查 ciphertext 的 level、component、scale/correction
+factor，并转换为对应的 HPU 物理布局。转换结果就是包内 golden。因此三个方案的
+`seal_oracle_to_golden` 都必须为 `pass`，报告同时记录 `oracle_verified=true` 和
+`golden_matches_oracle=true`。该项为必选检查（`required=true`）；通过后，三种方案
+都记录统一的 `overall_status=pass`。
+
+| 方案 | golden 物理域 | 额外 host 软件模型检查 |
+| --- | --- | --- |
+| CKKS | canonical NTT physical | `CkksSoftwareExecutor` 的逐算子输出必须与 SEAL 逐字相等，状态 `pass` |
+| BFV | coefficient | `BfvSoftwareExecutor` 的逐算子输出必须与 SEAL 逐字相等，状态 `pass` |
+| BGV | canonical NTT physical | 当前组合包没有完整 `BgvSoftwareExecutor`，状态 `not_run` |
+
+`not_run` 表示没有执行第二套 host 模型，不表示 SEAL 对比失败。为兼容已有读取程序，
+报告暂时保留 `model_verified` 和 `raw_physical_words_equal`；未运行时二者为 JSON
+`null`，不再使用容易被误解为验证失败的 `false`。新程序应读取 `checks` 数组中的
+`name/required/status`。`host_software_model_to_oracle` 是附加检查（`required=false`），
+不改变三种方案统一的交付合格条件。
 
 所有包都记录 `instruction_execution_verified=false`、`rtl_verified=false`、
 `hardware_verified=false`。软件数学模型逐字通过不代表编码指令已经在 RTL/HPU 上执行。
-BGV plain-chain 示例还会检查局部点运算；它不构成三种 BGV 组合程序的完整执行验证。
+BGV plain-chain 示例还会检查局部点运算，BGV 的 rotation、KeySwitch、Multiply 和
+ModSwitch 也有独立算子数学模型测试；它们尚未组成一个对当前交付包逐步写回
+HPU_MEM 的完整 `BgvSoftwareExecutor`。
 
 公共写入器校验文件、编码一致性、DMA span、allocation、输出覆盖、初始零值和
 物理 word 范围，并在私有 staging 目录中写入，通过落盘校验后发布新目录。

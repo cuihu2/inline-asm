@@ -1014,6 +1014,7 @@ runtime、初始镜像、按算子顺序保存的 SEAL ciphertext oracle 和软�
 
 每个应用输出必须有 golden；显式预留的临时对象应在 `reserve_ciphertext` 最后一个参数中
 传入 `AllocationKind::workspace`。默认仍为 `output`。
-参数和请求中不包含 SecretKey。BGV 包的 `model_verified=false`，golden 来自独立
-SEAL oracle；CKKS/BFV 包还要求与软件执行器逐字一致。详见
+参数和请求中不包含 SecretKey。三种方案都要求 SEAL oracle 到 golden 的检查为
+`pass`；BGV 尚未运行第二套完整 host 软件模型，报告为 `not_run`，CKKS/BFV 则还
+要求软件执行器与 SEAL 逐字一致。详见
 [HPU_APPLICATION_PACKAGE_V1.md](HPU_APPLICATION_PACKAGE_V1.md)。
