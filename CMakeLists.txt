@@ -390,7 +390,6 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
             src/hpu/seal/bfv_operation_plan.cpp
             src/hpu/seal/bfv_operation_relocation.cpp
             src/hpu/seal/bfv_operation_runtime.cpp
-            src/hpu/seal/ckks_delivery.cpp
             src/hpu/seal/application_delivery.cpp
             src/hpu/seal/operation_codegen.cpp
             src/hpu/seal/operation_relocation.cpp

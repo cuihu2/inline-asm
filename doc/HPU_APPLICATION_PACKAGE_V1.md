@@ -132,6 +132,23 @@ BGV plain-chain 示例还会检查局部点运算；它不构成三种 BGV 组�
 
 ## IT 编写新测试
 
+### 与旧 CKKS 交付方式的差异
+
+| 使用点 | 旧 CKKS 专用格式 | application package v1 |
+| --- | --- | --- |
+| 生成目标 | `hpu_ckks_delivery` | 原目标保留；另有 `hpu_bfv_delivery`、`hpu_bgv_delivery`、`hpu_fhe_delivery` |
+| 单案例参数 | `--emit-dir PATH` | 参数保持不变；PATH 必须尚不存在 |
+| 程序文件 | 直接位于包根目录 | 通过 `package.json` 定位，当前位于 `program/` |
+| 初始镜像 | `test_data/hardware/hpu_mem_image.u32.bin` | `memory/hpu_mem_image.u32.bin` |
+| DMA 映射 | 根目录 CSV，CKKS 专用 | `program/dma_relocation_manifest.csv`，三种方案统一 14 列 |
+| 预期输出 | `expected_outputs.csv` 和按 dstore 导出的镜像 | `golden/golden_manifest.csv` 和逐算子、逐 RNS limb 文件 |
+| 完整性检查 | 依赖案例自身检查 | `hpu_validate_package PACKAGE_DIR` 做统一静态校验 |
+| C++ 写包接口 | `write_ckks_delivery_package(...)` | `make_*_application_package(...)` 后调用 `write_application_package(...)` |
+
+IT 若只执行现有案例，构建命令 `hpu_ckks_delivery` 和示例的 `--emit-dir` 不需要改；
+消费脚本必须改为先读取 `package.json`，不要再拼接旧的固定相对路径。这样同一套脚本
+可以处理 CKKS、BFV、BGV，也能随 schema 后续扩展。
+
 新增一个 C++ 示例，沿用现有的 context → image builder → plan → lowering → runtime
 调用。用独立 `seal::Evaluator` 执行同一个表达式，每个计划算子之后保存 ciphertext
 快照；BFV 的融合 Multiply+Relinearize 对应一个快照。随后调用方案适配器：
@@ -173,9 +190,9 @@ hpu_application_delivery(bfv my_bfv_case my_bfv_case)
 自定义测试入口并调用独立校验器。公共层可直接接受 `ApplicationPackageRequest`，
 未来新增方案需要补充方案标识、适配器和测试，无需复制落盘实现。
 
-旧 `write_ckks_delivery_package` 保留为旧目录格式的兼容接口；当前示例和
-`hpu_*_delivery` 应用目标均已切到本规范。旧固定 profile 算子交付目标 `hpu_delivery`
-仍使用原协议，与新应用目标 `hpu_fhe_delivery` 分开。
+原 CKKS 专用的 `write_ckks_delivery_package` 和扁平目录格式已删除；所有
+`hpu_*_delivery` 应用目标统一使用本规范。旧固定 profile 算子交付目标
+`hpu_delivery` 仍使用原协议，与新应用目标 `hpu_fhe_delivery` 分开。
 
 ## 回归命令
 
