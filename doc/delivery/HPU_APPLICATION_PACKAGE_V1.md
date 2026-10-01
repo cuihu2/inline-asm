@@ -4,6 +4,8 @@ CKKS、BFV、BGV 使用同一目录协议。公共写入器位于 `hpu::delivery
 SEAL 适配层负责参数、计算图、oracle 与物理输出格式的转换。
 产物包含指令、初始数据和可编译的 C/H。Nexus AM 侧负责运行入口、内存装载、
 RISC-V 编译链接及 ELF/BIN 生成；本项目的生成命令不执行板卡或驱动操作。
+正式发布步骤、目标侧执行顺序和签字证据见
+[IT 交接清单](IT_HANDOFF_CHECKLIST.md)。
 
 ## 生成与校验
 
@@ -135,6 +137,8 @@ RNS limb 与 SEAL oracle 转换后的 HPU 物理 word 比较。报告中的 `mod
 
 所有包都记录 `instruction_execution_verified=false`、`rtl_verified=false`、
 `hardware_verified=false`。软件数学模型逐字通过不代表编码指令已经在 RTL/HPU 上执行。
+生成 C 只在 `__riscv` 下发射 HPU `.word`；host 编译运行用于接口检查，不能形成指令
+执行证据。
 `BgvSoftwareExecutor` 覆盖 plain/cipher arithmetic、row/column rotation、
 KeySwitch、Multiply+Relinearize 和 ModSwitch，并从包内准备好的 key、常量、twiddle
 及中间 allocation 执行整条线性 plan。

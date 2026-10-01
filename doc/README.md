@@ -8,7 +8,7 @@
 | --- | --- |
 | 使用 CKKS API 编写应用 | [CKKS 入门](getting-started/CKKS_HPU_GETTING_STARTED.md) → [CKKS 复合应用](examples/CKKS_COMPOSED_APPLICATION_EXAMPLE.md) → [仿 SEAL API 参考](reference/HPU_SEAL_API_REFERENCE.md) |
 | 为 IT 编写应用测试 | [应用包 V1](delivery/HPU_APPLICATION_PACKAGE_V1.md) → [应用示例](examples/) → [仿 SEAL API 参考](reference/HPU_SEAL_API_REFERENCE.md) |
-| 对接 Nexus-AM 或 HPU runtime | [应用包 V1](delivery/HPU_APPLICATION_PACKAGE_V1.md) → [HPU 编程手册](reference/HPU_PROGRAMMING_MANUAL.md) |
+| 对接 Nexus-AM 或 HPU runtime | [应用包 V1](delivery/HPU_APPLICATION_PACKAGE_V1.md) → [IT 交接清单](delivery/IT_HANDOFF_CHECKLIST.md) → [HPU 编程手册](reference/HPU_PROGRAMMING_MANUAL.md) |
 | 维护 SEAL 与 HPU 适配层 | [SEAL 集成设计](architecture/HPU_SEAL_INTEGRATION.md) → [仿 SEAL API 参考](reference/HPU_SEAL_API_REFERENCE.md) |
 | 回归旧算子交付流水线 | [Legacy 测试交付说明](delivery/HPU_TEST_DELIVERY.md) |
 | 查看硬件规范符合性记录 | [2026-08 符合性审计](audits/HPU_SPEC_COMPLIANCE_AUDIT_2026-08.md) |
@@ -37,6 +37,7 @@
 ### `delivery/`
 
 - [HPU_APPLICATION_PACKAGE_V1.md](delivery/HPU_APPLICATION_PACKAGE_V1.md)：当前通用应用交付包格式，适用于 CKKS、BGV 和 BFV。
+- [IT_HANDOFF_CHECKLIST.md](delivery/IT_HANDOFF_CHECKLIST.md)：发布、归档、目标执行和 IT 签字所需的逐项检查。
 - [HPU_TEST_DELIVERY.md](delivery/HPU_TEST_DELIVERY.md)：由 `config/fhe_test.conf` 驱动的旧固定参数算子包，仅用于兼容和回归。
 
 ### `audits/`

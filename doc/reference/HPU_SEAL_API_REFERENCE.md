@@ -337,8 +337,9 @@ auto artifacts = render_bgv_modswitch_runtime_artifacts("bgv_modswitch", program
   load/store 类型、字数、只读属性和 span。渲染产生固定指令字、span 数组、
   `hpu_run_<stem>()` 包装及 resolved DMA manifest。
 - `program.destination_parms_id` 与 `program.correction_factor` 是 host 元数据。
-  两级逐 limb 与 HPU 物理 NTT 差分已对齐 modified-SEAL；目前不支持 BGV
-  多算子组合计划，也未完成逐指令软件执行或实体 HPU 测试。
+  两级逐 limb 与 HPU 物理 NTT 差分已对齐 modified-SEAL。这个 standalone builder
+  只生成单次 ModSwitch；多算子应用使用 `BgvLinearOperationPlan`。两条路径都尚未
+  通过 encoded instruction stream 或实体 HPU 执行验证。
 
 #### 2.2.6 BGV 单次 KeySwitch / Relinearize 应用包
 
@@ -489,8 +490,8 @@ auto runtime = render_bgv_keyswitch_runtime_artifacts("bgv_plain_chain", package
   `./build-seal/hpu_bgv_multiply_chain_example` 演示
   `ModSwitch((x + 5) * multiplier) + 7`，可用 `--print-dma` 查看重定位后的 span。
   计划测试另覆盖两次连续跨 level ModSwitch，以及两次密文乘法、
-  中间 ModSwitch 与后继明文操作；尚未经过逐指令
-  软件执行或实体 HPU 验证。
+  中间 ModSwitch 与后继明文操作。`BgvSoftwareExecutor` 已完成 plan 级 HPU_MEM
+  逐字验证；encoded instruction stream 和实体 HPU 执行仍需目标侧验证。
 
 完整 plan 在交付包生成阶段还会由 `BgvSoftwareExecutor` 从同一初始
 `HpuMemImage` 执行。它读取准备好的 operand、key、常量和 twiddle，逐步写回每个
