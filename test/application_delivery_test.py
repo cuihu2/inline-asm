@@ -44,11 +44,15 @@ def main():
             "name": "seal_oracle_to_golden", "required": True,
             "status": "pass"}
         assert report["checks"][1]["name"] == "host_software_model_to_oracle"
-        assert report["checks"][1]["required"] is False
-        assert report["checks"][1]["status"] == (
-            "pass" if scheme != "bgv" else "not_run")
-        assert report["model_verified"] == (True if scheme != "bgv" else None)
-        assert report["raw_physical_words_equal"] == (True if scheme != "bgv" else None)
+        assert report["checks"][1]["required"] is True
+        assert report["checks"][1]["status"] == "pass"
+        assert report["checks"][1]["model"] == {
+            "ckks": "CkksSoftwareExecutor",
+            "bfv": "BfvSoftwareExecutor",
+            "bgv": "BgvSoftwareExecutor",
+        }[scheme]
+        assert report["model_verified"] is True
+        assert report["raw_physical_words_equal"] is True
         golden = rows(package / descriptor["golden_manifest"])
         memory = rows(package / descriptor["memory_manifest"])
         outputs = {(r["line_offset"], r["line_count"]) for r in memory if r["kind"] == "output"}

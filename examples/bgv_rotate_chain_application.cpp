@@ -1,6 +1,7 @@
 #include "hpu/seal/application_delivery.hpp"
 #include "delivery_options.hpp"
 #include "hpu/seal/bgv_linear_operation_plan.hpp"
+#include "hpu/seal/bgv_software_executor.hpp"
 #include "scheme/bfv/galois.hpp"
 
 #include <seal/seal.h>
@@ -44,6 +45,9 @@ int main(int argc, char** argv)
         plan.append_rotate_rows("rotate_left_1", steps, keys);
         plan.append_add_plain("add_after", post_bias);
         const auto package = plan.lower(4096);
+        hpu::seal_adapter::BgvSoftwareExecutor software_executor(
+            context, package.image);
+        software_executor.execute(plan);
         const auto runtime =
             hpu::seal_adapter::render_bgv_keyswitch_runtime_artifacts(
                 "bgv_rotate_chain", package);
@@ -75,7 +79,8 @@ int main(int argc, char** argv)
         if (options.print_program) std::cout << runtime.resolved_dma_manifest;
         if (options.emit_directory) {
             auto request = hpu::seal_adapter::make_bgv_application_package(
-                "bgv_rotate_chain", context, plan, package, expected_after_step);
+                "bgv_rotate_chain", context, plan, package,
+                expected_after_step, software_executor.memory().words());
             seal::Decryptor decryptor(context, generator.secret_key());
             seal::Plaintext decrypted;
             decryptor.decrypt(expected_after_step.back(), decrypted);

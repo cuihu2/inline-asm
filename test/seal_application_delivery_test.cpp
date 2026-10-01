@@ -126,9 +126,9 @@ void test_bgv()
         request.oracle_report_json.find("\"oracle_verified\":true") == std::string::npos ||
         request.oracle_report_json.find("\"golden_matches_oracle\":true") == std::string::npos ||
         request.oracle_report_json.find(
-            "\"name\":\"host_software_model_to_oracle\",\"required\":false,\"status\":\"not_run\"") ==
+            "\"name\":\"host_software_model_to_oracle\",\"required\":true,\"status\":\"pass\",\"model\":\"BgvSoftwareExecutor\"") ==
             std::string::npos ||
-        request.oracle_report_json.find("\"model_verified\":null") == std::string::npos)
+        request.oracle_report_json.find("\"model_verified\":true") == std::string::npos)
         throw std::runtime_error("BGV package verification status is ambiguous");
     rejects([&] { make_bgv_application_package("bgv_test", context, plan, application, {}); }, "snapshot");
     oracle.correction_factor() = 2;

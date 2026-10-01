@@ -933,12 +933,12 @@ BGV 行旋转与列交换使用同一自同构 + Galois KeySwitch 单次包：�
 写入 KeySwitch 输入；`c1` 作为切换分量，零基分量与旋转后的 `c0`
 构成最终输出。Galois key 按元素 `k` 选取，`correction_factor` 不变。
 正/负行步长及列交换已在顶层/降一级与 modified-SEAL 逐 limb 差分；
-`N=65536,Q=3,P=1` 镜像容量估算为 169985 line。通用多算子 planner、
-逐指令软件执行与实体 HPU 验证仍待完成。
+`N=65536,Q=3,P=1` 镜像容量估算为 169985 line。该路径已接入通用
+`BgvLinearOperationPlan` 和整图功能模型；逐指令软件执行与实体 HPU 验证仍待完成。
 
 `BgvLinearOperationPlan`（兼容名 `BgvPlainOperationPlan`）已支持同 level
 线性链中的 `AddPlain/SubPlain/MultiplyPlain`、密文 `Add/Sub`、
-行旋转及列交换：
+Multiply+Relinearize、行旋转、列交换及跨 level ModSwitch：
 每个步骤独立占用可写输出 span，
 下一步骤的 DMA 直接从该 span 加载，程序只在开头加载一次模表并于
 末尾 `psync` 一次。密文 Add/Sub 的不等 factor 平衡在 HPU `PMUL` 中
@@ -946,8 +946,11 @@ BGV 行旋转与列交换使用同一自同构 + Galois KeySwitch 单次包：�
 CPU 不计算中间密文。旋转步骤复用单次 Galois 包的编码片段、
 twiddle、key 与工作区，通过 DMA 重定位直接读取前一步输出，且不重复
 加载模表或发出中间 `psync`。`hpu_bgv_plain_chain_example` 与
-`hpu_bgv_rotate_chain_example` 分别展示纯明文链和旋转链。
-该限定计划尚未覆盖密文乘法或跨 level ModSwitch。
+`hpu_bgv_rotate_chain_example` 分别展示纯明文链和旋转链，
+`hpu_bgv_multiply_chain_example` 展示乘法、重线性化、ModSwitch 和后继明文操作。
+`BgvSoftwareExecutor` 从同一初始 HPU_MEM 读取 operand、key、常量和 twiddle，
+按 plan edge 写回每一步 output/workspace；交付适配器将各步物理 NTT word 与独立
+modified-SEAL oracle 比较后才允许写包。
 
 ### 8.8 BFV comparison-free BEHZ、重线形化和 ModSwitch
 

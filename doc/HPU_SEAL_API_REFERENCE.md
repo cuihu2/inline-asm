@@ -492,6 +492,10 @@ auto runtime = render_bgv_keyswitch_runtime_artifacts("bgv_plain_chain", package
   中间 ModSwitch 与后继明文操作；尚未经过逐指令
   软件执行或实体 HPU 验证。
 
+完整 plan 在交付包生成阶段还会由 `BgvSoftwareExecutor` 从同一初始
+`HpuMemImage` 执行。它读取准备好的 operand、key、常量和 twiddle，逐步写回每个
+output/workspace，并将每一步 canonical HPU NTT word 与独立 SEAL oracle 比较。
+
 ### 2.3 NTT 表示桥：仿 SEAL NTT 表示转换
 
 `include/hpu/seal/ntt_bridge.hpp`
@@ -734,7 +738,8 @@ BfvRuntimeArtifacts bfv_artifacts = render_bfv_runtime_artifacts(
 
 ### 2.7 软件执行器：仿 `seal::Evaluator`
 
-`include/hpu/seal/software_executor.hpp`，实现 `src/hpu/seal/software_executor.cpp`。
+CKKS、BFV、BGV 分别使用 `software_executor.hpp`、`bfv_software_executor.hpp`、
+`bgv_software_executor.hpp`。
 在 `HpuMemImage` 之上做功能执行，**不调用 `seal::Evaluator`**；SEAL 仅作为差分 oracle。
 
 ```cpp
@@ -773,7 +778,19 @@ public:
     HpuRnsPolynomial export_component(const PreparedRnsObject& object, std::size_t component) const;
     const hpu::runtime::HpuSoftwareExecutor& memory() const noexcept;
 };
+
+class BgvSoftwareExecutor {
+public:
+    BgvSoftwareExecutor(const ::seal::SEALContext& context,
+                        const hpu::runtime::HpuMemImage& image);
+    void execute(const BgvLinearOperationPlan& plan);
+    const hpu::runtime::HpuSoftwareExecutor& memory() const noexcept;
+};
 ```
+
+`BgvSoftwareExecutor::execute` 覆盖明文/密文算术、行旋转、列交换、
+Multiply+Relinearize 和 ModSwitch。它按 plan 的 allocation edge 执行整图，并消费
+镜像中的 canonical/fused NTT twiddle、evaluation key 和 BGV correction 常量。
 
 **SEAL 等价关系**（用于逐字比对）：
 
@@ -1015,6 +1032,5 @@ runtime、初始镜像、按算子顺序保存的 SEAL ciphertext oracle 和软�
 每个应用输出必须有 golden；显式预留的临时对象应在 `reserve_ciphertext` 最后一个参数中
 传入 `AllocationKind::workspace`。默认仍为 `output`。
 参数和请求中不包含 SecretKey。三种方案都要求 SEAL oracle 到 golden 的检查为
-`pass`；BGV 尚未运行第二套完整 host 软件模型，报告为 `not_run`，CKKS/BFV 则还
-要求软件执行器与 SEAL 逐字一致。详见
+`pass`，并要求对应软件执行器与 SEAL 的每一步 HPU 物理输出逐字一致。详见
 [HPU_APPLICATION_PACKAGE_V1.md](HPU_APPLICATION_PACKAGE_V1.md)。

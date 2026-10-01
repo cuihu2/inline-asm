@@ -1,4 +1,5 @@
 #include "hpu/seal/application_delivery.hpp"
+#include "hpu/seal/bgv_software_executor.hpp"
 #include "hpu/seal/ntt_bridge.hpp"
 #include "assembler.hpp"
 #include "executable.hpp"
@@ -202,6 +203,10 @@ void output_metadata(std::ostringstream& graph, const std::string& id,
 
 void report(ApplicationPackageRequest& request, const char* model)
 {
+    if (!model || !*model) {
+        throw std::invalid_argument(
+            "application delivery requires a verified host software model");
+    }
     auto out = stream();
     out << "{\"verification_schema_version\":1,\"overall_status\":\"pass\","
            "\"oracle\":\"modified-SEAL Evaluator\","
@@ -209,12 +214,11 @@ void report(ApplicationPackageRequest& request, const char* model)
            "\"oracle_verified\":true,\"golden_matches_oracle\":true,"
            "\"checks\":["
            "{\"name\":\"seal_oracle_to_golden\",\"required\":true,\"status\":\"pass\"},"
-           "{\"name\":\"host_software_model_to_oracle\",\"required\":false,\"status\":"
-        << quoted(model ? "pass" : "not_run")
-        << ",\"model\":" << (model ? quoted(model) : "null") << "}],"
-           "\"model\":" << (model ? quoted(model) : "null")
-        << ",\"raw_physical_words_equal\":" << (model ? "true" : "null")
-        << ",\"model_verified\":" << (model ? "true" : "null")
+           "{\"name\":\"host_software_model_to_oracle\",\"required\":true,\"status\":\"pass\",\"model\":"
+        << quoted(model) << "}],"
+           "\"model\":" << quoted(model)
+        << ",\"raw_physical_words_equal\":true"
+        << ",\"model_verified\":true"
         << ",\"verified_limb_count\":" << request.outputs.size()
         << ",\"instruction_execution_verified\":false,\"rtl_verified\":false,\"hardware_verified\":false}\n";
     request.oracle_report_json = out.str();
@@ -306,7 +310,8 @@ hpu::delivery::ApplicationPackageRequest make_bfv_application_package(
 hpu::delivery::ApplicationPackageRequest make_bgv_application_package(
     const std::string& stem, const ::seal::SEALContext& context,
     const BgvLinearOperationPlan& plan, const BgvKeySwitchApplication& application,
-    const std::vector<::seal::Ciphertext>& oracles)
+    const std::vector<::seal::Ciphertext>& oracles,
+    const std::vector<std::uint32_t>& executed)
 {
     if (oracles.empty() || oracles.size() != plan.steps().size())
         throw std::invalid_argument("BGV delivery requires one SEAL oracle snapshot per operation");
@@ -342,7 +347,9 @@ hpu::delivery::ApplicationPackageRequest make_bgv_application_package(
     for (std::size_t i = 0; i < oracles.size(); ++i) {
         const auto& step = plan.steps()[i];
         const auto prefix = i + 1 == oracles.size() ? "output" : "steps/" + step.id + "/output";
-        append_outputs(request, context, prefix, i, oracles[i], nullptr);
+        append_outputs(
+            request, context, prefix, i, oracles[i],
+            &executed);
         if (i) graph << ',';
         graph << "{\"id\":" << quoted(step.id) << ",\"kind\":" << quoted(name(step.kind))
               << ",\"inputs\":[" << quoted(prior);
@@ -362,9 +369,22 @@ hpu::delivery::ApplicationPackageRequest make_bgv_application_package(
     }
     graph << "],\"final_output\":\"output\"}\n";
     request.operation_graph_json = graph.str();
-    report(request, nullptr);
+    report(request, "BgvSoftwareExecutor");
     hpu::delivery::validate_application_package_request(request);
     return request;
+}
+
+hpu::delivery::ApplicationPackageRequest make_bgv_application_package(
+    const std::string& stem, const ::seal::SEALContext& context,
+    const BgvLinearOperationPlan& plan,
+    const BgvKeySwitchApplication& application,
+    const std::vector<::seal::Ciphertext>& oracles)
+{
+    BgvSoftwareExecutor executor(context, application.image);
+    executor.execute(plan);
+    return make_bgv_application_package(
+        stem, context, plan, application, oracles,
+        executor.memory().words());
 }
 
 hpu::delivery::SemanticReport ckks_delivery_semantics(

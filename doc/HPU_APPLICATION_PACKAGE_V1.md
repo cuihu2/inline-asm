@@ -125,19 +125,19 @@ factor，并转换为对应的 HPU 物理布局。转换结果就是包内 golde
 | --- | --- | --- |
 | CKKS | canonical NTT physical | `CkksSoftwareExecutor` 的逐算子输出必须与 SEAL 逐字相等，状态 `pass` |
 | BFV | coefficient | `BfvSoftwareExecutor` 的逐算子输出必须与 SEAL 逐字相等，状态 `pass` |
-| BGV | canonical NTT physical | 当前组合包没有完整 `BgvSoftwareExecutor`，状态 `not_run` |
+| BGV | canonical NTT physical | `BgvSoftwareExecutor` 的逐算子输出必须与 SEAL 逐字相等，状态 `pass` |
 
-`not_run` 表示没有执行第二套 host 模型，不表示 SEAL 对比失败。为兼容已有读取程序，
-报告暂时保留 `model_verified` 和 `raw_physical_words_equal`；未运行时二者为 JSON
-`null`，不再使用容易被误解为验证失败的 `false`。新程序应读取 `checks` 数组中的
-`name/required/status`。`host_software_model_to_oracle` 是附加检查（`required=false`），
-不改变三种方案统一的交付合格条件。
+三种方案都从初始 HPU_MEM 镜像执行独立 host 软件模型，并将每个 plan 输出的每个
+RNS limb 与 SEAL oracle 转换后的 HPU 物理 word 比较。报告中的 `model_verified` 和
+`raw_physical_words_equal` 均为 `true`。新程序应读取 `checks` 数组中的
+`name/required/status`。`host_software_model_to_oracle` 也是必选检查
+（`required=true`）；任一逐 word 比较失败都会停止生成交付包。
 
 所有包都记录 `instruction_execution_verified=false`、`rtl_verified=false`、
 `hardware_verified=false`。软件数学模型逐字通过不代表编码指令已经在 RTL/HPU 上执行。
-BGV plain-chain 示例还会检查局部点运算，BGV 的 rotation、KeySwitch、Multiply 和
-ModSwitch 也有独立算子数学模型测试；它们尚未组成一个对当前交付包逐步写回
-HPU_MEM 的完整 `BgvSoftwareExecutor`。
+`BgvSoftwareExecutor` 覆盖 plain/cipher arithmetic、row/column rotation、
+KeySwitch、Multiply+Relinearize 和 ModSwitch，并从包内准备好的 key、常量、twiddle
+及中间 allocation 执行整条线性 plan。
 
 公共写入器校验文件、编码一致性、DMA span、allocation、输出覆盖、初始零值和
 物理 word 范围，并在私有 staging 目录中写入，通过落盘校验后发布新目录。
@@ -185,10 +185,18 @@ hpu::delivery::write_application_package("outputs/my_bfv_case", request);
 CKKS 使用相同参数形状的 `make_ckks_application_package`。BGV 使用：
 
 ```cpp
+#include "hpu/seal/bgv_software_executor.hpp"
+
+hpu::seal_adapter::BgvSoftwareExecutor executor(context, application.image);
+executor.execute(plan);
 auto request = hpu::seal_adapter::make_bgv_application_package(
-    "my_bgv_case", context, plan, application, oracle_after_step);
+    "my_bgv_case", context, plan, application, oracle_after_step,
+    executor.memory().words());
 hpu::delivery::write_application_package("outputs/my_bgv_case", request);
 ```
+
+兼容重载允许省略最后一个参数并在适配器内部执行相同模型；显式形式便于测试代码
+单独检查各步 HPU_MEM 内容，也与 CKKS/BFV 的交付调用形状一致。
 
 返回的 request 借用初始 `HpuMemImage`；写出前应保持其存活、内容不变。
 显式预留临时 ciphertext 工作区时，将 `reserve_ciphertext` 最后一个参数设为

@@ -1,6 +1,7 @@
 #include "hpu/seal/application_delivery.hpp"
 #include "delivery_options.hpp"
 #include "hpu/seal/bgv_plain_operation_plan.hpp"
+#include "hpu/seal/bgv_software_executor.hpp"
 #include "hpu/seal/ntt_bridge.hpp"
 
 #include <seal/seal.h>
@@ -86,6 +87,9 @@ int main(int argc, char** argv)
         plan.append_multiply_plain("multiply_polynomial", multiplier);
         plan.append_subtract_plain("subtract_offset", offset);
         auto package = plan.lower(512);
+        hpu::seal_adapter::BgvSoftwareExecutor software_executor(
+            context, package.image);
+        software_executor.execute(plan);
         const auto runtime =
             hpu::seal_adapter::render_bgv_keyswitch_runtime_artifacts(
                 "bgv_plain_chain", package);
@@ -173,7 +177,8 @@ int main(int argc, char** argv)
         if (options.print_program) std::cout << runtime.resolved_dma_manifest;
         if (options.emit_directory) {
             auto request = hpu::seal_adapter::make_bgv_application_package(
-                "bgv_plain_chain", context, plan, package, expected_after_step);
+                "bgv_plain_chain", context, plan, package,
+                expected_after_step, software_executor.memory().words());
             seal::Decryptor decryptor(context, generator.secret_key());
             seal::Plaintext decrypted;
             decryptor.decrypt(expected_after_step.back(), decrypted);

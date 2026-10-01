@@ -24,8 +24,15 @@ hpu::delivery::ApplicationPackageRequest make_bfv_application_package(
     const std::vector<::seal::Ciphertext>& oracle_after_step,
     const std::vector<std::uint32_t>& executed_image_words);
 
-// BGV goldens come directly from independent SEAL snapshots. This adapter
-// does not claim model execution or hardware verification of the program.
+// BGV goldens come from independent SEAL snapshots and every output limb is
+// checked against BgvSoftwareExecutor's HPU_MEM result.
+hpu::delivery::ApplicationPackageRequest make_bgv_application_package(
+    const std::string& stem, const ::seal::SEALContext& context,
+    const BgvLinearOperationPlan& plan, const BgvKeySwitchApplication& application,
+    const std::vector<::seal::Ciphertext>& oracle_after_step,
+    const std::vector<std::uint32_t>& executed_image_words);
+
+// Convenience overload that executes BgvSoftwareExecutor internally.
 hpu::delivery::ApplicationPackageRequest make_bgv_application_package(
     const std::string& stem, const ::seal::SEALContext& context,
     const BgvLinearOperationPlan& plan, const BgvKeySwitchApplication& application,

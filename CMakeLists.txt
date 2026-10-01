@@ -386,6 +386,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
             src/hpu/seal/bgv_plain_operation_plan.cpp
             src/hpu/seal/bgv_keyswitch_application.cpp
             src/hpu/seal/bgv_modswitch_application.cpp
+            src/hpu/seal/bgv_software_executor.cpp
             src/hpu/seal/bfv_operation_codegen.cpp
             src/hpu/seal/bfv_operation_plan.cpp
             src/hpu/seal/bfv_operation_relocation.cpp
@@ -543,6 +544,16 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
         )
         add_test(NAME hpu_seal_bgv_plain_operation_plan_test
                 COMMAND hpu_seal_bgv_plain_operation_plan_test)
+
+        add_executable(hpu_seal_bgv_software_executor_test
+                test/seal_bgv_software_executor_test.cpp
+        )
+        target_link_libraries(hpu_seal_bgv_software_executor_test
+                PRIVATE
+                hpu_seal_ckks_codegen
+        )
+        add_test(NAME hpu_seal_bgv_software_executor_test
+                COMMAND hpu_seal_bgv_software_executor_test)
 
         add_executable(hpu_seal_bgv_rotation_application_test
                 test/seal_bgv_rotation_application_test.cpp
