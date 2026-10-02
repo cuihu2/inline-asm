@@ -1,3 +1,4 @@
+#include "delivery_options.hpp"
 #include "hpu/seal/application_delivery.hpp"
 #include "hpu/seal/bfv_application_image.hpp"
 #include "hpu/seal/bfv_context.hpp"
@@ -21,12 +22,9 @@
 
 namespace {
 
-constexpr const char* kArtifactStem = "bfv_multiply_modswitch_application";
+constexpr const char* kArtifactStemBase = "bfv_multiply_modswitch_application";
 
-struct Options {
-    bool print_asm = false;
-    std::optional<std::filesystem::path> emit_directory;
-};
+using Options = DeliveryOptions;
 
 void require(bool condition, const char* message)
 {
@@ -37,19 +35,7 @@ void require(bool condition, const char* message)
 
 Options parse_options(int argc, char** argv)
 {
-    Options options;
-    for (int index = 1; index < argc; ++index) {
-        const std::string argument = argv[index];
-        if (argument == "--print-asm") {
-            options.print_asm = true;
-        } else if (argument == "--emit-dir" && index + 1 < argc) {
-            options.emit_directory = std::filesystem::path(argv[++index]);
-        } else {
-            throw std::invalid_argument("usage: hpu_bfv_multiply_modswitch_example "
-                                        "[--print-asm] [--emit-dir PATH]");
-        }
-    }
-    return options;
+    return parse_delivery_options(argc, argv, "--print-asm");
 }
 
 ::seal::Ciphertext import_hpu_ciphertext(const hpu::seal_adapter::PreparedBfvRnsObject& object,
@@ -74,13 +60,15 @@ int main(int argc, char** argv)
 {
     try {
         const Options options = parse_options(argc, argv);
+        const auto kArtifactStem = delivery_artifact_stem(kArtifactStemBase, options, 128);
 
         // Teaching-sized parameters keep the example quick. Application code,
         // planner calls, and runtime artifact APIs are unchanged at deployment N.
         hpu::seal_adapter::BfvContextSpec spec;
-        spec.poly_modulus_degree = 128;
-        spec.coeff_modulus_bits = {20, 20, 20, 20};
-        spec.plain_modulus_bits = 17;
+        spec.poly_modulus_degree = options.poly_modulus_degree.value_or(128);
+        spec.coeff_modulus_bits = spec.poly_modulus_degree >= 4096
+            ? std::vector<int>{31, 31, 31, 31} : std::vector<int>{20, 20, 20, 20};
+        spec.plain_modulus_bits = spec.poly_modulus_degree >= 4096 ? 20 : 17;
         const auto bundle = hpu::seal_adapter::create_bfv_context(spec);
 
         ::seal::KeyGenerator key_generator(*bundle.context);
@@ -137,7 +125,7 @@ int main(int argc, char** argv)
 
         // All runtime inputs, plaintext representations, keys, constants, and
         // workspaces are prepared before the operation plan is constructed.
-        hpu::seal_adapter::BfvApplicationImageBuilder image_builder(*bundle.context, 16384);
+        hpu::seal_adapter::BfvApplicationImageBuilder image_builder(*bundle.context, delivery_construction_limit(spec.poly_modulus_degree, 16384));
         image_builder.add_modulus_table();
         const auto canonical_twiddles = image_builder.add_canonical_twiddles();
         const auto& top = image_builder.level_chain().top();
@@ -173,6 +161,7 @@ int main(int argc, char** argv)
         // Execute the planned BFV path from the same HPU_MEM image. This
         // reproduces comparison-free BEHZ, rounded KeySwitch, rounded
         // ModSwitch, and AddPlain without calling seal::Evaluator.
+        image_builder.trim_capacity_to_used_lines();
         hpu::seal_adapter::BfvSoftwareExecutor software_executor(*bundle.context,
                                                                  image_builder.image());
         software_executor.multiply(left, right, relinearization_key, keyswitch_constants,
@@ -234,7 +223,7 @@ int main(int argc, char** argv)
         } else {
             std::cout << "Pass --emit-dir PATH to write deployment artifacts.\n";
         }
-        if (options.print_asm) {
+        if (options.print_program) {
             std::cout << "\n--- generated HPU inline-assembly body ---\n" << lowered.body_asm;
         } else {
             std::cout << "Pass --print-asm to print the generated instruction body.\n";

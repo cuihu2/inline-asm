@@ -1,3 +1,4 @@
+#include "delivery_options.hpp"
 #include "hpu/seal/application_image.hpp"
 #include "hpu/seal/application_delivery.hpp"
 #include "hpu/seal/ckks_context.hpp"
@@ -22,29 +23,13 @@
 
 namespace {
 
-constexpr const char* kArtifactStem = "ckks_polynomial_x2_plus_one";
+constexpr const char* kArtifactStemBase = "ckks_polynomial_x2_plus_one";
 
-struct Options {
-    bool print_asm = false;
-    std::optional<std::filesystem::path> emit_directory;
-};
+using Options = DeliveryOptions;
 
 Options parse_options(int argc, char** argv)
 {
-    Options options;
-    for (int index = 1; index < argc; ++index) {
-        const std::string argument = argv[index];
-        if (argument == "--print-asm") {
-            options.print_asm = true;
-        } else if (argument == "--emit-dir" && index + 1 < argc) {
-            options.emit_directory = std::filesystem::path(argv[++index]);
-        } else {
-            throw std::invalid_argument(
-                "usage: hpu_ckks_polynomial_example "
-                "[--print-asm] [--emit-dir PATH]");
-        }
-    }
-    return options;
+    return parse_delivery_options(argc, argv, "--print-asm");
 }
 
 std::size_t count_token(const std::string& text, const std::string& token)
@@ -64,11 +49,12 @@ int main(int argc, char** argv)
 {
     try {
         const Options options = parse_options(argc, argv);
+        const auto kArtifactStem = delivery_artifact_stem(kArtifactStemBase, options, 65536);
 
         // Five 32-bit primes become Q4 | P1 in SEAL 4.4.4. After one
         // multiply/rescale the result and constant plaintext use Q3.
         hpu::seal_adapter::CkksContextSpec spec;
-        spec.poly_modulus_degree = 65536;
+        spec.poly_modulus_degree = options.poly_modulus_degree.value_or(65536);
         spec.coeff_modulus_bits = {32, 32, 32, 32, 32};
         const auto bundle = hpu::seal_adapter::create_ckks_context(spec);
         const hpu::seal_adapter::CkksLevelChain level_chain(*bundle.context);
@@ -165,6 +151,7 @@ int main(int argc, char** argv)
         // Execute the same application from its HPU_MEM image. SEAL Evaluator
         // above is now only the independent oracle, not the implementation of
         // the path being demonstrated.
+        image_builder.trim_capacity_to_used_lines();
         hpu::seal_adapter::CkksSoftwareExecutor software_executor(
             *bundle.context, image_builder.image());
         software_executor.square(prepared_input, tensor);
@@ -279,7 +266,7 @@ int main(int argc, char** argv)
             std::cout
                 << "Pass --emit-dir PATH to write deployment artifacts.\n";
         }
-        if (options.print_asm) {
+        if (options.print_program) {
             std::cout << "\n--- generated HPU inline-assembly body ---\n"
                       << hpu_program;
         } else {

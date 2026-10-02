@@ -10,6 +10,9 @@
 namespace hpu::runtime {
 
 constexpr std::size_t kRegularBankCount = 5;
+// Logical ISA slots and physical banks are distinct resources. This state
+// machine validates slot lifetimes; it does not plan SRAM capacity.
+constexpr std::size_t kObjectSlotCount = 8;
 
 struct HpuMemSpan {
     std::uint64_t line_offset = 0;
@@ -67,6 +70,7 @@ public:
         std::size_t level,
         std::vector<std::uint8_t> modulus_ids,
         std::uint64_t key_domain = 1);
+    // DSTORE writes back and releases the object. A later use needs a DLOAD.
     void store_object(const std::string& id);
     void release_object(const std::string& id);
 

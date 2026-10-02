@@ -13,12 +13,14 @@ int main(int argc, char** argv)
 {
     try {
         const auto options = parse_delivery_options(argc, argv, "--print-dma");
+        const auto artifact_stem = delivery_artifact_stem("bgv_multiply_chain", options);
+        const auto degree = options.poly_modulus_degree.value_or(128);
         seal::EncryptionParameters parameters(seal::scheme_type::bgv);
-        parameters.set_poly_modulus_degree(128);
+        parameters.set_poly_modulus_degree(degree);
         parameters.set_coeff_modulus({
             seal::Modulus(2013265921U), seal::Modulus(1811939329U),
             seal::Modulus(469762049U), seal::Modulus(1224736769U)});
-        parameters.set_plain_modulus(65537);
+        parameters.set_plain_modulus(degree > 32768 ? 786433 : 65537);
         seal::SEALContext context(parameters, true, seal::sec_level_type::none);
         if (!context.parameters_set()) {
             throw std::runtime_error("BGV multiplication example context is invalid");
@@ -39,13 +41,13 @@ int main(int argc, char** argv)
         plan.append_multiply("product", multiplier, relin_keys);
         plan.append_modswitch_to_next("drop_level");
         plan.append_add_plain("offset", seal::Plaintext("7"));
-        const auto package = plan.lower(8192);
+        const auto package = plan.lower(delivery_construction_limit(degree, 8192));
         hpu::seal_adapter::BgvSoftwareExecutor software_executor(
             context, package.image);
         software_executor.execute(plan);
         const auto runtime =
             hpu::seal_adapter::render_bgv_keyswitch_runtime_artifacts(
-                "bgv_multiply_chain", package);
+                artifact_stem, package);
 
         // SEAL is an independent metadata oracle, not the execution path.
         seal::Evaluator evaluator(context);
@@ -76,7 +78,7 @@ int main(int argc, char** argv)
         if (options.print_program) std::cout << runtime.resolved_dma_manifest;
         if (options.emit_directory) {
             auto request = hpu::seal_adapter::make_bgv_application_package(
-                "bgv_multiply_chain", context, plan, package,
+                artifact_stem, context, plan, package,
                 expected_after_step, software_executor.memory().words());
             seal::Decryptor decryptor(context, generator.secret_key());
             seal::Plaintext decrypted;

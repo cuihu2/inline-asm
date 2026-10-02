@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 
-def generate(example, validator, output):
+def generate(example, validator, output, example_args=()):
     output = Path(output).absolute()
     if output.is_symlink():
         raise ValueError(f"package destination must not be a symlink: {output}")
@@ -25,7 +25,7 @@ def generate(example, validator, output):
     published = False
     try:
         staging = scratch / "package"
-        subprocess.run([example, "--emit-dir", str(staging)], check=True)
+        subprocess.run([example, *example_args, "--emit-dir", str(staging)], check=True)
         subprocess.run([validator, str(staging)], check=True)
         if output.exists():
             # Recheck after generation, before touching any existing directory.
@@ -57,5 +57,6 @@ if __name__ == "__main__":
     parser.add_argument("--example", required=True)
     parser.add_argument("--validator", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--example-arg", action="append", default=[])
     args = parser.parse_args()
-    generate(args.example, args.validator, args.output)
+    generate(args.example, args.validator, args.output, args.example_arg)

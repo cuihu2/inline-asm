@@ -735,6 +735,11 @@ PreparedBfvModSwitchConstants BfvApplicationImageBuilder::add_mod_switch_constan
     return result;
 }
 
+void BfvApplicationImageBuilder::trim_capacity_to_used_lines()
+{
+    image_.trim_capacity_to_used_lines();
+}
+
 const hpu::runtime::HpuMemImage& BfvApplicationImageBuilder::image() const noexcept
 {
     return image_;

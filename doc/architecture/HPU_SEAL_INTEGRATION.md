@@ -257,7 +257,8 @@ that remain valid whether the Linux backend becomes a userspace MMIO library or
 a kernel driver:
 
 - the complete q/mu table is dload'd to the small bank once per application;
-- at most regular-bank slots `0..4` are used;
+- logical object slots are `p0..p7`; the five regular SRAM banks are a separate capacity constraint;
+- DSTORE releases its source slot for both REL values; reuse requires another DLOAD;
 - a polynomial may remain resident and dirty across multiple kernels;
 - an object is not forced through dstore/dload at every kernel boundary;
 - every required final output must be dstore'd to HPU_MEM before completion;

@@ -1,3 +1,4 @@
+#include "hpu/seal/application_delivery.hpp"
 #include "hpu/seal/bfv_application_image.hpp"
 #include "hpu/seal/bfv_context.hpp"
 #include "hpu/seal/bfv_operation_codegen.hpp"
@@ -208,6 +209,78 @@ int main()
                     "BFV software Multiply differs from modified-SEAL coefficients");
         }
 
+        // Independent nodes expose the three-component Multiply result and use
+        // that exact allocation as the Relinearize input.
+        {
+            hpu::seal_adapter::BfvApplicationImageBuilder image_builder(*bundle.context, 8192);
+            image_builder.add_modulus_table();
+            const auto canonical_twiddles = image_builder.add_canonical_twiddles();
+            const auto& level = image_builder.level_chain().top();
+            const auto left = image_builder.add_ciphertext("input/left", encrypted_left);
+            const auto right = image_builder.add_ciphertext("input/right", encrypted_right);
+            const auto relinearization_key = image_builder.add_relinearization_key(
+                "key/relinearization/top", relin_keys, level);
+            const auto keyswitch_constants = image_builder.add_keyswitch_constants(
+                "constants/keyswitch/top", level);
+            const auto multiply_constants = image_builder.add_multiply_constants(
+                "constants/multiply/top", level);
+            hpu::seal_adapter::BfvOperationPlan split_plan(image_builder);
+            const auto tensor = split_plan.append_multiply(
+                "tensor", left, right, multiply_constants, "intermediate/tensor");
+            const auto split_output = split_plan.append_relinearize(
+                "relinearize", tensor, relinearization_key, keyswitch_constants,
+                "output/split_product");
+            require(tensor.components.size() == 3 && split_output.components.size() == 2,
+                    "BFV explicit Multiply/Relinearize produced incorrect component counts");
+            require_invalid_argument(
+                [&] { split_plan.append_relinearize("invalid_relin", left,
+                    relinearization_key, keyswitch_constants, "invalid/relin"); },
+                "BFV Relinearize accepted a two-component tensor");
+            const auto split_lowered = hpu::seal_adapter::lower_bfv_operation_plan(
+                split_plan, *bundle.context);
+            const auto split_relocation = hpu::seal_adapter::build_bfv_relocation_schedule(
+                split_lowered, image_builder.image(), *bundle.context);
+            require(split_relocation.complete(), "BFV split relocation is incomplete");
+            const auto split_runtime = hpu::seal_adapter::lower_bfv_runtime_program(
+                split_lowered, split_relocation);
+            image_builder.trim_capacity_to_used_lines();
+            const auto split_artifacts = hpu::seal_adapter::render_bfv_runtime_artifacts(
+                "bfv_split_multiply", split_runtime, image_builder.image().capacity_lines());
+            for (std::size_t component = 0; component < 3; ++component) {
+                for (int modulus : level.keyswitch_layout.q_mod_ids) {
+                    const auto id = "intermediate/tensor/c" + std::to_string(component) +
+                                    "/mod" + std::to_string(modulus);
+                    require(std::any_of(split_relocation.bindings.begin(),
+                        split_relocation.bindings.end(), [&](const auto& binding) {
+                            return binding.operation_id == "tensor" &&
+                                   binding.allocation_id == id &&
+                                   binding.direction == hpu::seal_adapter::BfvDmaDirection::store;
+                        }), "BFV raw Multiply did not store every tensor component");
+                    require(std::any_of(split_relocation.bindings.begin(),
+                        split_relocation.bindings.end(), [&](const auto& binding) {
+                            return binding.operation_id == "relinearize" &&
+                                   binding.allocation_id == id &&
+                                   binding.direction == hpu::seal_adapter::BfvDmaDirection::load;
+                        }), "BFV Relinearize did not consume the planned tensor allocation");
+                }
+            }
+            ::seal::Ciphertext expected_tensor;
+            evaluator.multiply(encrypted_left, encrypted_right, expected_tensor);
+            hpu::seal_adapter::BfvSoftwareExecutor split_executor(
+                *bundle.context, image_builder.image());
+            split_executor.multiply(left, right, multiply_constants, canonical_twiddles, tensor);
+            split_executor.relinearize(tensor, relinearization_key, keyswitch_constants,
+                                       canonical_twiddles, split_output);
+            // The package adapter compares all words of both independent oracle
+            // snapshots, including all three components of the raw tensor.
+            const auto split_request = hpu::seal_adapter::make_bfv_application_package(
+                "bfv_split_multiply", *bundle.context, split_lowered, split_runtime,
+                split_artifacts, image_builder.image(), {expected_tensor, expected},
+                split_executor.memory().words());
+            require(split_request.operation_graph_json.find("multiply_relinearize") == std::string::npos,
+                    "BFV split package incorrectly labelled the tensor as a fused operation");
+        }
+
         auto missing_workspace = multiply_constants;
         missing_workspace.hardware_workspace_polynomial_count = 0;
         require_invalid_argument(
@@ -251,7 +324,7 @@ int main()
             },
             "BFV Multiply accepted an image without canonical twiddles");
 
-        std::cout << "SEAL BFV fused Multiply planner/relocation/runtime path passed\n";
+        std::cout << "SEAL BFV fused and explicit Multiply/Relinearize paths passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "SEAL BFV Multiply operation plan test failed: " << error.what() << '\n';

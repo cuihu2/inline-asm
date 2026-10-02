@@ -14,6 +14,8 @@ enum class BfvOperationKind {
     add,
     subtract,
     multiply,
+    multiply_tensor,
+    relinearize,
     add_plain,
     subtract_plain,
     multiply_plain,
@@ -51,8 +53,8 @@ struct BfvOperationStep {
     BfvOperationResources resources;
 };
 
-// Plans BFV operations that preserve the two-component coefficient-domain
-// ciphertext shape and canonical secret-key domain. No implicit level
+// Plans BFV coefficient-domain operations over explicit values. Raw Multiply
+// produces three components; Relinearize restores two. No implicit level
 // transition is inserted: only append_mod_switch moves to the adjacent level.
 // MultiplyPlain explicitly owns its NTT/INTT round trip.
 class BfvOperationPlan {
@@ -69,6 +71,15 @@ public:
                                          const PreparedKeySwitchConstants& keyswitch_constants,
                                          const PreparedBfvMultiplyConstants& multiply_constants,
                                          std::string output_id);
+    // Raw SEAL Multiply (3 components) and explicit Relinearize (3 -> 2).
+    // The overload above retains its existing fused Multiply+Relinearize behavior.
+    PreparedBfvRnsObject append_multiply(
+        std::string step_id, const PreparedBfvRnsObject& left, const PreparedBfvRnsObject& right,
+        const PreparedBfvMultiplyConstants& multiply_constants, std::string output_id);
+    PreparedBfvRnsObject append_relinearize(
+        std::string step_id, const PreparedBfvRnsObject& tensor,
+        const PreparedEvaluationKey& relinearization_key,
+        const PreparedKeySwitchConstants& keyswitch_constants, std::string output_id);
     PreparedBfvRnsObject append_add_plain(std::string step_id,
                                           const PreparedBfvRnsObject& ciphertext,
                                           const PreparedBfvRnsObject& plaintext,
@@ -120,6 +131,10 @@ private:
                                      const PreparedEvaluationKey& relinearization_key,
                                      const PreparedKeySwitchConstants& keyswitch_constants,
                                      const PreparedBfvMultiplyConstants& multiply_constants) const;
+    void validate_relinearization_resources(const BfvLevelDescriptor& level,
+        const PreparedEvaluationKey& key, const PreparedKeySwitchConstants& constants) const;
+    void validate_tensor_resources(const BfvLevelDescriptor& level,
+        const PreparedBfvMultiplyConstants& constants) const;
     void require_same_level(const PreparedBfvRnsObject& left, const PreparedBfvRnsObject& right,
                             const char* role) const;
     PreparedBfvRnsObject append_ciphertext_binary(BfvOperationKind kind, std::string step_id,

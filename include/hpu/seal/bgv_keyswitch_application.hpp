@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,9 @@ struct BgvKeySwitchDmaBinding {
     std::uint8_t flag = 0;
     std::string allocation_id;
     hpu::runtime::HpuMemSpan span;
+    std::optional<std::size_t> operation_index;
+    std::string operation_id = "$application";
+    std::size_t operation_dma_index = 0;
 };
 
 // Resolved single-operation BGV image/DMA container, also reused by the

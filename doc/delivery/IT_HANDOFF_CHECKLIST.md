@@ -41,13 +41,14 @@ for package in \
   bfv_rotation_application \
   bgv_plain_chain \
   bgv_rotate_chain \
-  bgv_multiply_chain
+  bgv_multiply_chain \
+  bgv_composed_application
 do
   ./build-delivery/hpu_validate_package "outputs/${package}"
 done
 ```
 
-交付时整体归档七个目录并计算 SHA-256。归档名称应包含源码 commit：
+交付时整体归档八个默认目录并计算 SHA-256。归档名称应包含源码 commit：
 
 ```bash
 revision=$(git rev-parse --short=12 HEAD)
@@ -56,7 +57,7 @@ tar -C outputs -czf "hpu-applications-${revision}.tar.gz" \
   ckks_composed_application \
   bfv_multiply_modswitch_application \
   bfv_rotation_application \
-  bgv_plain_chain bgv_rotate_chain bgv_multiply_chain
+  bgv_plain_chain bgv_rotate_chain bgv_multiply_chain bgv_composed_application
 sha256sum "hpu-applications-${revision}.tar.gz" \
   > "hpu-applications-${revision}.tar.gz.sha256"
 ```
@@ -88,8 +89,10 @@ oracle/report.json.overall_status    = pass
    `HPU_FAULT_STATUS`；读回前执行 cache invalidate。
 6. 按 `golden/golden_manifest.csv` 逐条读取目标 line span。比较有效 word，并检查
    padding、未使用区域或外部 guard 没有被越界写入。
-7. 结合 `metadata/operation_graph.json` 的 `operation_index` 定位首个失败算子；
-   结合 `program/dma_relocation_manifest.csv` 定位对应 DMA 和对象槽位。
+7. 先用 golden 条目的 `object_id` 匹配计算图节点的 `golden_object_id`，再用
+   节点的 `operation_index`、`id` 匹配 DMA 清单，定位算子、DMA 和对象槽位。
+   旧 v1 包若没有显式 `operation_index`，使用 `operations` 数组的零起始下标；
+   公共模表 DMA 使用 `$application`，不对应具体算子。
 
 ## 5. IT 应回传的签字证据
 
@@ -110,8 +113,19 @@ oracle/report.json.overall_status    = pass
 | 案例 | N | 用途 |
 | --- | ---: | --- |
 | `ckks_polynomial_x2_plus_one` | 65536 | CKKS 部署规模功能包 |
-| 其余六个案例 | 128 | 快速算子、分支和组合流程联调 |
+| 其余七个默认案例 | 128 | 快速算子、分支和组合流程联调 |
+| `*_n65536` 七个部署配置 | 65536 | CKKS 复合应用、BFV/BGV 算子及分支组合验收 |
 
-这些都是功能测试参数，没有安全等级声明。若验收要求 CKKS 复合应用、BFV 或 BGV
-也在 N=65536 上运行，需要增加相应部署参数示例并重新评估 HPU_MEM 容量、运行时间和
-目标侧超时；现有 N=128 包不能替代该规模验收。
+这些都是功能测试参数，没有安全等级声明。部署规模生成：
+
+```bash
+cmake --build build-delivery -j2 --target hpu_fhe_deployment_delivery
+for package in outputs/*_n65536; do
+  ./build-delivery/hpu_validate_package "$package"
+done
+```
+
+N=65536 配置也必须完成 oracle 对拍、包校验和目标执行证据。按各包的
+`capacity_lines` 配置内存与目标超时；当前示例会把容量收紧到实际 `used_lines`，
+不再要求目标分配构建时的预留上限。软件生成成功仍不代表平台已支持相应窗口。
+部署包可以单独归档，也可以加入默认八包归档；保存归档 SHA-256 和完整案例清单。

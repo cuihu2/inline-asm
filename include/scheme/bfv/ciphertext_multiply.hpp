@@ -18,6 +18,12 @@ struct BfvCiphertextMultiplyLayout {
 bool is_valid_ciphertext_multiply_layout(int N, const BfvCiphertextMultiplyLayout& layout,
                                          std::uint64_t plaintext_modulus);
 
+// BEHZ scale-and-round tensor product only; outputs three coefficient-domain
+// components, matching Evaluator::multiply before explicit relinearization.
+std::string generate_multiply_tensor_body_asm(
+    int N, const BfvCiphertextMultiplyLayout& layout, std::uint64_t plaintext_modulus,
+    bool append_psync = false, bool manage_modulus_table = true);
+
 // SEAL-facing fused BEHZ multiply + comparison-free single-P
 // relinearization. Explicit MOD_IDs allow Q to shrink without renumbering P or
 // the per-level B/m_sk resources.

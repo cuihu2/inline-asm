@@ -29,8 +29,13 @@ cmake --build build-hpu-seal-5931eef \
 ```
 
 传入 `--print-asm` 可打印完整 HPU inline-assembly body。示例默认使用 `N=128`，
-目的是让开发者快速学习和回归；替换为部署参数 `N=65536` 时 planner/runtime API
-保持不变，但 Galois key、twiddle 和内存镜像会显著增大。
+用于快速回归。传入 `--degree 65536` 可选择部署规模配置：31-bit Q/P、输入 scale=2^35，
+继续采用 0.01 解码容差。planner/runtime API 保持不变；Galois key、twiddle 和镜像随 N 增大。
+
+```bash
+cmake --build build-hpu-seal-5931eef --target ckks_composed_application_n65536_delivery -j2
+./build-hpu-seal-5931eef/hpu_validate_package outputs/ckks_composed_application_n65536
+```
 
 ## 1. 只生成应用实际使用的密钥
 

@@ -1,5 +1,6 @@
 #include "hpu/seal/bfv_operation_codegen.hpp"
 
+#include "operator/relinearization.hpp"
 #include "scheme/bfv/basic_arithmetic.hpp"
 #include "scheme/bfv/ciphertext_multiply.hpp"
 #include "scheme/bfv/galois.hpp"
@@ -71,10 +72,12 @@ std::string lower_step(const BfvOperationStep& step, const BfvLevelChain& level_
                    ? hpu::scheme::bfv::generate_add_body_asm(num_q, false, false)
                    : hpu::scheme::bfv::generate_subtract_body_asm(num_q, false, false);
     }
-    case BfvOperationKind::multiply: {
+    case BfvOperationKind::multiply:
+    case BfvOperationKind::multiply_tensor: {
+        const bool fused = step.kind == BfvOperationKind::multiply;
         if (step.inputs.size() != 2 || !step.resources.requires_canonical_twiddles ||
-            step.resources.evaluation_key_id.empty() ||
-            step.resources.keyswitch_constants_id.empty() ||
+            (fused && (step.resources.evaluation_key_id.empty() ||
+                       step.resources.keyswitch_constants_id.empty())) ||
             step.resources.multiply_constants_id.empty()) {
             throw std::invalid_argument("invalid planned BFV Multiply resources");
         }
@@ -82,7 +85,8 @@ std::string lower_step(const BfvOperationStep& step, const BfvLevelChain& level_
                                                             "planned BFV Multiply left input");
         require_coefficient_value_shape(level_chain, step.inputs[1], 2,
                                         "planned BFV Multiply right input");
-        require_coefficient_value_shape(level_chain, step.output, 2, "planned BFV Multiply output");
+        require_coefficient_value_shape(level_chain, step.output, fused ? 2 : 3,
+                                        "planned BFV Multiply output");
         require_same_level(step.inputs[0], step.inputs[1], "planned BFV Multiply");
         require_same_level(step.inputs[0], step.output, "planned BFV Multiply output");
         hpu::scheme::bfv::BfvCiphertextMultiplyLayout layout;
@@ -94,8 +98,25 @@ std::string lower_step(const BfvOperationStep& step, const BfvLevelChain& level_
                                                                    level.plaintext_modulus)) {
             throw std::invalid_argument("planned BFV Multiply level has an unsupported layout");
         }
-        return hpu::scheme::bfv::generate_ciphertext_multiply_body_asm(
-            degree, layout, level.plaintext_modulus, false, false);
+        return fused
+            ? hpu::scheme::bfv::generate_ciphertext_multiply_body_asm(
+                  degree, layout, level.plaintext_modulus, false, false)
+            : hpu::scheme::bfv::generate_multiply_tensor_body_asm(
+                  degree, layout, level.plaintext_modulus, false, false);
+    }
+    case BfvOperationKind::relinearize: {
+        if (step.inputs.size() != 1 || !step.resources.requires_canonical_twiddles ||
+            step.resources.evaluation_key_id.empty() ||
+            step.resources.keyswitch_constants_id.empty()) {
+            throw std::invalid_argument("invalid planned BFV Relinearize resources");
+        }
+        const auto& level = require_coefficient_value_shape(
+            level_chain, step.inputs.front(), 3, "planned BFV Relinearize input");
+        require_coefficient_value_shape(level_chain, step.output, 2,
+                                        "planned BFV Relinearize output");
+        require_same_level(step.inputs.front(), step.output, "planned BFV Relinearize output");
+        return ::generate_hpu_bfv_relinearization_body_asm(
+            degree, level.keyswitch_layout, false, false);
     }
     case BfvOperationKind::add_plain:
     case BfvOperationKind::subtract_plain: {

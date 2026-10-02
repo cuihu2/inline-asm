@@ -740,6 +740,11 @@ PreparedRnsObject CkksApplicationImageBuilder::reserve_ciphertext(
     return result;
 }
 
+void CkksApplicationImageBuilder::trim_capacity_to_used_lines()
+{
+    image_.trim_capacity_to_used_lines();
+}
+
 const hpu::runtime::HpuMemImage&
 CkksApplicationImageBuilder::image() const noexcept
 {

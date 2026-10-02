@@ -146,7 +146,7 @@ void check_keyswitch_splice(
                                index + binding.instruction_index - 1 &&
                     combined_binding.direction == binding.direction &&
                     combined_binding.object_slot == binding.object_slot &&
-                    combined_binding.allocation_id == relocated;
+                    combined_binding.allocation_id == combined.image.allocation(relocated).id;
             }
             if (!matched) {
                 equal = false;
@@ -232,7 +232,7 @@ void check_modswitch_splice(
                                index + binding.instruction_index - 1 &&
                     combined_binding.direction == binding.direction &&
                     combined_binding.object_slot == binding.object_slot &&
-                    combined_binding.allocation_id == relocated;
+                    combined_binding.allocation_id == combined.image.allocation(relocated).id;
             }
             if (!matched) { equal = false; break; }
         }

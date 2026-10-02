@@ -47,6 +47,17 @@ int main()
                 "overflow", 6 * hpu::runtime::kHpuMemLineWords,
                 hpu::runtime::AllocationKind::workspace); },
             "HPU_MEM image accepted an overflowing allocation");
+        memory.add_alias("same_constants", "constants");
+        require(memory.allocations().size() == 2 && memory.used_lines() == 3 &&
+                    memory.allocation("same_constants").id == "constants",
+                "read-only alias created a duplicate physical allocation");
+        require_throws([&] { memory.add_alias("mutable_alias", "result"); },
+                       "mutable output was allowed to alias a retained golden");
+        require_throws([&] { memory.add_alias("result", "constants"); },
+                       "duplicate physical/alias name was accepted");
+        memory.trim_capacity_to_used_lines();
+        require(memory.capacity_lines() == 3,
+                "HPU_MEM window retained unused construction capacity");
 
         hpu::runtime::Application application;
         hpu::runtime::ObjectState state;
@@ -67,6 +78,17 @@ int main()
             "psync accepted a required dirty output");
 
         application.store_object("ct0");
+        require(!application.object("ct0").resident_slot,
+                "dstore did not release the object slot");
+        require_throws([&] { application.run_kernel("after_store", {"ct0"}); },
+                       "kernel accepted a released dstore source");
+        require_throws([&] { application.release_object("ct0"); },
+                       "pfree accepted an already released dstore source");
+        application.load_object("ct0", 7);
+        application.run_kernel("reload", {"ct0"});
+        application.store_object("ct0");
+        require_throws([&] { application.load_object("ct0", 8); },
+                       "object slot outside ISA range was accepted");
         application.finish();
         require(application.finished(), "application did not finish");
         require(

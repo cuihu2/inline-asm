@@ -29,6 +29,15 @@ public:
                   const PreparedBfvMultiplyConstants& multiply_constants,
                   const std::vector<PreparedCanonicalTwiddles>& tables,
                   const PreparedBfvRnsObject& output);
+    void multiply(const PreparedBfvRnsObject& left, const PreparedBfvRnsObject& right,
+                  const PreparedBfvMultiplyConstants& multiply_constants,
+                  const std::vector<PreparedCanonicalTwiddles>& tables,
+                  const PreparedBfvRnsObject& tensor);
+    void relinearize(const PreparedBfvRnsObject& tensor,
+                     const PreparedEvaluationKey& key,
+                     const PreparedKeySwitchConstants& constants,
+                     const std::vector<PreparedCanonicalTwiddles>& tables,
+                     const PreparedBfvRnsObject& output);
     void mod_switch(const PreparedBfvRnsObject& input,
                     const PreparedBfvModSwitchConstants& constants,
                     const PreparedBfvRnsObject& output);
@@ -63,6 +72,10 @@ public:
 private:
     using Limb = std::vector<std::uint32_t>;
     using RnsPolynomial = std::vector<Limb>;
+    std::vector<RnsPolynomial> multiply_tensor(
+        const PreparedBfvRnsObject& left, const PreparedBfvRnsObject& right,
+        const PreparedBfvMultiplyConstants& constants,
+        const std::vector<PreparedCanonicalTwiddles>& tables);
 
     void validate_object(const PreparedBfvRnsObject& object, std::size_t component_count,
                          hpu::runtime::PolynomialDomain domain,

@@ -786,14 +786,23 @@ BgvKeySwitchRuntimeArtifacts render_bgv_keyswitch_runtime_artifacts(
     result.source += source.str();
 
     std::ostringstream manifest;
-    manifest << "instruction_index,dma_index,allocation_id,line_offset,line_count,word_hex\n";
+    manifest << "instruction_index,dma_index,operation_index,operation_id,operation_dma_index,"
+                "direction,object_slot,type_or_release,flag,allocation_id,line_offset,line_count,word_hex,normalized_asm\n";
     for (std::size_t index = 0; index < application.dma.size(); ++index) {
         const auto& binding = application.dma[index];
-        manifest << binding.instruction_index << ',' << index << ','
+        manifest << binding.instruction_index << ',' << index << ',';
+        if (binding.operation_index) manifest << *binding.operation_index;
+        manifest << ',' << csv_field(binding.operation_id) << ','
+                 << binding.operation_dma_index << ','
+                 << hpu::to_string(binding.direction) << ','
+                 << unsigned(binding.object_slot) << ','
+                 << unsigned(binding.type_or_release) << ','
+                 << unsigned(binding.flag) << ','
                  << csv_field(binding.allocation_id) << ','
                  << binding.span.line_offset << ',' << binding.span.line_count << ','
                  << hpu::format_word_hex(
-                        application.instructions[binding.instruction_index].word) << '\n';
+                        application.instructions[binding.instruction_index].word) << ','
+                 << csv_field(application.instructions[binding.instruction_index].normalized_asm) << '\n';
     }
     result.resolved_dma_manifest = manifest.str();
     return result;

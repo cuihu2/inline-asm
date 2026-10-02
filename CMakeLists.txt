@@ -26,6 +26,9 @@ option(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE
 option(HPU_ENABLE_SEAL_INTEGRATION
         "Build the vendored modified-SEAL CKKS/BFV/BGV integration layer"
         OFF)
+option(HPU_ENABLE_DEPLOYMENT_APPLICATION_TESTS
+        "Register N=65536 application package tests (longer host execution)"
+        OFF)
 option(HPU_ENABLE_SEAL_BFV_ORACLE
         "Deprecated alias for HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE"
         OFF)
@@ -383,7 +386,7 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
 
     add_library(hpu_seal_ckks_codegen STATIC
             src/hpu/seal/bgv_arithmetic_application.cpp
-            src/hpu/seal/bgv_plain_operation_plan.cpp
+            src/hpu/seal/bgv_operation_plan.cpp
             src/hpu/seal/bgv_keyswitch_application.cpp
             src/hpu/seal/bgv_modswitch_application.cpp
             src/hpu/seal/bgv_software_executor.cpp
@@ -449,6 +452,8 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
             PRIVATE
             hpu_seal_ckks_codegen
     )
+    add_executable(hpu_bgv_composed_application_example examples/bgv_composed_application.cpp)
+    target_link_libraries(hpu_bgv_composed_application_example PRIVATE hpu_seal_delivery)
 
     add_executable(hpu_bfv_multiply_modswitch_example
             examples/bfv_multiply_modswitch_application.cpp
@@ -490,29 +495,45 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
     add_custom_target(hpu_bfv_delivery)
     add_custom_target(hpu_bgv_delivery)
     add_custom_target(hpu_fhe_delivery)
+    add_custom_target(hpu_fhe_deployment_delivery)
+    add_dependencies(hpu_fhe_deployment_delivery ckks_polynomial_x2_plus_one_delivery)
     add_dependencies(hpu_fhe_delivery hpu_ckks_delivery hpu_bfv_delivery hpu_bgv_delivery)
     function(hpu_application_delivery scheme case_name example)
+        set(example_arguments)
+        set(test_arguments)
+        if(ARGC GREATER 3)
+            set(example_arguments --example-arg=--degree --example-arg=${ARGV3})
+            set(test_arguments --degree ${ARGV3})
+        endif()
         add_custom_target(${case_name}_delivery
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_application_package.py
                 --example $<TARGET_FILE:${example}>
                 --validator $<TARGET_FILE:hpu_validate_package>
                 --output ${HPU_APPLICATION_OUTPUT_ROOT}/${case_name}
+                ${example_arguments}
             DEPENDS ${example} hpu_validate_package
             COMMENT "Generating ${scheme} application package: ${case_name}"
             VERBATIM)
-        add_dependencies(hpu_${scheme}_delivery ${case_name}_delivery)
-        if(BUILD_TESTING)
+        if(ARGC GREATER 3)
+            add_dependencies(hpu_fhe_deployment_delivery ${case_name}_delivery)
+        else()
+            add_dependencies(hpu_${scheme}_delivery ${case_name}_delivery)
+        endif()
+        if(BUILD_TESTING AND (ARGC EQUAL 3 OR HPU_ENABLE_DEPLOYMENT_APPLICATION_TESTS))
             # Preserve existing CI test names while using isolated temporary directories.
             set(delivery_test_name ${case_name}_delivery_test)
-            if(example STREQUAL "hpu_ckks_composed_application_example" OR
+            if(ARGC EQUAL 3 AND (example STREQUAL "hpu_ckks_composed_application_example" OR
                example STREQUAL "hpu_bfv_multiply_modswitch_example" OR
-               example STREQUAL "hpu_bfv_rotation_example")
+               example STREQUAL "hpu_bfv_rotation_example"))
                 set(delivery_test_name ${example}_artifacts)
             endif()
             add_test(NAME ${delivery_test_name}
                 COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/application_delivery_test.py
-                    $<TARGET_FILE:${example}> $<TARGET_FILE:hpu_validate_package> ${scheme})
+                    $<TARGET_FILE:${example}> $<TARGET_FILE:hpu_validate_package> ${scheme} ${test_arguments})
             set_tests_properties(${delivery_test_name} PROPERTIES LABELS application-delivery)
+            if(ARGC GREATER 3)
+                set_tests_properties(${delivery_test_name} PROPERTIES LABELS "application-delivery;application-deployment" RUN_SERIAL TRUE)
+            endif()
         endif()
     endfunction()
     hpu_application_delivery(ckks ckks_polynomial_x2_plus_one hpu_ckks_polynomial_example)
@@ -522,8 +543,20 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
     hpu_application_delivery(bgv bgv_plain_chain hpu_bgv_plain_chain_example)
     hpu_application_delivery(bgv bgv_rotate_chain hpu_bgv_rotate_chain_example)
     hpu_application_delivery(bgv bgv_multiply_chain hpu_bgv_multiply_chain_example)
+    hpu_application_delivery(bgv bgv_composed_application hpu_bgv_composed_application_example)
+    hpu_application_delivery(ckks ckks_composed_application_n65536 hpu_ckks_composed_application_example 65536)
+    hpu_application_delivery(bfv bfv_multiply_modswitch_application_n65536 hpu_bfv_multiply_modswitch_example 65536)
+    hpu_application_delivery(bfv bfv_rotation_application_n65536 hpu_bfv_rotation_example 65536)
+    hpu_application_delivery(bgv bgv_plain_chain_n65536 hpu_bgv_plain_chain_example 65536)
+    hpu_application_delivery(bgv bgv_rotate_chain_n65536 hpu_bgv_rotate_chain_example 65536)
+    hpu_application_delivery(bgv bgv_multiply_chain_n65536 hpu_bgv_multiply_chain_example 65536)
+    hpu_application_delivery(bgv bgv_composed_application_n65536 hpu_bgv_composed_application_example 65536)
 
     if(BUILD_TESTING)
+        add_executable(hpu_seal_bgv_operation_plan_test test/seal_bgv_operation_plan_test.cpp)
+        target_link_libraries(hpu_seal_bgv_operation_plan_test PRIVATE hpu_seal_delivery)
+        add_test(NAME hpu_seal_bgv_operation_plan_test COMMAND hpu_seal_bgv_operation_plan_test)
+        add_test(NAME hpu_bgv_composed_application_example COMMAND hpu_bgv_composed_application_example)
         add_executable(hpu_seal_application_delivery_test test/seal_application_delivery_test.cpp)
         target_link_libraries(hpu_seal_application_delivery_test PRIVATE hpu_seal_delivery)
         add_test(NAME hpu_seal_application_delivery_test COMMAND hpu_seal_application_delivery_test)

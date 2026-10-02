@@ -32,6 +32,34 @@ HpuMemAllocation HpuMemImage::reserve(
     return append(std::move(id), nullptr, word_count, kind, false);
 }
 
+void HpuMemImage::add_alias(std::string id, const std::string& target)
+{
+    if (id.empty() || allocation_indices_.count(id)) {
+        throw std::invalid_argument("duplicate or empty HPU_MEM alias: " + id);
+    }
+    const auto found = allocation_indices_.find(target);
+    if (found == allocation_indices_.end()) {
+        throw std::out_of_range("unknown HPU_MEM alias target: " + target);
+    }
+    if (!allocations_[found->second].read_only) {
+        throw std::invalid_argument("HPU_MEM aliases require a read-only target");
+    }
+    allocation_indices_.emplace(std::move(id), found->second);
+}
+
+bool HpuMemImage::contains(const std::string& id) const noexcept
+{
+    return allocation_indices_.count(id) != 0;
+}
+
+void HpuMemImage::trim_capacity_to_used_lines()
+{
+    if (used_lines() == 0) {
+        throw std::logic_error("cannot configure an empty HPU_MEM window");
+    }
+    capacity_lines_ = used_lines();
+}
+
 HpuMemAllocation HpuMemImage::append(
     std::string id,
     const std::vector<std::uint32_t>* words,

@@ -166,6 +166,7 @@ public:
         hpu::runtime::AllocationKind kind = hpu::runtime::AllocationKind::output);
 
     const hpu::runtime::HpuMemImage& image() const noexcept;
+    void trim_capacity_to_used_lines();
     const CkksLevelChain& level_chain() const noexcept;
     const std::vector<CkksLevelDescriptor>& levels() const noexcept;
 

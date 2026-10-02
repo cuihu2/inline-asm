@@ -315,6 +315,34 @@ bool is_valid_ciphertext_multiply_layout(int N, const BfvCiphertextMultiplyLayou
     return valid_explicit_layout(N, layout, plaintext_modulus);
 }
 
+std::string generate_multiply_tensor_body_asm(int N, const BfvCiphertextMultiplyLayout& layout,
+                                                  std::uint64_t plaintext_modulus,
+                                                  bool append_psync, bool manage_modulus_table)
+{
+    std::ostringstream asm_code;
+    if (!valid_explicit_layout(N, layout, plaintext_modulus)) {
+        asm_code << "        // Invalid SEAL BFV ciphertext multiply layout\n";
+        return asm_code.str();
+    }
+    constexpr int modulus_table_object = 4;
+    if (manage_modulus_table) {
+        asm_code << hpu::dload(modulus_table_object, hpu::DataType::mod_ctx,
+                               hpu::DloadFlag::small_bank);
+    }
+    asm_code << "        /* Explicit SEAL MOD_IDs: fixed P="
+             << layout.keyswitch_layout.p_mod_ids.front() << ", m_sk=" << layout.m_sk_mod_id
+             << ", t=" << layout.plaintext_mod_id << " */\n";
+    asm_code << generate_behz_core_body_asm(N, layout.keyswitch_layout.q_mod_ids, layout.b_mod_ids,
+                                            layout.m_sk_mod_id, false);
+    if (manage_modulus_table) {
+        asm_code << hpu::pfree(modulus_table_object);
+    }
+    if (append_psync) {
+        asm_code << hpu::psync();
+    }
+    return asm_code.str();
+}
+
 std::string generate_ciphertext_multiply_body_asm(int N, const BfvCiphertextMultiplyLayout& layout,
                                                   std::uint64_t plaintext_modulus,
                                                   bool append_psync, bool manage_modulus_table)

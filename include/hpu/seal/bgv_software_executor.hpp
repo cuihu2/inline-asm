@@ -1,19 +1,18 @@
 #pragma once
 
 #include "hpu/runtime/software_executor.hpp"
-#include "hpu/seal/bgv_linear_operation_plan.hpp"
+#include "hpu/seal/bgv_operation_plan.hpp"
 
 #include <seal/seal.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace hpu::seal_adapter {
 
-// Functional execution of a lowered BGV linear plan over the same HPU_MEM
+// Functional execution of a lowered BGV graph over the same HPU_MEM
 // image consumed by codegen and relocation. The executor reads prepared
 // plaintexts, ciphertexts, keys, constants, and twiddles from the image and
 // never calls seal::Evaluator; modified-SEAL remains an independent oracle.
@@ -23,7 +22,7 @@ public:
         const ::seal::SEALContext& context,
         const hpu::runtime::HpuMemImage& image);
 
-    void execute(const BgvLinearOperationPlan& plan);
+    void execute(const BgvOperationPlan& plan);
 
     const hpu::runtime::HpuSoftwareExecutor& memory() const noexcept;
 
@@ -47,41 +46,41 @@ private:
         const std::string& twiddle_prefix) const;
 
     void execute_plain(
-        const BgvPlainOperationStep& step,
+        const BgvOperationStep& step,
         const std::string& input_prefix,
         const std::string& output_prefix,
         std::size_t q_count);
     void execute_binary(
-        const BgvPlainOperationStep& step,
+        const BgvOperationStep& step,
         const std::string& input_prefix,
+        const std::string& right_prefix,
         const std::string& output_prefix,
         std::size_t q_count);
-    void execute_multiply(
-        const BgvPlainOperationStep& step,
+    void execute_tensor(
         const std::string& input_prefix,
+        const std::string& right_prefix,
         const std::string& output_prefix,
         std::size_t q_count);
     void execute_rotation(
-        const BgvPlainOperationStep& step,
+        const BgvOperationStep& step,
         const std::string& input_prefix,
         const std::string& output_prefix,
         std::size_t q_count);
     void execute_modswitch(
-        const BgvPlainOperationStep& step,
+        const BgvOperationStep& step,
         const std::string& input_prefix,
         const std::string& output_prefix,
         std::size_t q_count);
     void execute_keyswitch(
         const std::string& resource_prefix,
         const std::string& output_prefix,
-        std::size_t q_count);
+        std::size_t q_count,
+        const std::string& input_prefix = {});
 
     const ::seal::SEALContext& context_;
     const hpu::runtime::HpuMemImage& image_;
     std::size_t degree_ = 0;
     std::size_t key_modulus_count_ = 0;
-    std::unordered_map<std::string, const hpu::runtime::HpuMemAllocation*>
-        allocations_;
     hpu::runtime::HpuSoftwareExecutor memory_;
 };
 

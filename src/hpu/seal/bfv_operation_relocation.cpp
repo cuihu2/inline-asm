@@ -428,13 +428,107 @@ void bind_bfv_galois(OperationBindingBuilder& bindings, const BfvOperationStep& 
     bindings.finish();
 }
 
+template <typename TensorLimb>
+void bind_bfv_relinearization(OperationBindingBuilder& bindings, const BfvOperationStep& step,
+                              const BfvLevelDescriptor& level, std::size_t degree,
+                              TensorLimb tensor_limb)
+{
+    const auto& q = level.keyswitch_layout.q_mod_ids;
+    const auto& p = level.keyswitch_layout.p_mod_ids;
+    std::vector<int> q_p = q;
+    q_p.insert(q_p.end(), p.begin(), p.end());
+    const std::string keyswitch_prefix = step.resources.keyswitch_constants_id + "/hardware";
+    const std::string keyswitch_normalized = keyswitch_prefix + "/workspace/bconv/normalized";
+    for (std::size_t digit = 0; digit < level.keyswitch_layout.key_digits.size(); ++digit) {
+        const auto& sources = level.keyswitch_layout.key_digits[digit];
+        std::vector<int> targets;
+        for (int context : q) {
+            if (std::find(sources.begin(), sources.end(), context) == sources.end()) {
+                targets.push_back(context);
+            }
+        }
+        targets.insert(targets.end(), p.begin(), p.end());
+        const std::string digit_prefix = keyswitch_prefix + "/modup/d" + std::to_string(digit);
+        std::vector<std::string> switching_ids;
+        for (int context : sources) {
+            switching_ids.push_back(tensor_limb(2, context));
+        }
+        for (std::size_t index = 0; index < sources.size(); ++index) {
+            bindings.load(0, switching_ids[index]);
+            bindings.store(0, workspace_mod_id(keyswitch_prefix, "modup", sources[index]));
+        }
+        bind_bconv(bindings, sources, targets, switching_ids,
+                   workspace_ids(keyswitch_prefix, "modup", targets), keyswitch_normalized,
+                   digit_prefix, digit_prefix);
+        for (int context : q_p) {
+            const auto id = workspace_mod_id(keyswitch_prefix, "modup", context);
+            bind_transform_limb(bindings, id, id, context, degree, false);
+        }
+        for (int component = 0; component < 2; ++component) {
+            const auto accumulator_role = "accumulator/c" + std::to_string(component);
+            for (int context : q_p) {
+                bindings.load(0, workspace_mod_id(keyswitch_prefix, "modup", context));
+                bindings.load(1, step.resources.evaluation_key_id + "/d" + std::to_string(digit) +
+                                     "/c" + std::to_string(component) + "/mod" +
+                                     std::to_string(context));
+                if (digit != 0) {
+                    bindings.load(2, workspace_mod_id(keyswitch_prefix, accumulator_role, context));
+                }
+                bindings.store(2, workspace_mod_id(keyswitch_prefix, accumulator_role, context));
+            }
+        }
+    }
+    for (int component = 0; component < 2; ++component) {
+        const auto accumulator_role = "accumulator/c" + std::to_string(component);
+        for (int context : q_p) {
+            const auto id = workspace_mod_id(keyswitch_prefix, accumulator_role, context);
+            bind_transform_limb(bindings, id, id, context, degree, true);
+        }
+    }
+
+    const int p_context = p.front();
+    const std::string moddown_prefix = keyswitch_prefix + "/moddown";
+    for (int component = 0; component < 2; ++component) {
+        const auto accumulator_role = "accumulator/c" + std::to_string(component);
+        for (int context : q_p) {
+            const auto accumulator = workspace_mod_id(keyswitch_prefix, accumulator_role, context);
+            bindings.load(0, accumulator);
+            bindings.load(1, keyswitch_prefix + "/half/mod" + std::to_string(context));
+            bindings.store(0, accumulator);
+        }
+        bind_bconv(bindings, {p_context}, q,
+                   workspace_ids(keyswitch_prefix, accumulator_role, {p_context}),
+                   workspace_ids(keyswitch_prefix, "moddown/correction", q), keyswitch_normalized,
+                   moddown_prefix, moddown_prefix);
+        for (int context : q) {
+            const auto accumulator = workspace_mod_id(keyswitch_prefix, accumulator_role, context);
+            bindings.load(0, accumulator);
+            bindings.load(1, workspace_mod_id(keyswitch_prefix, "moddown/correction", context));
+            bindings.load(2, moddown_prefix + "/p_inverse/mod" + std::to_string(context));
+            bindings.store(0, accumulator);
+        }
+    }
+    for (int context : q) {
+        bindings.load(0, workspace_mod_id(keyswitch_prefix, "accumulator/c0", context));
+        bindings.load(1, tensor_limb(0, context));
+        bindings.store(2, limb_id(step.output, 0, context));
+    }
+    for (int context : q) {
+        bindings.load(0, tensor_limb(1, context));
+        bindings.load(1, workspace_mod_id(keyswitch_prefix, "accumulator/c1", context));
+        bindings.store(2, limb_id(step.output, 1, context));
+    }
+}
+
 void bind_bfv_multiply(OperationBindingBuilder& bindings, const BfvOperationStep& step,
                        const BfvLevelDescriptor& level, std::size_t degree)
 {
+    const bool fused = step.kind == BfvOperationKind::multiply;
     if (step.inputs.size() != 2 || step.inputs[0].component_count != 2 ||
-        step.inputs[1].component_count != 2 || step.output.component_count != 2 ||
-        !step.resources.requires_canonical_twiddles || step.resources.evaluation_key_id.empty() ||
-        step.resources.keyswitch_constants_id.empty() ||
+        step.inputs[1].component_count != 2 || step.output.component_count != (fused ? 2 : 3) ||
+        !step.resources.requires_canonical_twiddles ||
+        (fused && (step.resources.evaluation_key_id.empty() ||
+                   step.resources.keyswitch_constants_id.empty())) ||
         step.resources.multiply_constants_id.empty()) {
         throw std::invalid_argument("invalid BFV Multiply relocation manifest");
     }
@@ -448,8 +542,6 @@ void bind_bfv_multiply(OperationBindingBuilder& bindings, const BfvOperationStep
     bsk.push_back(level.m_sk_mod_id);
     std::vector<int> q_bsk = q;
     q_bsk.insert(q_bsk.end(), bsk.begin(), bsk.end());
-    std::vector<int> q_p = q;
-    q_p.insert(q_p.end(), p.begin(), p.end());
 
     const std::string multiply_prefix = step.resources.multiply_constants_id + "/hardware";
     const std::string multiply_normalized = multiply_prefix + "/workspace/bconv/normalized";
@@ -569,87 +661,17 @@ void bind_bfv_multiply(OperationBindingBuilder& bindings, const BfvOperationStep
             bindings.load(0, workspace_mod_id(multiply_prefix, alpha_role, context));
             bindings.load(1,
                           multiply_prefix + "/branchless/negative_b/mod" + std::to_string(context));
-            bindings.store(2, workspace_mod_id(multiply_prefix, tensor_role(component), context));
+            bindings.store(2, fused
+                ? workspace_mod_id(multiply_prefix, tensor_role(component), context)
+                : limb_id(step.output, component, context));
         }
     }
 
-    const std::string keyswitch_prefix = step.resources.keyswitch_constants_id + "/hardware";
-    const std::string keyswitch_normalized = keyswitch_prefix + "/workspace/bconv/normalized";
-    for (std::size_t digit = 0; digit < level.keyswitch_layout.key_digits.size(); ++digit) {
-        const auto& sources = level.keyswitch_layout.key_digits[digit];
-        std::vector<int> targets;
-        for (int context : q) {
-            if (std::find(sources.begin(), sources.end(), context) == sources.end()) {
-                targets.push_back(context);
-            }
-        }
-        targets.insert(targets.end(), p.begin(), p.end());
-        const std::string digit_prefix = keyswitch_prefix + "/modup/d" + std::to_string(digit);
-        const auto switching_ids = workspace_ids(multiply_prefix, tensor_role(2), sources);
-        for (std::size_t index = 0; index < sources.size(); ++index) {
-            bindings.load(0, switching_ids[index]);
-            bindings.store(0, workspace_mod_id(keyswitch_prefix, "modup", sources[index]));
-        }
-        bind_bconv(bindings, sources, targets, switching_ids,
-                   workspace_ids(keyswitch_prefix, "modup", targets), keyswitch_normalized,
-                   digit_prefix, digit_prefix);
-        for (int context : q_p) {
-            const auto id = workspace_mod_id(keyswitch_prefix, "modup", context);
-            bind_transform_limb(bindings, id, id, context, degree, false);
-        }
-        for (int component = 0; component < 2; ++component) {
-            const auto accumulator_role = "accumulator/c" + std::to_string(component);
-            for (int context : q_p) {
-                bindings.load(0, workspace_mod_id(keyswitch_prefix, "modup", context));
-                bindings.load(1, step.resources.evaluation_key_id + "/d" + std::to_string(digit) +
-                                     "/c" + std::to_string(component) + "/mod" +
-                                     std::to_string(context));
-                if (digit != 0) {
-                    bindings.load(2, workspace_mod_id(keyswitch_prefix, accumulator_role, context));
-                }
-                bindings.store(2, workspace_mod_id(keyswitch_prefix, accumulator_role, context));
-            }
-        }
-    }
-    for (int component = 0; component < 2; ++component) {
-        const auto accumulator_role = "accumulator/c" + std::to_string(component);
-        for (int context : q_p) {
-            const auto id = workspace_mod_id(keyswitch_prefix, accumulator_role, context);
-            bind_transform_limb(bindings, id, id, context, degree, true);
-        }
-    }
-
-    const int p_context = p.front();
-    const std::string moddown_prefix = keyswitch_prefix + "/moddown";
-    for (int component = 0; component < 2; ++component) {
-        const auto accumulator_role = "accumulator/c" + std::to_string(component);
-        for (int context : q_p) {
-            const auto accumulator = workspace_mod_id(keyswitch_prefix, accumulator_role, context);
-            bindings.load(0, accumulator);
-            bindings.load(1, keyswitch_prefix + "/half/mod" + std::to_string(context));
-            bindings.store(0, accumulator);
-        }
-        bind_bconv(bindings, {p_context}, q,
-                   workspace_ids(keyswitch_prefix, accumulator_role, {p_context}),
-                   workspace_ids(keyswitch_prefix, "moddown/correction", q), keyswitch_normalized,
-                   moddown_prefix, moddown_prefix);
-        for (int context : q) {
-            const auto accumulator = workspace_mod_id(keyswitch_prefix, accumulator_role, context);
-            bindings.load(0, accumulator);
-            bindings.load(1, workspace_mod_id(keyswitch_prefix, "moddown/correction", context));
-            bindings.load(2, moddown_prefix + "/p_inverse/mod" + std::to_string(context));
-            bindings.store(0, accumulator);
-        }
-    }
-    for (int context : q) {
-        bindings.load(0, workspace_mod_id(keyswitch_prefix, "accumulator/c0", context));
-        bindings.load(1, workspace_mod_id(multiply_prefix, tensor_role(0), context));
-        bindings.store(2, limb_id(step.output, 0, context));
-    }
-    for (int context : q) {
-        bindings.load(0, workspace_mod_id(multiply_prefix, tensor_role(1), context));
-        bindings.load(1, workspace_mod_id(keyswitch_prefix, "accumulator/c1", context));
-        bindings.store(2, limb_id(step.output, 1, context));
+    if (fused) {
+        bind_bfv_relinearization(bindings, step, level, degree,
+            [&](int component, int context) {
+                return workspace_mod_id(multiply_prefix, tensor_role(component), context);
+            });
     }
     bindings.finish();
 }
@@ -832,7 +854,21 @@ BfvRelocationSchedule build_bfv_relocation_schedule(const BfvLoweredProgram& pro
             bind_ciphertext_binary(bindings, step, level);
             break;
         case BfvOperationKind::multiply:
+        case BfvOperationKind::multiply_tensor:
             bind_bfv_multiply(bindings, step, level, degree);
+            break;
+        case BfvOperationKind::relinearize:
+            if (step.inputs.size() != 1 || step.inputs.front().component_count != 3 ||
+                step.output.component_count != 2 ||
+                step.resources.evaluation_key_id.empty() ||
+                step.resources.keyswitch_constants_id.empty()) {
+                throw std::invalid_argument("invalid BFV Relinearize relocation manifest");
+            }
+            bind_bfv_relinearization(bindings, step, level, degree,
+                [&](int component, int context) {
+                    return limb_id(step.inputs.front(), component, context);
+                });
+            bindings.finish();
             break;
         case BfvOperationKind::add_plain:
         case BfvOperationKind::subtract_plain:

@@ -1,3 +1,4 @@
+#include "delivery_options.hpp"
 #include "hpu/seal/application_image.hpp"
 #include "hpu/seal/application_delivery.hpp"
 #include "hpu/seal/ckks_context.hpp"
@@ -22,29 +23,13 @@
 
 namespace {
 
-constexpr const char* kArtifactStem = "ckks_composed_application";
+constexpr const char* kArtifactStemBase = "ckks_composed_application";
 
-struct Options {
-    bool print_asm = false;
-    std::optional<std::filesystem::path> emit_directory;
-};
+using Options = DeliveryOptions;
 
 Options parse_options(int argc, char** argv)
 {
-    Options options;
-    for (int index = 1; index < argc; ++index) {
-        const std::string argument = argv[index];
-        if (argument == "--print-asm") {
-            options.print_asm = true;
-        } else if (argument == "--emit-dir" && index + 1 < argc) {
-            options.emit_directory = std::filesystem::path(argv[++index]);
-        } else {
-            throw std::invalid_argument(
-                "usage: hpu_ckks_composed_application_example "
-                "[--print-asm] [--emit-dir PATH]");
-        }
-    }
-    return options;
+    return parse_delivery_options(argc, argv, "--print-asm");
 }
 
 void require(bool condition, const char* message)
@@ -80,12 +65,14 @@ int main(int argc, char** argv)
 {
     try {
         const Options options = parse_options(argc, argv);
+        const auto kArtifactStem = delivery_artifact_stem(kArtifactStemBase, options, 128);
 
         // Teaching-sized parameters keep the example fast. The planner and
         // runtime APIs are identical for the deployment degree N=65536.
         hpu::seal_adapter::CkksContextSpec spec;
-        spec.poly_modulus_degree = 128;
-        spec.coeff_modulus_bits = {20, 20, 20, 20};
+        spec.poly_modulus_degree = options.poly_modulus_degree.value_or(128);
+        spec.coeff_modulus_bits = spec.poly_modulus_degree >= 4096
+            ? std::vector<int>{31, 31, 31, 31} : std::vector<int>{20, 20, 20, 20};
         const auto bundle = hpu::seal_adapter::create_ckks_context(spec);
         const hpu::seal_adapter::CkksLevelChain level_chain(*bundle.context);
         const auto& top = level_chain.top();
@@ -113,7 +100,8 @@ int main(int argc, char** argv)
             galois_keys);
 
         const std::vector<double> input {0.25, -1.5, 2.0, 0.75};
-        constexpr double input_scale = 1048576.0; // 2^20
+        const double input_scale = spec.poly_modulus_degree >= 4096
+            ? 34359738368.0 : 1048576.0; // 2^35 or 2^20
         ::seal::CKKSEncoder encoder(*bundle.context);
         ::seal::Plaintext encoded_input;
         encoder.encode(input, input_scale, encoded_input);
@@ -151,7 +139,7 @@ int main(int argc, char** argv)
         // Build all immutable data and mutable workspaces in HPU_MEM before
         // constructing the operation plan.
         hpu::seal_adapter::CkksApplicationImageBuilder image_builder(
-            *bundle.context, 2048);
+            *bundle.context, delivery_construction_limit(spec.poly_modulus_degree, 2048));
         image_builder.add_modulus_table();
         const auto canonical_twiddles =
             image_builder.add_canonical_twiddles();
@@ -222,6 +210,7 @@ int main(int argc, char** argv)
 
         // Host functional execution consumes the same image and planned
         // objects. It does not call seal::Evaluator.
+        image_builder.trim_capacity_to_used_lines();
         hpu::seal_adapter::CkksSoftwareExecutor software_executor(
             *bundle.context, image_builder.image());
         software_executor.rotate_slots(
@@ -269,9 +258,10 @@ int main(int argc, char** argv)
                 maximum_error,
                 std::abs(decoded[index] - expected[index]));
         }
-        require(
-            maximum_error < 1e-2,
-            "composed CKKS application exceeded its decoded tolerance");
+        if (!(maximum_error < 1e-2)) {
+            throw std::runtime_error("composed CKKS application exceeded its decoded tolerance: error="
+                + std::to_string(maximum_error) + ", first_slot=" + std::to_string(decoded.front()));
+        }
 
         // The same graph now becomes a relocatable encoded program and
         // generated C artifacts. No application-specific DMA code is needed.
@@ -326,7 +316,7 @@ int main(int argc, char** argv)
             std::cout
                 << "Pass --emit-dir PATH to write deployment artifacts.\n";
         }
-        if (options.print_asm) {
+        if (options.print_program) {
             std::cout << "\n--- generated HPU inline-assembly body ---\n"
                       << lowered.body_asm;
         } else {

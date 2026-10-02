@@ -408,20 +408,15 @@ void BfvSoftwareExecutor::mod_switch(const PreparedBfvRnsObject& input,
     }
 }
 
-void BfvSoftwareExecutor::multiply(const PreparedBfvRnsObject& left,
-                                   const PreparedBfvRnsObject& right,
-                                   const PreparedEvaluationKey& relinearization_key,
-                                   const PreparedKeySwitchConstants& keyswitch_constants,
-                                   const PreparedBfvMultiplyConstants& multiply_constants,
-                                   const std::vector<PreparedCanonicalTwiddles>& tables,
-                                   const PreparedBfvRnsObject& output)
+std::vector<BfvSoftwareExecutor::RnsPolynomial> BfvSoftwareExecutor::multiply_tensor(
+    const PreparedBfvRnsObject& left, const PreparedBfvRnsObject& right,
+    const PreparedBfvMultiplyConstants& multiply_constants,
+    const std::vector<PreparedCanonicalTwiddles>& tables)
 {
     validate_object(left, 2, hpu::runtime::PolynomialDomain::coefficient);
     validate_object(right, 2, hpu::runtime::PolynomialDomain::coefficient);
-    validate_object(output, 2, hpu::runtime::PolynomialDomain::coefficient);
-    if (left.parms_id != right.parms_id || left.parms_id != output.parms_id) {
+    if (left.parms_id != right.parms_id)
         throw std::invalid_argument("BFV software Multiply operands are at different levels");
-    }
     const auto& level = level_chain_.require(left.parms_id);
     const auto& q_ids = level.keyswitch_layout.q_mod_ids;
     const auto& b_ids = level.b_mod_ids;
@@ -556,8 +551,47 @@ void BfvSoftwareExecutor::multiply(const PreparedBfvRnsObject& left,
         scaled_tensor[component] = std::move(y);
     }
 
-    key_switch_coefficients(scaled_tensor[2], scaled_tensor[0], &scaled_tensor[1], level,
-                            relinearization_key, keyswitch_constants, tables, output);
+    return scaled_tensor;
+}
+
+void BfvSoftwareExecutor::multiply(const PreparedBfvRnsObject& left,
+    const PreparedBfvRnsObject& right, const PreparedEvaluationKey& relinearization_key,
+    const PreparedKeySwitchConstants& keyswitch_constants,
+    const PreparedBfvMultiplyConstants& multiply_constants,
+    const std::vector<PreparedCanonicalTwiddles>& tables, const PreparedBfvRnsObject& output)
+{
+    validate_object(output, 2, hpu::runtime::PolynomialDomain::coefficient);
+    if (left.parms_id != output.parms_id)
+        throw std::invalid_argument("BFV software Multiply output is at a different level");
+    const auto scaled_tensor = multiply_tensor(left, right, multiply_constants, tables);
+    key_switch_coefficients(scaled_tensor[2], scaled_tensor[0], &scaled_tensor[1],
+                            level_chain_.require(left.parms_id), relinearization_key,
+                            keyswitch_constants, tables, output);
+}
+
+void BfvSoftwareExecutor::multiply(const PreparedBfvRnsObject& left,
+    const PreparedBfvRnsObject& right, const PreparedBfvMultiplyConstants& constants,
+    const std::vector<PreparedCanonicalTwiddles>& tables, const PreparedBfvRnsObject& output)
+{
+    validate_object(output, 3, hpu::runtime::PolynomialDomain::coefficient);
+    if (left.parms_id != output.parms_id)
+        throw std::invalid_argument("BFV software tensor output is at a different level");
+    const auto tensor = multiply_tensor(left, right, constants, tables);
+    for (std::size_t c = 0; c < 3; ++c) write_polynomial(output.components[c], tensor[c]);
+}
+
+void BfvSoftwareExecutor::relinearize(const PreparedBfvRnsObject& tensor,
+    const PreparedEvaluationKey& key, const PreparedKeySwitchConstants& constants,
+    const std::vector<PreparedCanonicalTwiddles>& tables, const PreparedBfvRnsObject& output)
+{
+    validate_object(tensor, 3, hpu::runtime::PolynomialDomain::coefficient);
+    validate_object(output, 2, hpu::runtime::PolynomialDomain::coefficient);
+    if (tensor.parms_id != output.parms_id)
+        throw std::invalid_argument("BFV software Relinearize output is at a different level");
+    const auto c0 = read_polynomial(tensor.components[0]);
+    const auto c1 = read_polynomial(tensor.components[1]);
+    const auto c2 = read_polynomial(tensor.components[2]);
+    key_switch_coefficients(c2, c0, &c1, level_chain_.require(tensor.parms_id), key, constants, tables, output);
 }
 
 void BfvSoftwareExecutor::key_switch_coefficients(

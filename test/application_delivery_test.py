@@ -16,10 +16,11 @@ def rows(path):
 
 
 def main():
-    example, validator, scheme = sys.argv[1:]
+    example, validator, scheme = sys.argv[1:4]
+    example_args = sys.argv[4:]
     with tempfile.TemporaryDirectory(prefix="hpu-delivery-test-") as root:
         package = Path(root) / "package"
-        subprocess.run([example, "--emit-dir", str(package)], check=True)
+        subprocess.run([example, *example_args, "--emit-dir", str(package)], check=True)
         subprocess.run([validator, str(package)], check=True)
         # Parse metadata with an independent JSON implementation as well.
         for path in package.rglob("*.json"):
@@ -32,6 +33,7 @@ def main():
         assert parameters["poly_modulus_degree"] > 0
         graph = json.loads((package / descriptor["operation_graph"]).read_text())
         assert graph["operations"] and graph["final_output"]
+        assert [op["operation_index"] for op in graph["operations"]] == list(range(len(graph["operations"])))
         report = json.loads((package / descriptor["oracle_report"]).read_text())
         assert report["hardware_verified"] is False
         assert report["rtl_verified"] is False
@@ -72,6 +74,21 @@ def main():
         assert (package / descriptor["semantic_report"]).is_file()
         dma = rows(package / descriptor["dma_relocation_manifest"])
         assert dma and len(dma[0]) == 14
+        config = json.loads((package / descriptor["memory_config"]).read_text())
+        assert config["capacity_lines"] == config["used_lines"]
+        node_dma_counts = {}
+        for binding in dma:
+            if not binding["operation_index"]:
+                assert binding["operation_id"] == "$application"
+                continue
+            index = int(binding["operation_index"])
+            assert binding["operation_id"] == graph["operations"][index]["id"]
+            count = node_dma_counts.get(index, 0)
+            assert int(binding["operation_dma_index"]) == count
+            node_dma_counts[index] = count + 1
+        assert set(node_dma_counts) == set(range(len(graph["operations"])))
+        if example_args:
+            assert parameters["poly_modulus_degree"] == int(example_args[example_args.index("--degree") + 1])
         if scheme == "bgv" and "plain_chain" in example:
             sys.dont_write_bytecode = True
             sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
@@ -79,13 +96,13 @@ def main():
             (package / "unused-extra-file").write_text("unexpected stale member")
             # Validator refuses extra members; regeneration cannot erase them.
             try:
-                generate(example, validator, package)
+                generate(example, validator, package, example_args)
             except subprocess.CalledProcessError:
                 pass
             else:
                 raise AssertionError("publisher accepted an invalid existing package")
             (package / "unused-extra-file").unlink()
-            generate(example, validator, package)
+            generate(example, validator, package, example_args)
             subprocess.run([validator, str(package)], check=True)
         golden_file = package / golden[0]["path"]
         corrupted = bytearray(golden_file.read_bytes())

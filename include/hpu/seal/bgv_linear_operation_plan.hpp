@@ -1,5 +1,5 @@
 #pragma once
 
-// Preferred include for the same-level BGV linear plan. The original
-// bgv_plain_operation_plan.hpp remains available for source compatibility.
-#include "hpu/seal/bgv_plain_operation_plan.hpp"
+// Compatibility include for tail-based calls. New graph applications use
+// bgv_operation_plan.hpp and explicit BgvPlannedValue operands.
+#include "hpu/seal/bgv_operation_plan.hpp"

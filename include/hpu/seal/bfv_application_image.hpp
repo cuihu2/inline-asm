@@ -106,6 +106,7 @@ public:
         hpu::runtime::AllocationKind kind = hpu::runtime::AllocationKind::output);
 
     const hpu::runtime::HpuMemImage& image() const noexcept;
+    void trim_capacity_to_used_lines();
     const BfvLevelChain& level_chain() const noexcept;
     const BfvLevelRegistry& registry() const noexcept;
     const std::vector<BfvLevelDescriptor>& levels() const noexcept;

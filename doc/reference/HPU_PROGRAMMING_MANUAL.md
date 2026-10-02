@@ -875,7 +875,8 @@ twiddle、预制常量及输出装入 HPU_MEM，逐条核对编码后 custom1 �
 `correction_factor` 由 host 用 `modswitch_correction_factor` 更新；它不是密文系数的
 CPU 运算。这个单次操作包只加载一次模表，最后发一次 `psync`。目前已做
 codegen/编码/DMA 生命周期检查、HPU_MEM 常量与 modified-SEAL 两级逐 limb 差分；
-现已接入 BGV 线性 planner，仍无逐指令软件执行或实体 HPU 执行证据。
+现已接入 BGV 分支图 planner 和 `BgvSoftwareExecutor`，支持独立 Multiply/Relinearize；
+仍无逐指令软件执行或实体 HPU 执行证据。
 
 #### SEAL-facing BGV NTT KeySwitch 指令体
 
@@ -934,20 +935,18 @@ BGV 行旋转与列交换使用同一自同构 + Galois KeySwitch 单次包：�
 构成最终输出。Galois key 按元素 `k` 选取，`correction_factor` 不变。
 正/负行步长及列交换已在顶层/降一级与 modified-SEAL 逐 limb 差分；
 `N=65536,Q=3,P=1` 镜像容量估算为 169985 line。该路径已接入通用
-`BgvLinearOperationPlan` 和整图功能模型；逐指令软件执行与实体 HPU 验证仍待完成。
+`BgvOperationPlan` 和整图功能模型；逐指令软件执行与实体 HPU 验证仍待完成。
 
-`BgvLinearOperationPlan`（兼容名 `BgvPlainOperationPlan`）已支持同 level
-线性链中的 `AddPlain/SubPlain/MultiplyPlain`、密文 `Add/Sub`、
-Multiply+Relinearize、行旋转、列交换及跨 level ModSwitch：
-每个步骤独立占用可写输出 span，
-下一步骤的 DMA 直接从该 span 加载，程序只在开头加载一次模表并于
-末尾 `psync` 一次。密文 Add/Sub 的不等 factor 平衡在 HPU `PMUL` 中
-执行，输出 factor 被逐步跟踪，后续明文按当时 factor 预制；
-CPU 不计算中间密文。旋转步骤复用单次 Galois 包的编码片段、
-twiddle、key 与工作区，通过 DMA 重定位直接读取前一步输出，且不重复
-加载模表或发出中间 `psync`。`hpu_bgv_plain_chain_example` 与
-`hpu_bgv_rotate_chain_example` 分别展示纯明文链和旋转链，
-`hpu_bgv_multiply_chain_example` 展示乘法、重线性化、ModSwitch 和后继明文操作。
+`BgvOperationPlan` 支持分支计算图中的 `AddPlain/SubPlain/MultiplyPlain`、密文 `Add/Sub`、
+独立 Multiply（三分量）、Relinearize（二分量）、融合 Multiply+Relinearize、
+行旋转、列交换及跨 level ModSwitch。每个步骤独立占用可写输出 span，多个节点可引用同一输入，
+后继 DMA 按输入句柄读取相应 span；level 和 correction factor 从该输入推导。
+相同只读 key、常量和 twiddle 按实际内容共享物理分配，节点 scratch 和输出保持独立。
+程序只在开头加载一次模表、末尾 `psync` 一次。密文 Add/Sub 的不等 factor 平衡
+由 HPU `PMUL` 执行，后续明文按对应输入 factor 预制；CPU 不计算中间密文。
+`BgvLinearOperationPlan` 和 `BgvPlainOperationPlan` 保留为兼容别名；旧调用沿尾节点追加。
+原三个 chain 示例继续展示线性流程，`hpu_bgv_composed_application_example` 展示旋转分支、
+汇合、独立乘法/重线性化、降层和后继明文操作。所有示例支持 `--degree 65536` 部署配置。
 `BgvSoftwareExecutor` 从同一初始 HPU_MEM 读取 operand、key、常量和 twiddle，
 按 plan edge 写回每一步 output/workspace；交付适配器将各步物理 NTT word 与独立
 modified-SEAL oracle 比较后才允许写包。

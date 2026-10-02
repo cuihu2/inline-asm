@@ -31,11 +31,12 @@ cmake --build build -j --target hpu_bgv_delivery
 | `bgv_plain_chain` | `hpu_bgv_plain_chain_example` | AddPlain → MultiplyPlain → SubtractPlain |
 | `bgv_rotate_chain` | `hpu_bgv_rotate_chain_example` | AddPlain → RotateRows → AddPlain |
 | `bgv_multiply_chain` | `hpu_bgv_multiply_chain_example` | AddPlain → Multiply+Relinearize → ModSwitch → AddPlain |
+| `bgv_composed_application` | `hpu_bgv_composed_application_example` | RotateRows/RotateColumns 分支 → Add → Multiply → Relinearize → ModSwitch → AddPlain |
 
 可以只生成一个案例，目标为 `<case>_delivery`。更改统一输出根目录使用
 `-DHPU_APPLICATION_OUTPUT_ROOT=/path/to/packages`。
 
-所有示例也支持 `--emit-dir PATH`，该接口要求目标目录不存在：
+所有示例支持 `--degree N`（128 到 65536 的 2 次幂）和 `--emit-dir PATH`；目标目录要求不存在：
 
 ```bash
 ./build/hpu_bfv_rotation_example --emit-dir outputs/my_bfv_rotation
@@ -49,9 +50,31 @@ cmake --build build -j --target hpu_bgv_delivery
 
 每次示例运行使用新的 SEAL 随机密钥和加密随机数，因此跨次生成的字节可以不同；
 同一次导出的指令、镜像和 golden 始终属于同一组测试。序列化对同一个请求是确定性的。
-示例参数用于功能测试：多项式示例为 N=65536，其余当前为 N=128，且不强制 SEAL
-安全等级；实际参数记录在包内。SecretKey 和 PRNG seed 不进入交付包，执行所需的
+默认多项式示例为 N=65536，其余默认 N=128。所有示例提供 N=65536 配置，
+部署规模通过 `hpu_fhe_deployment_delivery` 单独生成；目录后缀为 `_n65536`，
+多项式示例沿用原目录。BFV 大规模配置使用 31-bit Q/P 和 20-bit batching t；
+BGV 在 N=65536 使用 t=786433，满足 `2N | (t-1)`。这些配置用于功能测试，
+不强制 SEAL 安全等级；实际参数记录在包内。SecretKey 和 PRNG seed 不进入交付包，执行所需的
 重线性化/Galois key 已在初始镜像中。
+
+## 部署规模生成
+
+```bash
+# 七个带 _n65536 后缀的包，加上原 N=65536 多项式包。
+# 建议限制并行数，宿主需要同时准备密钥、软件模型和包镜像。
+cmake --build build -j2 --target hpu_fhe_deployment_delivery
+
+# 也可以只生成一个，或直接执行示例。
+cmake --build build --target bgv_composed_application_n65536_delivery
+./build/hpu_bgv_composed_application_example --degree 65536 --emit-dir outputs/my_bgv_n65536
+
+# 将这些耗时包测试加入 CTest（默认不注册）。
+cmake -S . -B build -DHPU_ENABLE_SEAL_INTEGRATION=ON \
+  -DHPU_ENABLE_DEPLOYMENT_APPLICATION_TESTS=ON
+ctest --test-dir build -L application-deployment --output-on-failure
+```
+
+BGV 图接口和完整分支示例见 [BGV 应用说明](../examples/BGV_COMPOSED_APPLICATION_EXAMPLE.md)。
 
 ## 目录与数据协议
 
@@ -80,7 +103,7 @@ cmake --build build -j --target hpu_bgv_delivery
 ```
 
 具体文件路径以 `package.json` 和清单中的 `path` 为准。`semantic/decoded.json`
-在公共接口中是可选项，当前七个示例均提供。
+在公共接口中是可选项，当前八个示例均提供。
 
 - `package.json`：`schema=hpu-application-package`、`schema_version=1`、
   `scheme=ckks|bfv|bgv`、case 名称及各清单路径。
@@ -89,10 +112,11 @@ cmake --build build -j --target hpu_bgv_delivery
   `hpu_run_<stem>()`，供 Nexus AM 侧编译调用。
 - DMA 清单统一为 14 列：`instruction_index,dma_index,operation_index,operation_id,`
   `operation_dma_index,direction,object_slot,type_or_release,flag,allocation_id,`
-  `line_offset,line_count,word_hex,normalized_asm`。BGV 适配器将原六列 runtime 清单
-  转换为此格式；其 operation 列使用 application 级标记，逐算子语义见计算图。
+  `line_offset,line_count,word_hex,normalized_asm`。三种方案均保留具体节点的 operation index/ID
+  和节点内部 DMA 序号；公共模表加载使用 `$application`，operation index 为空。
 - `memory/`：uint32 little-endian，每行 64 个 word，即 256 字节。
-  镜像大小为 `used_lines * 256`，实际 HPU_MEM window 按 `capacity_lines` 配置。
+  镜像大小为 `used_lines * 256`，实际 HPU_MEM window 按 `capacity_lines` 配置。当前示例在布局完成后收紧容量，
+  因此 `capacity_lines=used_lines`；构建时的容量上限不会变成目标窗口大小。
   `x10` 传 line offset，`x11` 传 line count；两者都是行数，不是字节地址。
   执行前加载初始镜像，output 与 workspace 从零开始。
 - `golden_manifest.csv`：记录 object、component、MOD_ID、模数、domain、路径、
@@ -103,7 +127,10 @@ cmake --build build -j --target hpu_bgv_delivery
   所有 word 均为 `[0,q)` 的 residue，文件补零到完整 HPU line。
 - `parameters.json` 保存 N、plain modulus、安全等级、key-context 模数及各 level
   的 `parms_id`、Q 和 chain index。`operation_graph.json` 保存节点、输入引用、
-  输出、level、scale/correction factor。CKKS/BFV 的多分支依赖关系会保留。
+  输出、level、scale/correction factor。节点的 `operation_index` 从 0 连续编号，
+  `golden_object_id=step_<index>`；三种方案的多分支依赖均保留。
+  BGV 只读资源可有多个逻辑名称，对外 memory 清单只列物理 allocation，
+  DMA 的 `allocation_id` 始终指向这张清单中的物理对象。
 - `provenance/files.csv` 列出其余文件的路径、角色、长度和 FNV-1a64。
   它用于发现损坏；不是发布者签名。`build.json` 记录 producer 信息。默认 revision
   和 worktree 状态采集于 CMake 配置时；正式生成可通过环境变量
@@ -141,7 +168,8 @@ RNS limb 与 SEAL oracle 转换后的 HPU 物理 word 比较。报告中的 `mod
 执行证据。
 `BgvSoftwareExecutor` 覆盖 plain/cipher arithmetic、row/column rotation、
 KeySwitch、Multiply+Relinearize 和 ModSwitch，并从包内准备好的 key、常量、twiddle
-及中间 allocation 执行整条线性 plan。
+及中间 allocation 按节点输入引用执行整张图，支持独立 Multiply（三分量）和
+Relinearize，也保留旧接口的融合 Multiply+Relinearize。
 
 公共写入器校验文件、编码一致性、DMA span、allocation、输出覆盖、初始零值和
 物理 word 范围，并在私有 staging 目录中写入，通过落盘校验后发布新目录。
@@ -226,6 +254,12 @@ hpu_application_delivery(bfv my_bfv_case my_bfv_case)
 ```bash
 cmake --build build -j
 ctest --test-dir build --output-on-failure
-# 只检查公共写入器和七个实际应用包
+# 只检查公共写入器和默认应用包
 ctest --test-dir build -L application-delivery --output-on-failure
 ```
+
+### 显式 Multiply 与 Relinearize
+
+CKKS、BFV、BGV 均可在 plan 中分别添加 Multiply（三分量输出）和 Relinearize（二分量输出），
+每个节点都有独立的 `operation_index` 和 golden 对象。BFV 和 BGV 的原有融合乘法接口继续兼容，
+融合节点标记为 `multiply_relinearize`；IT 用例必须提供对应的融合 SEAL oracle 快照。

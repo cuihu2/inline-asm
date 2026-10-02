@@ -62,14 +62,16 @@ int main(int argc, char** argv)
 {
     try {
         const auto options = parse_delivery_options(argc, argv, "--print-dma");
+        const auto artifact_stem = delivery_artifact_stem("bgv_plain_chain", options);
+        const auto degree = options.poly_modulus_degree.value_or(128);
         // Small parameters make the example quick; the API also accepts
         // N=65536 when the HPU_MEM window has enough lines.
         seal::EncryptionParameters parameters(seal::scheme_type::bgv);
-        parameters.set_poly_modulus_degree(128);
+        parameters.set_poly_modulus_degree(degree);
         parameters.set_coeff_modulus({
             seal::Modulus(2013265921U), seal::Modulus(1811939329U),
             seal::Modulus(469762049U), seal::Modulus(1224736769U)});
-        parameters.set_plain_modulus(65537);
+        parameters.set_plain_modulus(degree > 32768 ? 786433 : 65537);
         seal::SEALContext context(parameters, true, seal::sec_level_type::none);
         require(context.parameters_set(), "BGV example context is invalid");
         seal::KeyGenerator generator(context);
@@ -86,13 +88,13 @@ int main(int argc, char** argv)
         plan.append_add_plain("add_bias", bias);
         plan.append_multiply_plain("multiply_polynomial", multiplier);
         plan.append_subtract_plain("subtract_offset", offset);
-        auto package = plan.lower(512);
+        auto package = plan.lower(delivery_construction_limit(degree, 512));
         hpu::seal_adapter::BgvSoftwareExecutor software_executor(
             context, package.image);
         software_executor.execute(plan);
         const auto runtime =
             hpu::seal_adapter::render_bgv_keyswitch_runtime_artifacts(
-                "bgv_plain_chain", package);
+                artifact_stem, package);
 
         // Independent SEAL oracle. This is validation code, not part of the
         // generated runtime and does not prepare intermediate HPU inputs.
@@ -177,7 +179,7 @@ int main(int argc, char** argv)
         if (options.print_program) std::cout << runtime.resolved_dma_manifest;
         if (options.emit_directory) {
             auto request = hpu::seal_adapter::make_bgv_application_package(
-                "bgv_plain_chain", context, plan, package,
+                artifact_stem, context, plan, package,
                 expected_after_step, software_executor.memory().words());
             seal::Decryptor decryptor(context, generator.secret_key());
             seal::Plaintext decrypted;

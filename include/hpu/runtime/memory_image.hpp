@@ -48,6 +48,12 @@ public:
         std::size_t word_count,
         AllocationKind kind);
 
+    // A logical name for an existing read-only physical allocation. Aliases
+    // consume no lines and are not duplicate rows in the delivery manifests.
+    void add_alias(std::string id, const std::string& target);
+    bool contains(const std::string& id) const noexcept;
+    void trim_capacity_to_used_lines();
+
     const HpuMemAllocation& allocation(const std::string& id) const;
     const std::vector<HpuMemAllocation>& allocations() const noexcept;
     const std::vector<std::uint32_t>& words() const noexcept;

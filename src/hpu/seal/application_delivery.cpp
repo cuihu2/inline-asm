@@ -167,8 +167,11 @@ const char* name(CkksOperationKind kind)
 const char* name(BfvOperationKind kind)
 {
     switch (kind) {
+    case BfvOperationKind::multiply: return "multiply_relinearize";
+    case BfvOperationKind::multiply_tensor: return "multiply";
+    case BfvOperationKind::relinearize: return "relinearize";
 #define OP(x) case BfvOperationKind::x: return #x
-        OP(add); OP(subtract); OP(multiply); OP(add_plain); OP(subtract_plain);
+        OP(add); OP(subtract); OP(add_plain); OP(subtract_plain);
         OP(multiply_plain); OP(negate); OP(mod_switch); OP(rotate_rows); OP(rotate_columns);
 #undef OP
     }
@@ -183,6 +186,8 @@ const char* name(BgvPlainOperationKind kind)
     case BgvPlainOperationKind::add_ciphertext: return "add";
     case BgvPlainOperationKind::subtract_ciphertext: return "subtract";
     case BgvPlainOperationKind::multiply_ciphertext: return "multiply_relinearize";
+    case BgvPlainOperationKind::multiply_tensor: return "multiply";
+    case BgvPlainOperationKind::relinearize: return "relinearize";
     case BgvPlainOperationKind::rotate_rows: return "rotate_rows";
     case BgvPlainOperationKind::rotate_columns: return "rotate_columns";
     case BgvPlainOperationKind::modswitch_to_next: return "mod_switch";
@@ -193,7 +198,8 @@ const char* name(BgvPlainOperationKind kind)
 void output_metadata(std::ostringstream& graph, const std::string& id,
                      const ::seal::Ciphertext& oracle, std::size_t index)
 {
-    graph << ",\"output\":" << quoted(id)
+    graph << ",\"operation_index\":" << index
+          << ",\"output\":" << quoted(id)
           << ",\"golden_object_id\":\"step_" << index << '"'
           << ",\"parms_id\":" << parms_id_json(oracle.parms_id())
           << ",\"component_count\":" << oracle.size()
@@ -315,8 +321,9 @@ hpu::delivery::ApplicationPackageRequest make_bgv_application_package(
 {
     if (oracles.empty() || oracles.size() != plan.steps().size())
         throw std::invalid_argument("BGV delivery requires one SEAL oracle snapshot per operation");
-    if (application.parms_id != oracles.back().parms_id() ||
-        application.correction_factor != oracles.back().correction_factor())
+    const auto& final_output = plan.final_output();
+    if (application.parms_id != final_output.parms_id ||
+        application.correction_factor != final_output.correction_factor)
         throw std::invalid_argument("BGV delivery oracle metadata differs from application");
     auto request = base_request(stem, context, SchemeKind::bgv, application.image);
     const auto artifacts = render_bgv_keyswitch_runtime_artifacts(stem, application);
@@ -327,45 +334,34 @@ hpu::delivery::ApplicationPackageRequest make_bgv_application_package(
     program.source = artifacts.source;
     for (const auto& instruction : program.instructions)
         program.assembly += instruction.normalized_asm + '\n';
-    // Normalize BGV's original six-column CSV to the common resolved DMA ABI.
-    auto manifest = stream();
-    manifest << "instruction_index,dma_index,operation_index,operation_id,operation_dma_index,"
-                "direction,object_slot,type_or_release,flag,allocation_id,line_offset,line_count,word_hex,normalized_asm\n";
-    for (const auto& dma : application.dma) {
-        const auto& instruction = application.instructions.at(dma.instruction_index);
-        manifest << dma.instruction_index << ',' << dma.dma_index << ",,application,"
-                 << dma.dma_index << ',' << hpu::to_string(dma.direction) << ','
-                 << unsigned(dma.object_slot) << ',' << unsigned(dma.type_or_release) << ','
-                 << unsigned(dma.flag) << ',' << '"' << dma.allocation_id << "\","
-                 << dma.span.line_offset << ',' << dma.span.line_count << ','
-                 << hpu::format_word_hex(instruction.word) << ",\"" << instruction.normalized_asm << "\"\n";
-    }
-    program.resolved_dma_manifest = manifest.str();
+    program.resolved_dma_manifest = artifacts.resolved_dma_manifest;
     auto graph = stream();
     graph << "{\"operations\":[";
-    std::string prior = "input";
     for (std::size_t i = 0; i < oracles.size(); ++i) {
         const auto& step = plan.steps()[i];
-        const auto prefix = i + 1 == oracles.size() ? "output" : "steps/" + step.id + "/output";
+        const auto prefix = plan.allocation_prefix(step.output);
+        const auto& oracle = oracles[i];
+        if (oracle.parms_id() != step.output.parms_id ||
+            oracle.correction_factor() != step.output.correction_factor ||
+            oracle.size() != step.output.component_count || !oracle.is_ntt_form())
+            throw std::invalid_argument("BGV delivery oracle metadata differs from planned output: " + step.id);
         append_outputs(
             request, context, prefix, i, oracles[i],
             &executed);
         if (i) graph << ',';
         graph << "{\"id\":" << quoted(step.id) << ",\"kind\":" << quoted(name(step.kind))
-              << ",\"inputs\":[" << quoted(prior);
+              << ",\"inputs\":[";
+        for (std::size_t j = 0; j < step.inputs.size(); ++j) {
+            if (j) graph << ',';
+            graph << quoted(plan.allocation_prefix(step.inputs[j]));
+        }
         if (step.kind == BgvPlainOperationKind::add ||
             step.kind == BgvPlainOperationKind::subtract ||
             step.kind == BgvPlainOperationKind::multiply)
             graph << ',' << quoted("steps/" + step.id + "/plain");
-        else if (step.kind == BgvPlainOperationKind::add_ciphertext ||
-                 step.kind == BgvPlainOperationKind::subtract_ciphertext)
-            graph << ',' << quoted("steps/" + step.id + "/right");
-        else if (step.kind == BgvPlainOperationKind::multiply_ciphertext)
-            graph << ',' << quoted("steps/" + step.id + "/multiply/input/right");
         graph << "],\"rotation_steps\":" << step.rotation_steps;
         output_metadata(graph, prefix, oracles[i], i);
         graph << '}';
-        prior = prefix;
     }
     graph << "],\"final_output\":\"output\"}\n";
     request.operation_graph_json = graph.str();

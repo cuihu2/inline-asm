@@ -140,6 +140,46 @@ PreparedBfvRnsObject BfvOperationPlan::append_multiply(
     return output;
 }
 
+PreparedBfvRnsObject BfvOperationPlan::append_multiply(
+    std::string step_id, const PreparedBfvRnsObject& left, const PreparedBfvRnsObject& right,
+    const PreparedBfvMultiplyConstants& constants, std::string output_id)
+{
+    require_new_step(step_id);
+    validate_value(left, 2, hpu::runtime::PolynomialDomain::coefficient, false, "BFV Multiply left");
+    validate_value(right, 2, hpu::runtime::PolynomialDomain::coefficient, false, "BFV Multiply right");
+    require_same_level(left, right, "BFV Multiply");
+    const auto& level = image_builder_.level_chain().require(left.parms_id);
+    validate_canonical_twiddles(level, true);
+    validate_tensor_resources(level, constants);
+    const auto output = image_builder_.reserve_ciphertext(std::move(output_id), level, 3);
+    BfvOperationStep step;
+    step.id = std::move(step_id); step.kind = BfvOperationKind::multiply_tensor;
+    step.inputs = {describe(left), describe(right)}; step.output = describe(output);
+    step.resources.requires_canonical_twiddles = true;
+    step.resources.multiply_constants_id = constants.id;
+    commit_step(std::move(step));
+    return output;
+}
+
+PreparedBfvRnsObject BfvOperationPlan::append_relinearize(
+    std::string step_id, const PreparedBfvRnsObject& tensor, const PreparedEvaluationKey& key,
+    const PreparedKeySwitchConstants& constants, std::string output_id)
+{
+    require_new_step(step_id);
+    validate_value(tensor, 3, hpu::runtime::PolynomialDomain::coefficient, false, "BFV Relinearize tensor");
+    const auto& level = image_builder_.level_chain().require(tensor.parms_id);
+    validate_canonical_twiddles(level);
+    validate_relinearization_resources(level, key, constants);
+    const auto output = image_builder_.reserve_ciphertext(std::move(output_id), level);
+    BfvOperationStep step;
+    step.id = std::move(step_id); step.kind = BfvOperationKind::relinearize;
+    step.inputs = {describe(tensor)}; step.output = describe(output);
+    step.resources.requires_canonical_twiddles = true;
+    step.resources.evaluation_key_id = key.id; step.resources.keyswitch_constants_id = constants.id;
+    commit_step(std::move(step));
+    return output;
+}
+
 PreparedBfvRnsObject BfvOperationPlan::append_add_plain(std::string step_id,
                                                         const PreparedBfvRnsObject& ciphertext,
                                                         const PreparedBfvRnsObject& plaintext,
@@ -390,26 +430,17 @@ void BfvOperationPlan::validate_canonical_twiddles(const BfvLevelDescriptor& lev
     }
 }
 
-void BfvOperationPlan::validate_multiply_resources(
+void BfvOperationPlan::validate_relinearization_resources(
     const BfvLevelDescriptor& level, const PreparedEvaluationKey& relinearization_key,
-    const PreparedKeySwitchConstants& keyswitch_constants,
-    const PreparedBfvMultiplyConstants& multiply_constants) const
+    const PreparedKeySwitchConstants& keyswitch_constants) const
 {
     if (!hpu::is_seal_single_p_rns_decomposition_layout(
-            static_cast<int>(image_builder_.registry().poly_modulus_degree),
-            level.keyswitch_layout) ||
-        level.keyswitch_layout.q_mod_ids.size() < 2 ||
-        level.b_mod_ids.size() < level.keyswitch_layout.q_mod_ids.size() || level.m_sk_mod_id < 0 ||
-        level.plaintext_mod_id < 0) {
-        throw std::invalid_argument("BFV Multiply level has an unsupported HPU layout");
-    }
-    const auto matches_level = [&](const ::seal::parms_id_type& parms_id, std::size_t chain_index) {
-        return parms_id == level.parms_id && chain_index == level.chain_index;
-    };
-    if (!matches_level(relinearization_key.data_parms_id, relinearization_key.chain_index) ||
-        !matches_level(keyswitch_constants.data_parms_id, keyswitch_constants.chain_index) ||
-        !matches_level(multiply_constants.data_parms_id, multiply_constants.chain_index)) {
-        throw std::invalid_argument("BFV Multiply resources do not match the ciphertext level");
+            static_cast<int>(image_builder_.registry().poly_modulus_degree), level.keyswitch_layout) ||
+        relinearization_key.data_parms_id != level.parms_id ||
+        relinearization_key.chain_index != level.chain_index ||
+        keyswitch_constants.data_parms_id != level.parms_id ||
+        keyswitch_constants.chain_index != level.chain_index) {
+        throw std::invalid_argument("BFV relinearization resources do not match the ciphertext level");
     }
     if (relinearization_key.rns_layout.q_mod_ids != level.keyswitch_layout.q_mod_ids ||
         relinearization_key.rns_layout.p_mod_ids != level.keyswitch_layout.p_mod_ids ||
@@ -463,6 +494,20 @@ void BfvOperationPlan::validate_multiply_resources(
             "BFV Multiply KeySwitch constants lack hardware-expanded resources");
     }
 
+}
+
+void BfvOperationPlan::validate_tensor_resources(
+    const BfvLevelDescriptor& level, const PreparedBfvMultiplyConstants& multiply_constants) const
+{
+    if (!hpu::is_seal_single_p_rns_decomposition_layout(
+            static_cast<int>(image_builder_.registry().poly_modulus_degree), level.keyswitch_layout) ||
+        level.keyswitch_layout.q_mod_ids.size() < 2 ||
+        level.b_mod_ids.size() < level.keyswitch_layout.q_mod_ids.size() ||
+        level.m_sk_mod_id < 0 || level.plaintext_mod_id < 0 ||
+        multiply_constants.data_parms_id != level.parms_id ||
+        multiply_constants.chain_index != level.chain_index) {
+        throw std::invalid_argument("BFV Multiply resources or layout do not match the ciphertext level");
+    }
     validate_constant_resource(image_builder_.image(), multiply_constants.id,
                                multiply_constants.values, "BFV Multiply BEHZ constants");
     if (multiply_constants.hardware_prefix != multiply_constants.id + "/hardware" ||
@@ -474,6 +519,16 @@ void BfvOperationPlan::validate_multiply_resources(
         multiply_constants.hardware_workspace_polynomial_count == 0) {
         throw std::invalid_argument("BFV Multiply constants have the wrong BEHZ layout");
     }
+}
+
+
+void BfvOperationPlan::validate_multiply_resources(
+    const BfvLevelDescriptor& level, const PreparedEvaluationKey& key,
+    const PreparedKeySwitchConstants& keyswitch_constants,
+    const PreparedBfvMultiplyConstants& multiply_constants) const
+{
+    validate_relinearization_resources(level, key, keyswitch_constants);
+    validate_tensor_resources(level, multiply_constants);
 }
 
 void BfvOperationPlan::require_same_level(const PreparedBfvRnsObject& left,

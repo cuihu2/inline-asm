@@ -22,6 +22,7 @@
 ### `examples/`
 
 - [CKKS_COMPOSED_APPLICATION_EXAMPLE.md](examples/CKKS_COMPOSED_APPLICATION_EXAMPLE.md)：CKKS 分支计算图、软件执行器和 SEAL oracle 对比。
+- [BGV_COMPOSED_APPLICATION_EXAMPLE.md](examples/BGV_COMPOSED_APPLICATION_EXAMPLE.md)：BGV 分支计算图、独立 Multiply/Relinearize、软件对拍和部署规模生成。
 - [BFV_APPLICATION_EXAMPLE.md](examples/BFV_APPLICATION_EXAMPLE.md)：BFV Multiply、Relinearize、ModSwitch 应用。
 - [BFV_ROTATION_APPLICATION_EXAMPLE.md](examples/BFV_ROTATION_APPLICATION_EXAMPLE.md)：BFV 行旋转和列旋转应用。
 

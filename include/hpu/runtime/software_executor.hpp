@@ -17,8 +17,8 @@ enum class PointwiseOperation {
 // Functional executor for the HPU-visible DDR image. It models DMA payloads,
 // the application-lifetime modulus table, and exact uint32 modular pointwise
 // instructions. PMUL/PMAC accept full uint32 multiplicands; PADD/PSUB and
-// the PMAC accumulator require canonical residues. Regular-bank scheduling is
-// tracked separately by Application.
+// the PMAC accumulator require canonical residues. Logical object-slot
+// lifetimes are tracked separately by Application.
 class HpuSoftwareExecutor {
 public:
     explicit HpuSoftwareExecutor(const HpuMemImage& image);

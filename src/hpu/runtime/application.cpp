@@ -47,8 +47,8 @@ void Application::load_object(const std::string& id, std::uint8_t slot)
     if (!modulus_table_) {
         throw std::logic_error("load the complete modulus table before polynomial objects");
     }
-    if (slot >= kRegularBankCount) {
-        throw std::out_of_range("regular-bank slot must be in [0, 4]");
+    if (slot >= kObjectSlotCount) {
+        throw std::out_of_range("object slot must be in [0, 7]");
     }
     for (const auto& entry : objects_) {
         if (entry.second.resident_slot == slot) {
@@ -115,6 +115,8 @@ void Application::store_object(const std::string& id)
     }
     state.dirty = false;
     state.stored_after_write = true;
+    // The current DMA completion path releases the source for both REL values.
+    state.resident_slot.reset();
     events_.push_back({EventKind::store_object, id});
 }
 

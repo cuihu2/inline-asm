@@ -62,9 +62,6 @@ BgvSoftwareExecutor::BgvSoftwareExecutor(
     }
     degree_ = key_data->parms().poly_modulus_degree();
     key_modulus_count_ = key_data->parms().coeff_modulus().size();
-    for (const auto& item : image_.allocations()) {
-        allocations_.emplace(item.id, &item);
-    }
     memory_.load_modulus_table(
         allocation("constants/modulus_table").span,
         key_modulus_count_ + 1);
@@ -84,18 +81,17 @@ BgvSoftwareExecutor::BgvSoftwareExecutor(
 
 bool BgvSoftwareExecutor::has(const std::string& id) const noexcept
 {
-    return allocations_.find(id) != allocations_.end();
+    return image_.contains(id);
 }
 
 const hpu::runtime::HpuMemAllocation& BgvSoftwareExecutor::allocation(
     const std::string& id) const
 {
-    const auto found = allocations_.find(id);
-    if (found == allocations_.end()) {
+    if (!image_.contains(id)) {
         throw std::invalid_argument(
             "BGV software executor lacks HPU_MEM allocation: " + id);
     }
-    return *found->second;
+    return image_.allocation(id);
 }
 
 BgvSoftwareExecutor::Limb BgvSoftwareExecutor::read(
@@ -203,7 +199,7 @@ BgvSoftwareExecutor::Limb BgvSoftwareExecutor::forward_ntt(
 }
 
 void BgvSoftwareExecutor::execute_plain(
-    const BgvPlainOperationStep& step,
+    const BgvOperationStep& step,
     const std::string& input_prefix,
     const std::string& output_prefix,
     std::size_t q_count)
@@ -245,8 +241,9 @@ void BgvSoftwareExecutor::execute_plain(
 }
 
 void BgvSoftwareExecutor::execute_binary(
-    const BgvPlainOperationStep& step,
+    const BgvOperationStep& step,
     const std::string& input_prefix,
+    const std::string& right_prefix,
     const std::string& output_prefix,
     std::size_t q_count)
 {
@@ -263,7 +260,7 @@ void BgvSoftwareExecutor::execute_binary(
         for (std::size_t component = 0; component < 2; ++component) {
             const std::string suffix = "/c" + std::to_string(component);
             const auto left = read(mod_id(input_prefix + suffix, basis));
-            const auto right = read(mod_id(step_prefix + "/right" + suffix, basis));
+            const auto right = read(mod_id(right_prefix + suffix, basis));
             Limb output(degree_);
             for (std::size_t index = 0; index < degree_; ++index) {
                 if (left[index] >= modulus || right[index] >= modulus) {
@@ -287,8 +284,11 @@ void BgvSoftwareExecutor::execute_binary(
 void BgvSoftwareExecutor::execute_keyswitch(
     const std::string& resource_prefix,
     const std::string& output_prefix,
-    std::size_t q_count)
+    std::size_t q_count,
+    const std::string& input_prefix)
 {
+    const auto source_prefix = input_prefix.empty()
+        ? resource_prefix + "/input" : input_prefix;
     if (q_count == 0 || q_count >= key_modulus_count_) {
         throw std::invalid_argument("BGV KeySwitch active base is invalid");
     }
@@ -298,7 +298,7 @@ void BgvSoftwareExecutor::execute_keyswitch(
     std::vector<Limb> source_coeff(q_count);
     for (std::size_t digit = 0; digit < q_count; ++digit) {
         const auto switching = read(mod_id(
-            resource_prefix + "/input/c2", digit));
+            source_prefix + "/c2", digit));
         const auto twiddle = mod_id(
             resource_prefix + "/constants/twiddle/canonical", digit);
         source_coeff[digit] = inverse_ntt(switching, digit, twiddle);
@@ -320,7 +320,7 @@ void BgvSoftwareExecutor::execute_keyswitch(
             Limb operand;
             if (target == digit) {
                 operand = read(mod_id(
-                    resource_prefix + "/input/c2", digit));
+                    source_prefix + "/c2", digit));
             } else {
                 operand = source_coeff[digit];
                 for (auto& word : operand) word %= modulus;
@@ -385,7 +385,7 @@ void BgvSoftwareExecutor::execute_keyswitch(
                 mod_id(resource_prefix +
                     "/constants/twiddle/canonical", basis));
             const auto base = read(mod_id(
-                resource_prefix + "/input/c" +
+                source_prefix + "/c" +
                     std::to_string(component), basis));
             Limb output(degree_);
             for (std::size_t index = 0; index < degree_; ++index) {
@@ -403,20 +403,19 @@ void BgvSoftwareExecutor::execute_keyswitch(
     }
 }
 
-void BgvSoftwareExecutor::execute_multiply(
-    const BgvPlainOperationStep& step,
+void BgvSoftwareExecutor::execute_tensor(
     const std::string& input_prefix,
+    const std::string& right_prefix,
     const std::string& output_prefix,
     std::size_t q_count)
 {
-    const std::string resource = "steps/" + step.id + "/multiply";
     for (std::size_t basis = 0; basis < q_count; ++basis) {
         const auto modulus = memory_.modulus(
             static_cast<std::uint8_t>(basis));
         const auto left0 = read(mod_id(input_prefix + "/c0", basis));
         const auto left1 = read(mod_id(input_prefix + "/c1", basis));
-        const auto right0 = read(mod_id(resource + "/input/right/c0", basis));
-        const auto right1 = read(mod_id(resource + "/input/right/c1", basis));
+        const auto right0 = read(mod_id(right_prefix + "/c0", basis));
+        const auto right1 = read(mod_id(right_prefix + "/c1", basis));
         Limb tensor0(degree_), tensor1(degree_), tensor2(degree_);
         for (std::size_t index = 0; index < degree_; ++index) {
             tensor0[index] = multiply_mod(left0[index], right0[index], modulus);
@@ -425,15 +424,14 @@ void BgvSoftwareExecutor::execute_multiply(
                 multiply_mod(left1[index], right0[index], modulus), modulus);
             tensor2[index] = multiply_mod(left1[index], right1[index], modulus);
         }
-        write(mod_id(resource + "/input/c0", basis), tensor0);
-        write(mod_id(resource + "/input/c1", basis), tensor1);
-        write(mod_id(resource + "/input/c2", basis), tensor2);
+        write(mod_id(output_prefix + "/c0", basis), tensor0);
+        write(mod_id(output_prefix + "/c1", basis), tensor1);
+        write(mod_id(output_prefix + "/c2", basis), tensor2);
     }
-    execute_keyswitch(resource, output_prefix, q_count);
 }
 
 void BgvSoftwareExecutor::execute_rotation(
-    const BgvPlainOperationStep& step,
+    const BgvOperationStep& step,
     const std::string& input_prefix,
     const std::string& output_prefix,
     std::size_t q_count)
@@ -477,7 +475,7 @@ void BgvSoftwareExecutor::execute_rotation(
 }
 
 void BgvSoftwareExecutor::execute_modswitch(
-    const BgvPlainOperationStep& step,
+    const BgvOperationStep& step,
     const std::string& input_prefix,
     const std::string& output_prefix,
     std::size_t q_count)
@@ -540,20 +538,21 @@ void BgvSoftwareExecutor::execute_modswitch(
     }
 }
 
-void BgvSoftwareExecutor::execute(const BgvLinearOperationPlan& plan)
+void BgvSoftwareExecutor::execute(const BgvOperationPlan& plan)
 {
     if (plan.steps().empty()) {
         throw std::invalid_argument("BGV software executor requires a nonempty plan");
     }
-    std::string input_prefix = "input";
-    std::size_t q_count = limb_count("input/c0");
-    if (q_count == 0 || limb_count("input/c1") != q_count) {
-        throw std::invalid_argument("BGV software input has an invalid RNS shape");
-    }
     for (std::size_t index = 0; index < plan.steps().size(); ++index) {
         const auto& step = plan.steps()[index];
-        const std::string output_prefix = index + 1 == plan.steps().size()
-            ? "output" : "steps/" + step.id + "/output";
+        const auto input_prefix = plan.allocation_prefix(step.inputs.front());
+        const auto output_prefix = plan.allocation_prefix(step.output);
+        const auto source = context_.get_context_data(step.inputs.front().parms_id);
+        if (!source) throw std::invalid_argument("BGV software input level is invalid");
+        const auto q_count = source->parms().coeff_modulus().size();
+        for (std::size_t c = 0; c < step.inputs.front().component_count; ++c)
+            if (limb_count(input_prefix + "/c" + std::to_string(c)) != q_count)
+                throw std::invalid_argument("BGV software input has an invalid RNS shape");
         switch (step.kind) {
         case BgvPlainOperationKind::add:
         case BgvPlainOperationKind::subtract:
@@ -562,10 +561,18 @@ void BgvSoftwareExecutor::execute(const BgvLinearOperationPlan& plan)
             break;
         case BgvPlainOperationKind::add_ciphertext:
         case BgvPlainOperationKind::subtract_ciphertext:
-            execute_binary(step, input_prefix, output_prefix, q_count);
+            execute_binary(step, input_prefix, plan.allocation_prefix(step.inputs[1]), output_prefix, q_count);
             break;
         case BgvPlainOperationKind::multiply_ciphertext:
-            execute_multiply(step, input_prefix, output_prefix, q_count);
+            execute_tensor(input_prefix, plan.allocation_prefix(step.inputs[1]),
+                "steps/" + step.id + "/multiply/input", q_count);
+            execute_keyswitch("steps/" + step.id + "/multiply", output_prefix, q_count);
+            break;
+        case BgvPlainOperationKind::multiply_tensor:
+            execute_tensor(input_prefix, plan.allocation_prefix(step.inputs[1]), output_prefix, q_count);
+            break;
+        case BgvPlainOperationKind::relinearize:
+            execute_keyswitch("steps/" + step.id + "/relinearize", output_prefix, q_count, input_prefix);
             break;
         case BgvPlainOperationKind::rotate_rows:
         case BgvPlainOperationKind::rotate_columns:
@@ -573,16 +580,12 @@ void BgvSoftwareExecutor::execute(const BgvLinearOperationPlan& plan)
             break;
         case BgvPlainOperationKind::modswitch_to_next:
             execute_modswitch(step, input_prefix, output_prefix, q_count);
-            --q_count;
             break;
         }
-        if (limb_count(output_prefix + "/c0") != q_count ||
-            limb_count(output_prefix + "/c1") != q_count) {
-            throw std::invalid_argument(
-                "BGV software output has an invalid RNS shape: " +
-                output_prefix);
-        }
-        input_prefix = output_prefix;
+        const auto output_q_count = context_.get_context_data(step.output.parms_id)->parms().coeff_modulus().size();
+        for (std::size_t c = 0; c < step.output.component_count; ++c)
+            if (limb_count(output_prefix + "/c" + std::to_string(c)) != output_q_count)
+                throw std::invalid_argument("BGV software output has an invalid RNS shape: " + output_prefix);
     }
 }
 

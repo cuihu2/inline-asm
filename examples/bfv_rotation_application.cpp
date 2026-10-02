@@ -1,3 +1,4 @@
+#include "delivery_options.hpp"
 #include "hpu/seal/application_delivery.hpp"
 #include "hpu/seal/bfv_application_image.hpp"
 #include "hpu/seal/bfv_context.hpp"
@@ -22,13 +23,10 @@
 
 namespace {
 
-constexpr const char* kArtifactStem = "bfv_rotation_application";
+constexpr const char* kArtifactStemBase = "bfv_rotation_application";
 constexpr int kRowSteps = 2;
 
-struct Options {
-    bool print_asm = false;
-    std::optional<std::filesystem::path> emit_directory;
-};
+using Options = DeliveryOptions;
 
 void require(bool condition, const char* message)
 {
@@ -39,19 +37,7 @@ void require(bool condition, const char* message)
 
 Options parse_options(int argc, char** argv)
 {
-    Options options;
-    for (int index = 1; index < argc; ++index) {
-        const std::string argument = argv[index];
-        if (argument == "--print-asm") {
-            options.print_asm = true;
-        } else if (argument == "--emit-dir" && index + 1 < argc) {
-            options.emit_directory = std::filesystem::path(argv[++index]);
-        } else {
-            throw std::invalid_argument("usage: hpu_bfv_rotation_example "
-                                        "[--print-asm] [--emit-dir PATH]");
-        }
-    }
-    return options;
+    return parse_delivery_options(argc, argv, "--print-asm");
 }
 
 void require_exact(const ::seal::Ciphertext& oracle,
@@ -73,12 +59,14 @@ int main(int argc, char** argv)
 {
     try {
         const Options options = parse_options(argc, argv);
+        const auto kArtifactStem = delivery_artifact_stem(kArtifactStemBase, options);
 
         // Teaching-sized parameters; the application API is independent of N.
         hpu::seal_adapter::BfvContextSpec spec;
-        spec.poly_modulus_degree = 128;
-        spec.coeff_modulus_bits = {20, 20, 20, 20};
-        spec.plain_modulus_bits = 17;
+        spec.poly_modulus_degree = options.poly_modulus_degree.value_or(128);
+        spec.coeff_modulus_bits = spec.poly_modulus_degree >= 4096
+            ? std::vector<int>{31, 31, 31, 31} : std::vector<int>{20, 20, 20, 20};
+        spec.plain_modulus_bits = spec.poly_modulus_degree >= 4096 ? 20 : 17;
         const auto bundle = hpu::seal_adapter::create_bfv_context(spec);
         const auto row_element = hpu::scheme::bfv::row_rotation_galois_element(
             spec.poly_modulus_degree, kRowSteps);
@@ -132,7 +120,7 @@ int main(int argc, char** argv)
 
         // All Galois keys, twiddles, constants, and key-domain workspaces are
         // prepared before planning. SecretKey never enters HPU_MEM.
-        hpu::seal_adapter::BfvApplicationImageBuilder image_builder(*bundle.context, 8192);
+        hpu::seal_adapter::BfvApplicationImageBuilder image_builder(*bundle.context, delivery_construction_limit(spec.poly_modulus_degree, 8192));
         image_builder.add_modulus_table();
         const auto canonical_twiddles = image_builder.add_canonical_twiddles();
         const auto& level = image_builder.level_chain().top();
@@ -171,6 +159,7 @@ int main(int argc, char** argv)
                 "BFV rotation example planner produced the wrong graph");
 
         // Functional execution consumes exactly the prepared HPU_MEM image.
+        image_builder.trim_capacity_to_used_lines();
         hpu::seal_adapter::BfvSoftwareExecutor executor(*bundle.context, image_builder.image());
         executor.rotate_rows(input, kRowSteps, row_key, keyswitch_constants, row_twiddles,
                              canonical_twiddles, row_workspace, row_output);
@@ -214,7 +203,7 @@ int main(int argc, char** argv)
         } else {
             std::cout << "Pass --emit-dir PATH to write deployment artifacts.\n";
         }
-        if (options.print_asm) {
+        if (options.print_program) {
             std::cout << "\n--- generated HPU inline-assembly body ---\n" << lowered.body_asm;
         } else {
             std::cout << "Pass --print-asm to print the generated instruction body.\n";
