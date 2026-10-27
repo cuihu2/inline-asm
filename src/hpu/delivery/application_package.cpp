@@ -30,6 +30,7 @@ namespace {
 constexpr std::size_t kLineWords = hpu::runtime::kHpuMemLineWords;
 constexpr std::size_t kLineBytes = kLineWords * sizeof(std::uint32_t);
 constexpr const char* kFilesManifestPath = "provenance/files.csv";
+constexpr const char* kExecutionProfileManifestPath = "profiling/execution_window.csv";
 
 struct FileArtifact {
     std::string path;
@@ -314,6 +315,10 @@ std::string render_package_json(const ApplicationPackageRequest& request)
            << "  \"memory_config\": \"memory/hpu_mem_config.json\",\n"
            << "  \"golden_manifest\": \"golden/golden_manifest.csv\",\n"
            << "  \"oracle_report\": \"oracle/report.json\"";
+    if (request.program.execution_profile) {
+        output << ",\n  \"execution_profile_manifest\": \""
+               << kExecutionProfileManifestPath << "\"";
+    }
     if (request.semantic_report) {
         output << ",\n  \"semantic_report\": \"semantic/decoded.json\",\n"
                << "  \"semantic_media_type\": \""
@@ -1488,12 +1493,22 @@ void validate_program_source(
     const std::vector<hpu::EncodedInstruction>& instructions,
     std::uint64_t capacity_lines,
     const std::vector<hpu::runtime::HpuMemSpan>& spans,
-    hpu::ExecutableTwiddleFormat twiddle_format = hpu::ExecutableTwiddleFormat::online_k8)
+    hpu::ExecutableTwiddleFormat twiddle_format = hpu::ExecutableTwiddleFormat::online_k8,
+    const std::optional<hpu::ExecutionProfileWindow>& execution_profile = std::nullopt)
 {
     // All packages carry resolved spans, even when their entry accepts a
     // dynamic span table. Validate the same target shapes for both renderers.
     std::vector<hpu::ExecutableDmaSpan> fixed_spans;
     for (const auto& span : spans) fixed_spans.push_back({span.line_offset, span.line_count});
+    if (execution_profile) {
+        if (source != hpu::render_profiled_executable_source(
+                stem, instructions, capacity_lines, fixed_spans,
+                *execution_profile, twiddle_format)) {
+            throw std::runtime_error(
+                "application package profiled program source differs from encoded instructions, DMA spans, or execution window");
+        }
+        return;
+    }
     const auto fixed = hpu::render_fixed_executable_source(
         stem, instructions, capacity_lines, fixed_spans, twiddle_format);
     const std::string base = hpu::render_executable_source(
@@ -1526,8 +1541,18 @@ void validate_program_source(
 
 void validate_program_header(
     const std::string& stem, const std::string& header,
-    std::size_t dma_count)
+    std::size_t dma_count,
+    const std::vector<hpu::EncodedInstruction>& instructions = {},
+    const std::optional<hpu::ExecutionProfileWindow>& execution_profile = std::nullopt)
 {
+    if (execution_profile) {
+        if (header != hpu::render_profiled_executable_header(
+                stem, instructions, dma_count, *execution_profile)) {
+            throw std::runtime_error(
+                "application package profiled program header differs from encoded instructions, DMA count, or execution window");
+        }
+        return;
+    }
     std::string expected = hpu::render_executable_header(stem, dma_count);
     if (header == expected) return;
     const std::string marker = "#ifdef __cplusplus\n}\n#endif\n\n#endif\n";
@@ -1542,6 +1567,44 @@ void validate_program_header(
         throw std::runtime_error(
             "application package program header differs from encoded DMA count");
     }
+}
+
+hpu::ExecutionProfileWindow parse_execution_profile_manifest(
+    const std::string& contents,
+    const std::filesystem::path& path,
+    const std::vector<hpu::EncodedInstruction>& instructions)
+{
+    std::istringstream input(contents);
+    std::string line;
+    if (!std::getline(input, line)
+        || line != "begin_instruction,end_instruction,arithmetic_instruction_count,dload_count,dstore_count") {
+        throw std::runtime_error(
+            "application package execution profile manifest has an invalid header");
+    }
+    if (!std::getline(input, line)) {
+        throw std::runtime_error(
+            "application package execution profile manifest must contain exactly one window");
+    }
+    const auto fields = split_csv_row(line, path, 5);
+    const auto begin = parse_decimal_u64(fields[0], path, "begin_instruction");
+    const auto end = parse_decimal_u64(fields[1], path, "end_instruction");
+    (void)parse_decimal_u64(fields[2], path, "arithmetic_instruction_count");
+    (void)parse_decimal_u64(fields[3], path, "dload_count");
+    (void)parse_decimal_u64(fields[4], path, "dstore_count");
+    if (begin >= instructions.size() || end >= instructions.size()
+        || std::getline(input, line)) {
+        throw std::runtime_error(
+            "application package execution profile manifest must contain exactly one valid instruction window");
+    }
+    const hpu::ExecutionProfileWindow window{
+        static_cast<std::size_t>(begin), static_cast<std::size_t>(end)};
+    // Render validation checks boundaries, full arithmetic coverage, and exact
+    // counts, including valid nonzero DMA counts within the continuous window.
+    if (contents != hpu::render_execution_profile_manifest(instructions, window)) {
+        throw std::runtime_error(
+            "application package execution profile manifest differs from encoded instructions or canonical window counts");
+    }
+    return window;
 }
 
 void validate_physical_artifacts(const std::filesystem::path& root)
@@ -1722,16 +1785,29 @@ void validate_physical_artifacts(const std::filesystem::path& root)
          || extract_json_u64(abi, "online_pmul_parameter_bank_mask", abi_path) != 32)) {
         throw std::runtime_error("application package memory ABI has unsupported online PMUL format");
     }
+    const auto descriptor_fields = JsonReader(descriptor, descriptor_path).read_document();
+    std::optional<hpu::ExecutionProfileWindow> execution_profile;
+    if (descriptor_fields.count("execution_profile_manifest") != 0) {
+        const auto relative = extract_json_string(
+            descriptor, "execution_profile_manifest", descriptor_path, true);
+        if (relative != kExecutionProfileManifestPath) {
+            throw std::runtime_error(
+                "application package execution_profile_manifest must use profiling/execution_window.csv");
+        }
+        execution_profile = parse_execution_profile_manifest(
+            read_file(root / relative), root / relative, assembled);
+    }
     validate_program_source(
         std::filesystem::path(asm_path).stem().string(),
         read_file(root / extract_json_string(
             descriptor, "program_source", descriptor_path, true)),
-        assembled, capacity_lines, resolved_spans, twiddle_format);
+        assembled, capacity_lines, resolved_spans, twiddle_format,
+        execution_profile);
     validate_program_header(
         std::filesystem::path(asm_path).stem().string(),
         read_file(root / extract_json_string(
             descriptor, "program_header", descriptor_path, true)),
-        resolved_spans.size());
+        resolved_spans.size(), assembled, execution_profile);
     const auto golden = parse_golden_manifest(
         root / "golden/golden_manifest.csv");
     if (golden.size() != output_spans.size()) {
@@ -2016,12 +2092,22 @@ void validate_application_package_request(
         "program/dma_relocation_manifest.csv", request.program.instructions,
         dma_allocations, image.used_lines(), &request.program.ordered_dma_spans,
         request.program.dma_cache_policy);
+    if (request.program.profile_execution != request.program.execution_profile.has_value()) {
+        throw std::invalid_argument(
+            context_case(request) + " execution window and profile_execution must be enabled together");
+    }
+    if (request.program.execution_profile) {
+        hpu::validate_execution_profile_window(
+            request.program.instructions, *request.program.execution_profile);
+    }
     validate_program_source(
         request.program.stem, request.program.source,
         request.program.instructions, image.capacity_lines(),
-        request.program.ordered_dma_spans);
+        request.program.ordered_dma_spans, hpu::ExecutableTwiddleFormat::online_k8,
+        request.program.execution_profile);
     validate_program_header(
-        request.program.stem, request.program.header, relocations.size());
+        request.program.stem, request.program.header, relocations.size(),
+        request.program.instructions, request.program.execution_profile);
 
     std::set<std::tuple<std::string, std::size_t, std::uint8_t>> output_keys;
     std::map<std::string, std::size_t> output_coverage;
@@ -2158,7 +2244,9 @@ ApplicationPackageReport write_application_package(
     std::optional<hpu::runtime::HpuMemImage> compiled_image;
     if (request.program.operator_program && !request.program.resources_compiled) {
         compiled_image = *request.initial_image;
-        compile_application_resources(request, *compiled_image);
+        compile_application_resources(request, *compiled_image, true, true,
+            hpu::model::InstructionNttContract::raw_bit_reversed_coefficients,
+            request.program.profile_execution);
     }
 
     const auto& image = *request.initial_image;
@@ -2181,6 +2269,10 @@ ApplicationPackageReport write_application_package(
     add(
         "program/dma_relocation_manifest.csv",
         request.program.resolved_dma_manifest);
+    if (request.program.execution_profile) {
+        add(kExecutionProfileManifestPath, hpu::render_execution_profile_manifest(
+            request.program.instructions, *request.program.execution_profile));
+    }
     add("memory/hpu_mem_image.u32.bin", render_u32_le(image.words()));
     add("memory/line_map.csv", render_line_map(image));
     add("memory/memory_manifest.csv", render_memory_manifest(image));
@@ -2361,6 +2453,17 @@ void validate_application_package_on_disk(
                 "'semantic/decoded.json'");
         }
         require_regular_file(package_root, semantic);
+    }
+    const auto descriptor_fields = JsonReader(descriptor, descriptor_path).read_document();
+    if (descriptor_fields.count("execution_profile_manifest") != 0) {
+        const auto profile = extract_json_string(
+            descriptor, "execution_profile_manifest", descriptor_path, true);
+        if (profile != kExecutionProfileManifestPath) {
+            throw std::runtime_error(
+                "application package execution_profile_manifest path must be profiling/execution_window.csv");
+        }
+        require_regular_file(package_root, profile);
+        descriptor_paths.emplace("execution_profile_manifest", profile);
     }
 
     std::set<std::string> schema_paths{

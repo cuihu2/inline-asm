@@ -89,7 +89,8 @@ struct Fixture {
     explicit Fixture(
         bool legacy_transform = false, unsigned cp = 0,
         hpu::runtime::AllocationKind input_kind = hpu::runtime::AllocationKind::plaintext,
-        std::optional<unsigned> store_cp = std::nullopt)
+        std::optional<unsigned> store_cp = std::nullopt,
+        bool profile_execution = false)
         : image(legacy_transform ? 8 : 4)
     {
         std::string assembly;
@@ -114,8 +115,15 @@ struct Fixture {
             input_kind, true);
         const auto output = image.reserve(
             "result", 4, hpu::runtime::AllocationKind::output);
-        assembly += "dload x10, x11, p0, 0, " + std::to_string(cp) + ", 0\n"
-                    "dstore x10, x11, p0, 0, " + std::to_string(store_cp.value_or(cp)) + "\n"
+        assembly += "dload x10, x11, p0, 0, " + std::to_string(cp) + ", 0\n";
+        if (profile_execution) {
+            require(!legacy_transform, "profile fixture cannot use legacy transforms");
+            assembly += "psync\npadd p0, p0, p0\n"
+                        "dstore x10, x11, p0, 0, 0\n"
+                        "dload x10, x11, p1, 0, 0, 0\n"
+                        "padd p0, p0, p1\npfree p1\npsync\n";
+        }
+        assembly += "dstore x10, x11, p0, 0, " + std::to_string(store_cp.value_or(cp)) + "\n"
                     "psync\n";
         const auto instructions = hpu::assemble_source(assembly);
 
@@ -133,8 +141,28 @@ struct Fixture {
             request.program.stem, instructions, image.capacity_lines());
         request.program.ordered_dma_spans = prefix_spans;
         request.program.ordered_dma_spans.insert(
-            request.program.ordered_dma_spans.end(), {input.span, output.span});
-        allocation_ids.insert(allocation_ids.end(), {"input", "result"});
+            request.program.ordered_dma_spans.end(), {input.span});
+        allocation_ids.push_back("input");
+        if (profile_execution) {
+            request.program.ordered_dma_spans.insert(
+                request.program.ordered_dma_spans.end(), {output.span, output.span});
+            allocation_ids.insert(allocation_ids.end(), {"result", "result"});
+        }
+        request.program.ordered_dma_spans.push_back(output.span);
+        allocation_ids.push_back("result");
+        if (profile_execution) {
+            request.program.profile_execution = true;
+            request.program.execution_profile = hpu::ExecutionProfileWindow{2, 7};
+            request.program.header = hpu::render_profiled_executable_header(
+                request.program.stem, instructions,
+                request.program.ordered_dma_spans.size(), *request.program.execution_profile);
+            std::vector<hpu::ExecutableDmaSpan> spans;
+            for (const auto& span : request.program.ordered_dma_spans)
+                spans.push_back({span.line_offset, span.line_count});
+            request.program.source = hpu::render_profiled_executable_source(
+                request.program.stem, instructions, image.capacity_lines(),
+                spans, *request.program.execution_profile);
+        }
         const auto relocations = hpu::collect_dma_relocations(instructions);
         std::ostringstream resolved;
         resolved << "instruction_index,dma_index,operation_index,operation_id,"
@@ -1459,6 +1487,129 @@ void test_request_rejects_partial_dstore_to_read_only_allocation()
         "partial DSTORE into a read_only allocation was accepted");
 }
 
+void test_execution_profile_package_roundtrip_and_resigned_tampering()
+{
+    ScratchDirectory scratch;
+    Fixture fixture(false, 0, hpu::runtime::AllocationKind::plaintext,
+                    std::nullopt, true);
+    const auto package = hpu::delivery::write_application_package(
+        scratch.path() / "profile", fixture.request);
+    const std::string relative = "profiling/execution_window.csv";
+    const auto canonical = read_file(package.root / relative);
+    require(canonical ==
+        "begin_instruction,end_instruction,arithmetic_instruction_count,dload_count,dstore_count\n"
+        "2,7,2,1,1\n", "profile package emitted wrong continuous window counts");
+    require(read_file(package.root / "package.json").find(
+        "\"execution_profile_manifest\": \"profiling/execution_window.csv\"")
+        != std::string::npos, "profile package did not declare execution window");
+    hpu::delivery::validate_application_package_on_disk(package.root);
+
+    for (const std::string row : {"2,7,3,1,1\n", "2,7,2,0,1\n",
+                                  "2,7,2,1,0\n", "0,7,2,1,1\n",
+                                  "2,8,2,1,1\n", "02,7,2,1,1\n",
+                                  "2,7,2,1,1\n2,7,2,1,1\n", ""}) {
+        const auto header_end = canonical.find('\n') + 1;
+        write_file(package.root / relative, canonical.substr(0, header_end) + row);
+        refresh_files_manifest_entry(package.root, relative);
+        require_throws_with_fragments(
+            [&] { hpu::delivery::validate_application_package_on_disk(package.root); },
+            {}, "profile package accepted a re-signed incorrect execution window");
+    }
+    write_file(package.root / relative, canonical);
+    refresh_files_manifest_entry(package.root, relative);
+
+    const auto source_path = "program/minimal_app.c";
+    auto unsafe_source = fixture.request.program.source;
+    const std::string completion_wait = "hooks->wait_complete(hooks->user, 0)";
+    const auto wait_position = unsafe_source.find(completion_wait);
+    require(wait_position != std::string::npos,
+            "profile source did not emit the preload completion wait");
+    unsafe_source.replace(wait_position, completion_wait.size(), "0");
+    write_file(package.root / source_path, unsafe_source);
+    refresh_files_manifest_entry(package.root, source_path);
+    require_throws_with_fragments(
+        [&] { hpu::delivery::validate_application_package_on_disk(package.root); },
+        {"profiled", "source"},
+        "profile package accepted a re-signed source inconsistent with its completion hooks");
+    write_file(package.root / source_path, fixture.request.program.source);
+    refresh_files_manifest_entry(package.root, source_path);
+    hpu::delivery::validate_application_package_on_disk(package.root);
+
+    fixture.request.program.profile_execution = false;
+    require_throws_with_fragments(
+        [&] { hpu::delivery::validate_application_package_request(fixture.request); },
+        {"execution window", "profile_execution"},
+        "request accepted an execution window with profiling disabled");
+    fixture.request.program.profile_execution = true;
+    fixture.request.program.execution_profile.reset();
+    require_throws_with_fragments(
+        [&] { hpu::delivery::validate_application_package_request(fixture.request); },
+        {"execution window", "profile_execution"},
+        "request accepted profiling without an execution window");
+
+    Fixture ordinary;
+    const auto ordinary_package = hpu::delivery::write_application_package(
+        scratch.path() / "ordinary", ordinary.request);
+    require(!std::filesystem::exists(ordinary_package.root / relative),
+            "default package unexpectedly acquired a profiling manifest");
+    require(read_file(ordinary_package.root / "package.json").find("execution_profile_manifest")
+            == std::string::npos,
+            "default package unexpectedly declares profiling");
+}
+
+void test_native_writer_honors_execution_profile_option()
+{
+    namespace r = hpu::resource;
+    using hpu::runtime::AllocationKind;
+    hpu::runtime::HpuMemImage image(32);
+    constexpr std::uint32_t modulus = 65537;
+    constexpr std::uint64_t maximum = ~std::uint64_t{0};
+    const std::uint64_t mu = maximum / modulus
+        + ((maximum % modulus) + 1 >= modulus ? 1 : 0);
+    std::vector<std::uint32_t> modulus_words(256, 0);
+    modulus_words[0] = modulus;
+    modulus_words[1] = static_cast<std::uint32_t>(mu);
+    modulus_words[2] = static_cast<std::uint32_t>(mu >> 32U);
+    const auto moduli = image.add("moduli", modulus_words, AllocationKind::modulus_table, true);
+    const auto input = image.add("input", std::vector<std::uint32_t>(128, 3),
+                                 AllocationKind::constant, true);
+    const auto output = image.reserve("result", 128, AllocationKind::output);
+    const auto table = r::make_operand("moduli"), data = r::make_operand("data");
+    r::Recording recording;
+    r::input(table, {0, "moduli", moduli.span}, hpu::DataType::mod_ctx,
+             hpu::DloadFlag::small_bank);
+    r::select_modulus(0);
+    r::input(data, {0, "input", input.span}, hpu::DataType::seg);
+    r::multiply_immediate(data, data, 2);
+    r::output(data, {0, "result", output.span});
+    r::finish_program();
+    Fixture fixture;
+    auto& request = fixture.request;
+    request.initial_image = &image;
+    request.program = {};
+    request.program.stem = "automatic_profile";
+    request.program.profile_execution = true;
+    request.program.operator_program = std::make_shared<r::OperatorProgram>(recording.finish());
+    request.outputs = {{"result", 0, 0, modulus,
+        hpu::delivery::OutputDomain::canonical_ntt_physical, output.span, 128,
+        std::vector<std::uint32_t>(128, 6)}};
+    request.semantic_report.reset();
+    const auto original_words = image.words();
+    ScratchDirectory directory;
+    const auto destination = directory.path() / "automatic_profile";
+    hpu::delivery::write_application_package(destination, request);
+    hpu::delivery::validate_application_package_on_disk(destination);
+    require(std::filesystem::exists(destination / "profiling/execution_window.csv"),
+            "native package writer silently ignored the execution profiling option");
+    const auto report = read_file(destination / "oracle/report.json");
+    require(report.find("\"timing_measured\":false") != std::string::npos
+                && report.find("\"host_instruction_model_verified\":true") != std::string::npos,
+            "native writer did not separate verified instructions from measured timing");
+    require(image.words() == original_words && !request.program.resources_compiled
+                && request.program.profile_execution && !request.program.execution_profile,
+            "automatic profiling changed caller-owned memory or request");
+}
+
 void test_native_writer_preserves_caller()
 {
     Fixture fixture;
@@ -1509,6 +1660,10 @@ void run_test(
 int main()
 {
     std::vector<std::string> failures;
+    run_test("execution profile package roundtrip and re-signed tampering",
+             test_execution_profile_package_roundtrip_and_resigned_tampering, failures);
+    run_test("native writer honors execution profiling option",
+             test_native_writer_honors_execution_profile_option, failures);
     run_test("native writer preserves caller", test_native_writer_preserves_caller, failures);
     run_test("twiddle cache policy contract", test_twiddle_cache_policy_contract, failures);
     run_test("happy path package", test_happy_path_package, failures);

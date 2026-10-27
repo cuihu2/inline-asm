@@ -174,6 +174,7 @@ set(HPU_APPLICATION_OUTPUT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/outputs" CACHE PATH
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
     add_custom_target(hpu_native_kernel_delivery)
+    add_custom_target(hpu_execution_profile_delivery)
     foreach(kernel cmult ntt intt)
         add_custom_target(native_${kernel}_delivery
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_application_package.py
@@ -184,6 +185,16 @@ if(Python3_Interpreter_FOUND)
             DEPENDS hpu_native_kernel_application_example hpu_validate_package
             VERBATIM)
         add_dependencies(hpu_native_kernel_delivery native_${kernel}_delivery)
+        add_custom_target(native_${kernel}_execution_profile_delivery
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_application_package.py
+                --example $<TARGET_FILE:hpu_native_kernel_application_example>
+                --validator $<TARGET_FILE:hpu_validate_package>
+                --output ${HPU_APPLICATION_OUTPUT_ROOT}/native_${kernel}_n8192_execution_profile
+                --example-arg=--case --example-arg=${kernel}
+                --example-arg=--profile-execution
+            DEPENDS hpu_native_kernel_application_example hpu_validate_package
+            VERBATIM)
+        add_dependencies(hpu_execution_profile_delivery native_${kernel}_execution_profile_delivery)
     endforeach()
 endif()
 
@@ -192,8 +203,35 @@ if(BUILD_TESTING)
     add_executable(hpu_fixed_executable_test test/fixed_executable_test.cpp)
     target_link_libraries(hpu_fixed_executable_test PRIVATE hpu_encode hpu_filesystem_compat)
     add_test(NAME hpu_fixed_executable_test COMMAND hpu_fixed_executable_test)
+    add_executable(hpu_execution_profile_codegen_test test/execution_profile_codegen_test.cpp)
+    target_link_libraries(hpu_execution_profile_codegen_test PRIVATE hpu_encode hpu_filesystem_compat)
+    add_test(NAME hpu_execution_profile_codegen_test COMMAND hpu_execution_profile_codegen_test)
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
+        set(execution_profile_test_args --generator $<TARGET_FILE:hpu_execution_profile_codegen_test>)
+        if(HPU_RISCV_C_COMPILER)
+            list(APPEND execution_profile_test_args --cc ${HPU_RISCV_C_COMPILER})
+        endif()
+        add_test(NAME hpu_target_execution_profile_test
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/target_execution_profile_codegen_test.py
+                ${execution_profile_test_args})
+        set_tests_properties(hpu_target_execution_profile_test PROPERTIES LABELS "target-codegen;execution-profile")
+        function(hpu_execution_profile_delivery_test case_name example)
+            set(profile_args --example $<TARGET_FILE:${example}>
+                --validator $<TARGET_FILE:hpu_validate_package>)
+            if(HPU_RISCV_C_COMPILER)
+                list(APPEND profile_args --cc ${HPU_RISCV_C_COMPILER})
+            endif()
+            add_test(NAME ${case_name}_execution_profile_delivery_test
+                COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/execution_profile_delivery_test.py
+                    ${profile_args} ${ARGN})
+            set_tests_properties(${case_name}_execution_profile_delivery_test PROPERTIES
+                LABELS "application-delivery;execution-profile")
+        endfunction()
+        foreach(kernel cmult ntt intt)
+            hpu_execution_profile_delivery_test(native_${kernel}
+                hpu_native_kernel_application_example --kernel ${kernel})
+        endforeach()
         set(target_dma_test_args --generator $<TARGET_FILE:hpu_fixed_executable_test>)
         if(HPU_RISCV_C_COMPILER)
             list(APPEND target_dma_test_args --cc ${HPU_RISCV_C_COMPILER})
@@ -491,9 +529,25 @@ if(HPU_ENABLE_SEAL_DIFFERENTIAL_ORACLE OR HPU_ENABLE_SEAL_INTEGRATION)
     add_library(hpu_seal_delivery ALIAS hpu_seal_ckks_codegen)
 
     foreach(frontend_scheme ckks bfv bgv)
+        add_custom_target(${frontend_scheme}_execution_profile_delivery
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_application_package.py
+                --example $<TARGET_FILE:hpu_${frontend_scheme}_evaluator_example>
+                --validator $<TARGET_FILE:hpu_validate_package>
+                --output ${HPU_APPLICATION_OUTPUT_ROOT}/${frontend_scheme}_evaluator_application_n8192_q4_execution_profile
+                --example-arg=--degree --example-arg=8192
+                --example-arg=--data-moduli --example-arg=4
+                --example-arg=--seed --example-arg=0
+                --example-arg=--profile-execution
+            DEPENDS hpu_${frontend_scheme}_evaluator_example hpu_validate_package
+            VERBATIM)
+        add_dependencies(hpu_execution_profile_delivery ${frontend_scheme}_execution_profile_delivery)
         add_executable(hpu_${frontend_scheme}_evaluator_example
             examples/${frontend_scheme}_evaluator_application.cpp)
         target_link_libraries(hpu_${frontend_scheme}_evaluator_example PRIVATE hpu_seal_delivery)
+        if(BUILD_TESTING AND Python3_Interpreter_FOUND)
+            hpu_execution_profile_delivery_test(${frontend_scheme}
+                hpu_${frontend_scheme}_evaluator_example --scheme ${frontend_scheme})
+        endif()
     endforeach()
 
     add_executable(hpu_ckks_polynomial_example

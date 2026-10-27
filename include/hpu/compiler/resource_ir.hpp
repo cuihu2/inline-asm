@@ -49,6 +49,11 @@ struct CompileOptions {
     bool automatic_lifetimes = false;
     bool prune_unused_buffers = false;
     std::set<std::string> required_outputs;
+    // Optional profiling preparation: bring immutable initial-memory values
+    // forward to program entry when real bank placement permits. The normal
+    // allocator and original computation order remain in effect afterwards.
+    // A candidate that adds DMA or spills is discarded in favor of baseline.
+    bool preload_readonly_inputs = false;
 };
 
 // Scheme-independent DMA provenance. Direction and object operands are taken
@@ -148,6 +153,8 @@ struct ResourceReport {
     std::uint64_t spill_write_bytes = 0;
     std::uint64_t reload_read_bytes = 0;
     std::uint64_t exact_copy_bytes = 0;
+    std::size_t preloaded_dma_count = 0;
+    std::uint64_t preloaded_dma_bytes = 0;
     std::string selected_schedule = "original";
 };
 

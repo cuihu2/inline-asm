@@ -10,6 +10,7 @@
 | 理解整体架构、编译流程、runtime 与资源管理 | [项目架构](architecture/HPU_ARCHITECTURE.md) → [SEAL 集成设计](architecture/HPU_SEAL_INTEGRATION.md) |
 | 使用 CKKS 的显式 Plan 接口 | [CKKS 入门](getting-started/CKKS_HPU_GETTING_STARTED.md) → [CKKS 复合应用](examples/CKKS_COMPOSED_APPLICATION_EXAMPLE.md) → [底层 API 参考](reference/HPU_LOW_LEVEL_API_REFERENCE.md) |
 | 为 IT 编写应用测试 | [应用编程手册](reference/HPU_SEAL_API_REFERENCE.md) → [应用包 V1](delivery/HPU_APPLICATION_PACKAGE_V1.md) → [IT 交接清单](delivery/IT_HANDOFF_CHECKLIST.md) |
+| 预载后连续测量程序主体，排除尾部写回 | [单一连续窗口计时](getting-started/HPU_EXECUTION_PROFILING.md) |
 | 对接 Nexus-AM 或 HPU runtime | [应用包 V1](delivery/HPU_APPLICATION_PACKAGE_V1.md) → [IT 交接清单](delivery/IT_HANDOFF_CHECKLIST.md) → [HPU 编程手册](reference/HPU_PROGRAMMING_MANUAL.md) |
 | 维护 SEAL 与 HPU 适配层 | [SEAL 集成设计](architecture/HPU_SEAL_INTEGRATION.md) → [底层 API 参考](reference/HPU_LOW_LEVEL_API_REFERENCE.md) |
 | 核对 NTT 软件契约及验证边界 | [HPU 编程手册](reference/HPU_PROGRAMMING_MANUAL.md) → [项目架构的验证说明](architecture/HPU_ARCHITECTURE.md#8-验证路径与证据边界) |
@@ -23,6 +24,7 @@
 ### `getting-started/`
 
 - [HPU_EVALUATOR_FRONTEND.md](getting-started/HPU_EVALUATOR_FRONTEND.md)：三方案统一句柄和 Evaluator、自动验证、严格编译与诊断导出。
+- [HPU_EXECUTION_PROFILING.md](getting-started/HPU_EXECUTION_PROFILING.md)：容量安全预加载、单一连续计时窗口、目标回调及残留 IO 统计。
 - [CKKS_HPU_GETTING_STARTED.md](getting-started/CKKS_HPU_GETTING_STARTED.md)：从 SEAL context、应用镜像和 operation plan 到 HPU 交付包的入门流程。
 
 ### `examples/`

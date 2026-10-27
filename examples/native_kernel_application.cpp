@@ -21,6 +21,7 @@ namespace {
 struct Options {
     std::string kernel = "cmult";
     std::filesystem::path destination;
+    bool profile_execution = false;
 };
 
 Options parse_options(int argc, char** argv)
@@ -29,14 +30,15 @@ Options parse_options(int argc, char** argv)
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
         if (argument == "--case" && i + 1 < argc) result.kernel = argv[++i];
+        else if (argument == "--profile-execution") result.profile_execution = true;
         else if (argument == "--emit-dir" && i + 1 < argc) result.destination = argv[++i];
         else throw std::invalid_argument("usage: hpu_native_kernel_application_example "
-            "[--case cmult|ntt|intt] --emit-dir PATH");
+            "[--case cmult|ntt|intt] [--profile-execution] --emit-dir PATH");
     }
     if (result.destination.empty() ||
         (result.kernel != "cmult" && result.kernel != "ntt" && result.kernel != "intt"))
         throw std::invalid_argument("usage: hpu_native_kernel_application_example "
-            "[--case cmult|ntt|intt] --emit-dir PATH");
+            "[--case cmult|ntt|intt] [--profile-execution] --emit-dir PATH");
     return result;
 }
 } // namespace
@@ -52,7 +54,9 @@ int main(int argc, char** argv)
         auto request = native_kernel_example::package_request(fixture, options.kernel,
             {"inline-asm", revision ? revision : HPU_DELIVERY_REVISION,
              state ? state : HPU_DELIVERY_TREE_STATE});
-        hpu::delivery::compile_application_resources(request, fixture.image);
+        hpu::delivery::compile_application_resources(request, fixture.image, true, true,
+            hpu::model::InstructionNttContract::raw_bit_reversed_coefficients,
+            options.profile_execution);
         hpu::delivery::write_application_package(options.destination, request);
         std::cout << "Native " << options.kernel << " application package: "
                   << options.destination.string()

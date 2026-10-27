@@ -971,7 +971,7 @@ CompiledApplication ApplicationBuilder::compile(const std::string& stem, Compile
     add_frontend_graph(snapshot, physical_ids, *data);
     data->resource_report = detail::finalize_frontend_package(data->request, data->image,
         options.optimize_resources, options.require_instruction_verification,
-        options.instruction_ntt_contract);
+        options.instruction_ntt_contract, options.profile_execution);
     data->verified = true;
     return CompiledApplication(std::move(data));
 }

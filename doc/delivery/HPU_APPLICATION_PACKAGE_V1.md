@@ -116,6 +116,10 @@ BGV 图接口和完整分支示例见 [BGV 应用说明](../examples/BGV_COMPOSE
   分别设置 `x10/x11`；固定入口在生成前检查 span 范围、bank 容量及对象长度，
   使用一个连续汇编块，每条 DMA 前设置 `x10`，仅首次及长度变化时设置 `x11`。
   汇编块声明 `x10`、`x11` 和 `memory` clobber，HPU 指令次序及 DMA ABI 不变。
+- 可选连续计时包增加 `package.json.execution_profile_manifest`，指向仅含一个窗口的
+  `profiling/execution_window.csv`；使用 `hpu_run_<stem>_profiled()` 和目标完成回调，
+  普通入口返回 `-5`。该窗口包含内部必要 DMA，使用方式见
+  [单一连续窗口计时](../getting-started/HPU_EXECUTION_PROFILING.md)。
 - DMA 清单统一为 15 列：`instruction_index,dma_index,operation_index,operation_id,`
   `operation_dma_index,direction,object_slot,type_or_release,flag,allocation_id,`
   `line_offset,line_count,word_hex,normalized_asm,cp`。三种方案均保留具体节点的 operation index/ID

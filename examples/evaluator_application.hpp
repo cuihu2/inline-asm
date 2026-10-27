@@ -43,6 +43,7 @@ inline Options options(int argc, char** argv)
             }
         }
         else if (arg == "--no-opt") result.compiler.optimize_resources = false;
+        else if (arg == "--profile-execution") result.compiler.profile_execution = true;
         else if (arg == "--require-instruction-verification") result.compiler.require_instruction_verification = true;
         else if (arg == "--allow-unverified-instruction-model") result.compiler.require_instruction_verification = false;
         else if (arg == "--instruction-ntt-contract") {

@@ -15,6 +15,7 @@ SSA 识别数据复用，安排片上对象和 bank，自动生成加载、释�
 | 编写应用和 ST 用例 | [Evaluator 入门](doc/getting-started/HPU_EVALUATOR_FRONTEND.md)、[应用编程手册](doc/reference/HPU_SEAL_API_REFERENCE.md) |
 | 理解 IR、调度、内存和 runtime | [项目架构](doc/architecture/HPU_ARCHITECTURE.md) |
 | 消费数据、指令和 golden | [应用包 V1](doc/delivery/HPU_APPLICATION_PACKAGE_V1.md)、[IT 交接清单](doc/delivery/IT_HANDOFF_CHECKLIST.md) |
+| 预加载后连续测量程序主体 | [单一连续窗口计时](doc/getting-started/HPU_EXECUTION_PROFILING.md) |
 | 维护算子和适配层 | [底层 API](doc/reference/HPU_LOW_LEVEL_API_REFERENCE.md)、[SEAL 集成](doc/architecture/HPU_SEAL_INTEGRATION.md) |
 | 对接 RTL | [编程手册](doc/reference/HPU_PROGRAMMING_MANUAL.md)、[Bank 分配指南](doc/reference/HPU_BANK_ALLOCATION_GUIDE.md) |
 

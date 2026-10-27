@@ -21,7 +21,8 @@ std::string finalize_frontend_package(
     hpu::runtime::HpuMemImage& image, bool optimize_resources,
     bool require_instruction_verification,
     hpu::model::InstructionNttContract instruction_ntt_contract =
-        hpu::model::InstructionNttContract::raw_bit_reversed_coefficients);
+        hpu::model::InstructionNttContract::raw_bit_reversed_coefficients,
+    bool profile_execution = false);
 }
 
 class ApplicationBuilder;
@@ -73,6 +74,9 @@ struct CompileOptions {
     // Selects a documented host model contract, not a hardware ABI change.
     hpu::model::InstructionNttContract instruction_ntt_contract =
         hpu::model::InstructionNttContract::raw_bit_reversed_coefficients;
+    // One continuous interval: opportunistic entry preload, normal execution
+    // including required DMA, and exclusion of existing trailing writebacks.
+    bool profile_execution = false;
 };
 
 class CompiledApplication {

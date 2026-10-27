@@ -110,7 +110,9 @@ cmake --build build -j --target \
 - [BGV 前端应用](../../examples/bgv_evaluator_application.cpp)：相同整数表达式，使用 BGV 的 correction factor 和降层规则。
 
 CLI 支持 `--degree N`、`--data-moduli COUNT`、`--seed UINT64`、`--emit-dir PATH`、
-`--print-asm` 和 `--no-opt`。默认 N=128、Q3+P1。`--data-moduli 4` 选择 Q4+P1，
+`--print-asm`、`--no-opt` 和 `--profile-execution`。后者尽可能提前加载，用一个连续窗口
+测量全部算术及内部必要 IO，并排除原有尾部写回；目标回调及生成命令见
+[单一连续窗口计时](HPU_EXECUTION_PROFILING.md)。默认 N=128、Q3+P1。`--data-moduli 4` 选择 Q4+P1，
 `--seed` 固定测试 fixture；示例应用可用 N8192 做常规 IO 对照、N65536 做容量压力
 测试。`--no-opt` 使用统一 SSA 后端生成原序基准，不承诺保持历史手写 DMA 和布局。
 交付编译仍仅为 twiddle DLOAD 设置 CP=1，其余 DMA 为 0。

@@ -489,4 +489,175 @@ std::string render_dma_manifest(
     return output.str();
 }
 
+namespace {
+
+bool is_profile_arithmetic(const Instruction& instruction) {
+    switch (instruction.mnemonic) {
+    case Mnemonic::kPadd: case Mnemonic::kPsub:
+    case Mnemonic::kPmul: case Mnemonic::kPmac:
+    case Mnemonic::kPntt: case Mnemonic::kPintt:
+        return true;
+    default:
+        return false;
+    }
+}
+
+std::size_t profile_instruction_count(
+    const std::vector<EncodedInstruction>& encoded,
+    const ExecutionProfileWindow& window, Mnemonic mnemonic) {
+    std::size_t count = 0;
+    for (std::size_t i = window.begin_instruction; i < window.end_instruction; ++i)
+        if (encoded[i].instruction.mnemonic == mnemonic) ++count;
+    return count;
+}
+
+std::size_t profile_arithmetic_count(
+    const std::vector<EncodedInstruction>& encoded,
+    const ExecutionProfileWindow& window) {
+    std::size_t count = 0;
+    for (std::size_t i = window.begin_instruction; i < window.end_instruction; ++i)
+        if (is_profile_arithmetic(encoded[i].instruction)) ++count;
+    return count;
+}
+
+} // namespace
+
+void validate_execution_profile_window(
+    const std::vector<EncodedInstruction>& encoded,
+    const ExecutionProfileWindow& window) {
+    validate_executable_program(encoded);
+    if (window.begin_instruction == 0 ||
+        window.begin_instruction >= window.end_instruction ||
+        window.end_instruction >= encoded.size())
+        throw std::invalid_argument("execution profile requires one nonempty in-bounds window");
+    if (encoded[window.begin_instruction - 1].instruction.mnemonic != Mnemonic::kPsync ||
+        encoded[window.end_instruction].instruction.mnemonic != Mnemonic::kPsync)
+        throw std::invalid_argument("execution profile window requires PSYNC boundaries");
+    if (profile_arithmetic_count(encoded, window) == 0)
+        throw std::invalid_argument("execution profile window must contain arithmetic");
+    for (std::size_t i = 0; i < encoded.size(); ++i)
+        if (is_profile_arithmetic(encoded[i].instruction) &&
+            (i < window.begin_instruction || i >= window.end_instruction))
+            throw std::invalid_argument("all arithmetic must lie inside the continuous profile window");
+}
+
+std::string render_execution_profile_manifest(
+    const std::vector<EncodedInstruction>& encoded,
+    const ExecutionProfileWindow& window) {
+    validate_execution_profile_window(encoded, window);
+    std::ostringstream output;
+    output << "begin_instruction,end_instruction,arithmetic_instruction_count,dload_count,dstore_count\n"
+           << window.begin_instruction << ',' << window.end_instruction << ','
+           << profile_arithmetic_count(encoded, window) << ','
+           << profile_instruction_count(encoded, window, Mnemonic::kDload) << ','
+           << profile_instruction_count(encoded, window, Mnemonic::kDstore) << '\n';
+    return output.str();
+}
+
+std::string render_profiled_executable_header(
+    const std::string& stem,
+    const std::vector<EncodedInstruction>& encoded,
+    std::size_t dma_count,
+    const ExecutionProfileWindow& window) {
+    validate_execution_profile_window(encoded, window);
+    if (collect_dma_relocations(encoded).size() != dma_count)
+        throw std::invalid_argument("profile header DMA count differs from instructions");
+    const auto id = c_identifier(stem);
+    auto header = render_executable_header(stem, dma_count);
+    const auto insertion = header.rfind("#ifdef __cplusplus");
+    std::ostringstream extra;
+    extra << "#ifndef HPU_EXECUTION_PROFILE_TYPES_DEFINED\n"
+          << "#define HPU_EXECUTION_PROFILE_TYPES_DEFINED\n"
+          << "typedef struct hpu_execution_profile_hooks {\n"
+          << "    void *user;\n"
+          << "    uint64_t (*read_cycles)(void *user);\n"
+          << "    /* Wait for this zero-based PSYNC, acknowledge its completion and check\n"
+          << "       faults without resetting resident objects. Nonzero aborts execution. */\n"
+          << "    int (*wait_complete)(void *user, size_t sync_index);\n"
+          << "} hpu_execution_profile_hooks_t;\n"
+          << "typedef struct hpu_execution_profile_sample {\n"
+          << "    uint64_t start_cycles;\n"
+          << "    uint64_t end_cycles;\n"
+          << "    int valid;\n"
+          << "} hpu_execution_profile_sample_t;\n"
+          << "#endif\n\n"
+          << "/* Ordinary entries return -5. The single timer includes necessary body DMA.\n"
+          << "   -1: missing hooks/sample; -4: non-RISC-V host; otherwise zero or the\n"
+          << "   completion hook error. valid is set only after the complete program\n"
+          << "   succeeds, including output stores outside the timed window. */\n"
+          << "int hpu_run_" << id << "(void);\n"
+          << "int hpu_run_" << id << "_profiled(const hpu_execution_profile_hooks_t *hooks,\n"
+          << "    hpu_execution_profile_sample_t *sample);\n\n";
+    header.insert(insertion, extra.str());
+    return header;
+}
+
+std::string render_profiled_executable_source(
+    const std::string& stem,
+    const std::vector<EncodedInstruction>& encoded,
+    std::uint64_t hpu_mem_line_count,
+    const std::vector<ExecutableDmaSpan>& spans,
+    const ExecutionProfileWindow& window,
+    ExecutableTwiddleFormat twiddle_format,
+    std::uint32_t mod_table_lines) {
+    validate_execution_profile_window(encoded, window);
+    validate_fixed_spans(encoded, hpu_mem_line_count, spans, twiddle_format, mod_table_lines);
+    const auto id = c_identifier(stem);
+    std::ostringstream output;
+    output << "/* Generated single-window profile; residual body DMA remains timed. */\n"
+           << "#include \"" << stem << ".h\"\n\n"
+           << "int hpu_program_" << id
+           << "(const hpu_dma_span_t *spans, size_t span_count) {\n"
+           << "    (void)spans; (void)span_count; return -5;\n}\n\n"
+           << "int hpu_run_" << id << "(void) { return -5; }\n\n"
+           << "int hpu_run_" << id << "_profiled(const hpu_execution_profile_hooks_t *hooks,\n"
+           << "    hpu_execution_profile_sample_t *sample) {\n"
+           << "    if (sample != NULL) {\n"
+           << "        sample->start_cycles = 0; sample->end_cycles = 0; sample->valid = 0;\n"
+           << "    }\n"
+           << "    if (hooks == NULL || hooks->read_cycles == NULL ||\n"
+           << "        hooks->wait_complete == NULL || sample == NULL) return -1;\n"
+           << "#if defined(__riscv)\n";
+    std::size_t begin = 0, dma_index = 0, sync_index = 0;
+    while (begin < encoded.size()) {
+        std::size_t end = begin;
+        while (encoded.at(end).instruction.mnemonic != Mnemonic::kPsync) ++end;
+        output << "    /* Instructions [" << begin << ", " << (end + 1)
+               << "), including completion PSYNC. */\n"
+               << "    __asm__ volatile(\n";
+        // Callbacks may overwrite caller-saved x10/x11. Each indivisible asm
+        // block starts with a fresh count cache; DMA within it shares x11.
+        std::uint64_t previous_count = 0;
+        for (std::size_t i = begin; i <= end; ++i) {
+            const auto& item = encoded[i];
+            if (instruction_format(item.instruction.mnemonic) == Format::kDMA) {
+                const auto& span = spans.at(dma_index++);
+                output << "        \"li x10, " << span.line_offset << "\\n\\t\"\n";
+                if (span.line_count != previous_count) {
+                    output << "        \"li x11, " << span.line_count << "\\n\\t\"\n";
+                    previous_count = span.line_count;
+                }
+            }
+            output << "        \".word " << hex_word(item.word) << "\\n\\t\"\n";
+        }
+        output << "        : : : \"x10\", \"x11\", \"memory\");\n"
+               << "    {\n"
+               << "        const int status = hooks->wait_complete(hooks->user, "
+               << sync_index++ << ");\n"
+               << "        if (status != 0) return status;\n"
+               << "    }\n";
+        if (end + 1 == window.begin_instruction)
+            output << "    sample->start_cycles = hooks->read_cycles(hooks->user);\n";
+        if (end == window.end_instruction)
+            output << "    sample->end_cycles = hooks->read_cycles(hooks->user);\n";
+        begin = end + 1;
+    }
+    output << "    sample->valid = 1;\n"
+           << "    return 0;\n"
+           << "#else\n"
+           << "    return -4;\n"
+           << "#endif\n}\n";
+    return output.str();
+}
+
 }  // namespace hpu

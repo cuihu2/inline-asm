@@ -4,6 +4,7 @@
 #include "executable.hpp"
 #include "assembler.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <map>
 #include <optional>
@@ -59,6 +60,42 @@ std::string csv_field(const std::string& value)
     return result + '\"';
 }
 
+hpu::ExecutionProfileWindow add_execution_boundaries(
+    hpu::compiler::CompiledResources& resources)
+{
+    const auto arithmetic = [](const auto& item) {
+        const auto format = hpu::instruction_format(item.instruction.mnemonic);
+        return format == hpu::Format::kAR3 || format == hpu::Format::kSTG;
+    };
+    const auto& original = resources.instructions;
+    const auto first = std::find_if(original.begin(), original.end(), arithmetic);
+    const auto last = std::find_if(original.rbegin(), original.rend(), arithmetic);
+    if (first == original.end())
+        throw std::invalid_argument("execution profiling requires arithmetic instructions");
+    const auto first_index = static_cast<std::size_t>(first - original.begin());
+    const auto last_index = original.size() - 1 - static_cast<std::size_t>(last - original.rbegin());
+    const auto sync = hpu::assemble_source("psync\n").front();
+    std::vector<hpu::EncodedInstruction> instructions;
+    instructions.reserve(original.size() + 2);
+    std::vector<std::size_t> remap(original.size());
+    for (std::size_t index = 0; index < original.size(); ++index) {
+        if (index == first_index &&
+            (index == 0 || original[index - 1].instruction.mnemonic != hpu::Mnemonic::kPsync))
+            instructions.push_back(sync);
+        remap[index] = instructions.size();
+        instructions.push_back(original[index]);
+        if (index == last_index &&
+            (index + 1 == original.size() ||
+             original[index + 1].instruction.mnemonic != hpu::Mnemonic::kPsync))
+            instructions.push_back(sync);
+    }
+    const hpu::ExecutionProfileWindow window{remap[first_index], remap[last_index] + 1};
+    for (auto& dma : resources.dma) dma.instruction_index = remap.at(dma.instruction_index);
+    resources.instructions = std::move(instructions);
+    hpu::validate_execution_profile_window(resources.instructions, window);
+    return window;
+}
+
 void render_program(ProgramArtifacts& program, const hpu::compiler::CompiledResources& resources)
 {
     const auto identifier = hpu::c_identifier(program.stem);
@@ -93,6 +130,13 @@ void render_program(ProgramArtifacts& program, const hpu::compiler::CompiledReso
     }
     program.source = hpu::render_fixed_executable_source(
         program.stem, program.instructions, resources.image.capacity_lines(), fixed_spans);
+    if (program.profile_execution) {
+        const auto& window = program.execution_profile.value();
+        program.header = hpu::render_profiled_executable_header(
+            program.stem, program.instructions, resources.dma.size(), window);
+        program.source = hpu::render_profiled_executable_source(
+            program.stem, program.instructions, resources.image.capacity_lines(), fixed_spans, window);
+    }
     program.resolved_dma_manifest = manifest.str();
     for (const auto& instruction : program.instructions) assembly << instruction.normalized_asm << '\n';
     program.assembly = assembly.str();
@@ -103,7 +147,8 @@ void render_program(ProgramArtifacts& program, const hpu::compiler::CompiledReso
 std::string compile_application_resources(
     hpu::delivery::ApplicationPackageRequest& request,
     hpu::runtime::HpuMemImage& image, bool optimize, bool require_instruction_verification,
-    hpu::model::InstructionNttContract instruction_ntt_contract)
+    hpu::model::InstructionNttContract instruction_ntt_contract,
+    bool profile_execution)
 {
     if (request.program.resources_compiled)
         throw std::invalid_argument("application resources are already compiled");
@@ -195,6 +240,9 @@ std::string compile_application_resources(
     }
     auto policy_only = hpu::resource::output_root_operator_program(source, image, options.required_outputs);
     auto resources = compile_candidate(policy_only, false, "original");
+    std::optional<hpu::resource::OperatorProgram> selected_native;
+    if (profile_execution) selected_native = policy_only;
+    bool selected_optimized = false;
     for (const auto& output : request.outputs) {
         const auto& allocation = containing_allocation(image, output.destination);
         baseline_output_spans.push_back(hpu::compiler::relocate_span(resources, allocation.id, output.destination));
@@ -226,12 +274,25 @@ std::string compile_application_resources(
                     << ",\"merged_reads\":" << pass_report.merged_reads
                     << ",\"forwarded_reads\":" << pass_report.forwarded_reads
                     << ",\"dead_operations\":" << pass_report.dead_operations << '}';
-                if (key(candidate) < key(resources)) resources = std::move(candidate);
+                if (key(candidate) < key(resources)) {
+                    resources = std::move(candidate);
+                    if (profile_execution) selected_native = native;
+                    selected_optimized = true;
+                }
             } catch (const hpu::compiler::ResourceCapacityError& error) {
                 candidate_reports << ",{\"name\":" << json_string(name)
                     << ",\"status\":\"infeasible\",\"reason\":" << json_string(error.what()) << '}';
             }
         }
+    }
+    const auto unprofiled_dma_bytes = resources.report.dload_bytes + resources.report.dstore_bytes;
+    const auto unprofiled_dma_count = resources.dma.size();
+    request.program.profile_execution = profile_execution;
+    request.program.execution_profile.reset();
+    if (profile_execution) {
+        options.preload_readonly_inputs = true;
+        resources = compile_candidate(*selected_native, selected_optimized, "entry_preload");
+        request.program.execution_profile = add_execution_boundaries(resources);
     }
     resources.report.original_dma_bytes = baseline_dma_bytes;
     resources.report.original_dma_count = baseline_dma_count;
@@ -287,7 +348,7 @@ std::string compile_application_resources(
     const auto status = comparison.verified ? "pass" : execution.report.completed() ? "fail" :
         execution.report.status == hpu::model::InstructionExecutionStatus::unsupported_contract ? "unsupported" : "fail";
     const auto message = execution.report.completed() ? comparison.message : execution.report.message;
-    if (require_instruction_verification && !comparison.verified)
+    if ((require_instruction_verification || profile_execution) && !comparison.verified)
         throw std::runtime_error("encoded instruction verification " + std::string(status)
             + " [" + hpu::model::instruction_ntt_contract_name(execution.report.ntt_contract)
             + "]: " + message);
@@ -314,6 +375,29 @@ std::string compile_application_resources(
         ",\"host_instruction_model\":" + diagnostic.str() +
         ",\"host_instruction_model_verified\":" + (comparison.verified ? "true" : "false") +
         ",\"optimization_equivalence_verified\":" + (optimization_verified ? "true" : "false"));
+    if (profile_execution) {
+        const auto& window = *request.program.execution_profile;
+        std::size_t prefix_loads = 0, body_loads = 0, body_stores = 0, suffix_stores = 0;
+        for (const auto& dma_entry : resources.dma) {
+            const auto index = dma_entry.instruction_index;
+            const auto mnemonic = resources.instructions[index].instruction.mnemonic;
+            if (index < window.begin_instruction && mnemonic == hpu::Mnemonic::kDload) ++prefix_loads;
+            else if (index >= window.end_instruction && mnemonic == hpu::Mnemonic::kDstore) ++suffix_stores;
+            else if (index >= window.begin_instruction && index < window.end_instruction) {
+                if (mnemonic == hpu::Mnemonic::kDload) ++body_loads;
+                else if (mnemonic == hpu::Mnemonic::kDstore) ++body_stores;
+            }
+        }
+        append_json_members(request.oracle_report_json,
+            "\"execution_profile\":{\"enabled\":true,\"window_count\":1,"
+            "\"timing_measured\":false,\"includes_residual_dma\":true,"
+            "\"prefix_dload_count\":" + std::to_string(prefix_loads) +
+            ",\"window_dload_count\":" + std::to_string(body_loads) +
+            ",\"window_dstore_count\":" + std::to_string(body_stores) +
+            ",\"suffix_dstore_count\":" + std::to_string(suffix_stores) +
+            ",\"unprofiled_dma_bytes\":" + std::to_string(unprofiled_dma_bytes) +
+            ",\"unprofiled_dma_count\":" + std::to_string(unprofiled_dma_count) + "}");
+    }
     request.program.resources_compiled = true;
     hpu::delivery::validate_application_package_request(request);
     return resource_report;

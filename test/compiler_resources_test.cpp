@@ -1032,6 +1032,160 @@ void test_fragment_ssa_renaming()
             "renamed fragments corrupted their shared live-in");
 }
 
+void test_entry_preload_preserves_continuous_schedule()
+{
+    namespace r = hpu::resource;
+    hpu::runtime::HpuMemImage image(32);
+    image.add("moduli", {65537}, AllocationKind::modulus_table);
+    image.add("a", std::vector<std::uint32_t>(128, 3), AllocationKind::ciphertext);
+    image.add("late/b", std::vector<std::uint32_t>(128, 5), AllocationKind::evaluation_key);
+    image.add("mutable", std::vector<std::uint32_t>(128, 7), AllocationKind::workspace, false);
+    image.reserve("output", 128, AllocationKind::output);
+    const auto binding = [&](const std::string& id) -> ResolvedDma {
+        return {0, id, image.allocation(id).span, 0, "continuous", 0};
+    };
+    r::Recording recording;
+    const auto mod = r::make_operand("mod"), a = r::make_operand("a"),
+               b = r::make_operand("b"), mutable_value = r::make_operand("mutable");
+    r::input(mod, binding("moduli"), hpu::DataType::mod_ctx, hpu::DloadFlag::small_bank);
+    r::select_modulus(0);
+    r::input(a, binding("a"), hpu::DataType::poly);
+    r::multiply_immediate(a, a, 2);
+    r::input(b, binding("late/b"), hpu::DataType::poly);
+    r::add(a, a, b);
+    r::input(mutable_value, binding("mutable"), hpu::DataType::poly);
+    r::add(a, a, mutable_value);
+    r::output(a, binding("output"));
+    r::finish_program();
+    const auto source = recording.finish();
+    hpu::compiler::CompileOptions options;
+    options.automatic_lifetimes = true;
+    const auto baseline = hpu::compiler::compile_resources(r::bind_program(source, image), {}, {}, image, options);
+    options.preload_readonly_inputs = true;
+    const auto prepared = hpu::compiler::compile_resources(r::bind_program(source, image), {}, {}, image, options);
+    const auto first_compute = [](const auto& program) {
+        for (std::size_t i = 0; i < program.instructions.size(); ++i)
+            if (program.instructions[i].instruction.mnemonic == hpu::Mnemonic::kPmul) return i;
+        return program.instructions.size();
+    };
+    const auto load_position = [](const auto& program, const std::string& id) {
+        for (const auto& dma : program.dma)
+            if (dma.allocation_id == id) return dma.instruction_index;
+        throw std::runtime_error("expected input load is missing");
+    };
+    require(load_position(baseline, "late/b") > first_compute(baseline)
+            && load_position(prepared, "late/b") < first_compute(prepared),
+            "immutable late input was not brought forward to entry");
+    require(load_position(prepared, "mutable") > first_compute(prepared),
+            "mutable memory read crossed the computation boundary");
+    const auto computation_order = [](const auto& program) {
+        std::vector<std::pair<hpu::Mnemonic, int>> sequence;
+        for (const auto& encoded : program.instructions) {
+            const auto& op = encoded.instruction;
+            if (op.mnemonic == hpu::Mnemonic::kPmul || op.mnemonic == hpu::Mnemonic::kPadd
+                || op.mnemonic == hpu::Mnemonic::kPsync || op.mnemonic == hpu::Mnemonic::kPmodld)
+                sequence.emplace_back(op.mnemonic, op.imm8);
+        }
+        return sequence;
+    };
+    require(computation_order(prepared) == computation_order(baseline),
+            "entry preloading changed computation order or inserted window waits");
+    require(prepared.report.preloaded_dma_count == 3
+            && prepared.report.preloaded_dma_bytes == 5 * 256
+            && prepared.report.dma_count == baseline.report.dma_count
+            && prepared.report.dload_bytes == baseline.report.dload_bytes
+            && prepared.report.dstore_bytes == baseline.report.dstore_bytes,
+            "entry preparation duplicated IO or reported incorrect preload metrics");
+    const auto actual = replay(prepared.instructions, prepared.dma, prepared.image);
+    require(allocation_words(actual, prepared.image, "output") == std::vector<std::uint32_t>(128, 18),
+            "entry preloading changed arithmetic or mutable memory contents");
+    // With only two full-size banks, reserve the transient working space and
+    // leave the existing on-demand stream intact rather than forcing spills.
+    options.regular_bank_count = 2;
+    hpu::runtime::HpuMemImage large_image(8192);
+    large_image.add("moduli", {65537}, AllocationKind::modulus_table);
+    for (const auto& id : {"a", "late/b"})
+        large_image.add(id, std::vector<std::uint32_t>(65536, id == std::string("a") ? 3 : 5),
+                        AllocationKind::ciphertext);
+    large_image.add("mutable", std::vector<std::uint32_t>(65536, 7), AllocationKind::workspace, false);
+    large_image.reserve("output", 65536, AllocationKind::output);
+    auto large_source = source;
+    for (auto& port : large_source.ports)
+        port.binding->span = large_image.allocation(port.binding->allocation_id).span;
+    const auto constrained = hpu::compiler::compile_resources(
+        r::bind_program(large_source, large_image), {}, {}, large_image, options);
+    require(constrained.report.preloaded_dma_count == 1 && constrained.report.spills == 0,
+            "entry preloading occupied capacity needed by the continuous computation");
+    const auto constrained_words = replay(constrained.instructions, constrained.dma, constrained.image);
+    require(allocation_words(constrained_words, constrained.image, "output")
+                == std::vector<std::uint32_t>(65536, 18),
+            "capacity-limited entry preparation changed the result");
+}
+
+void test_entry_preloads_complete_ntt_parameters()
+{
+    namespace r = hpu::resource;
+    constexpr std::uint32_t q = 65537;
+    constexpr std::size_t degree = 8192;
+    const hpu::model::HardwareNttModel model(degree, q,
+        hpu::model::pow_mod(3, (q - 1) / degree, q));
+    hpu::runtime::HpuMemImage image(512);
+    constexpr auto mu = std::numeric_limits<std::uint64_t>::max() / q;
+    image.add("moduli", {q, static_cast<std::uint32_t>(mu), static_cast<std::uint32_t>(mu >> 32), 0},
+              AllocationKind::modulus_table);
+    std::vector<std::uint32_t> input(degree);
+    for (std::size_t i = 0; i < degree; ++i) input[i] = static_cast<std::uint32_t>((97 * i + 3) % q);
+    image.add("input", input, AllocationKind::ciphertext);
+    image.add("pre", hpu::model::pack_online_pmul_parameters(1, 3, q, degree), AllocationKind::twiddle);
+    const auto tables = model.forward_twiddles();
+    for (std::size_t stage = 0; stage < tables.size(); ++stage)
+        image.add("stage/" + std::to_string(stage), hpu::model::pack_stage_twiddles(tables[stage], q, degree),
+                  AllocationKind::twiddle);
+    image.reserve("output", degree, AllocationKind::output);
+    const auto binding = [&](const std::string& id) -> ResolvedDma {
+        return {0, id, image.allocation(id).span, 0, "transform", 0};
+    };
+    r::Recording recording;
+    const auto mod = r::make_operand("mod"), data = r::make_operand("data");
+    r::input(mod, binding("moduli"), hpu::DataType::mod_ctx, hpu::DloadFlag::small_bank);
+    r::select_modulus(0);
+    r::input(data, binding("input"), hpu::DataType::poly);
+    const auto pre = r::make_operand("pre");
+    r::input(pre, binding("pre"), hpu::DataType::online_pmul_parameters);
+    r::multiply_online(data, data, pre);
+    for (std::size_t stage = 0; stage < tables.size(); ++stage) {
+        const auto parameters = r::make_operand("stage");
+        r::input(parameters, binding("stage/" + std::to_string(stage)), hpu::DataType::twiddle_parameters);
+        r::ntt_stage(data, parameters, static_cast<int>(stage));
+    }
+    r::output(data, binding("output"));
+    r::finish_program();
+    const auto source = recording.finish();
+    hpu::compiler::CompileOptions options;
+    options.automatic_lifetimes = true;
+    const auto baseline = hpu::compiler::compile_resources(r::bind_program(source, image), {}, {}, image, options);
+    options.preload_readonly_inputs = true;
+    const auto prepared = hpu::compiler::compile_resources(r::bind_program(source, image), {}, {}, image, options);
+    require(prepared.report.preloaded_dma_count == 16 && prepared.report.spills == 0
+            && prepared.report.reloads == 0 && prepared.report.dma_count == baseline.report.dma_count,
+            "complete single-modulus NTT parameter set was not retained at entry");
+    bool computation_started = false;
+    for (const auto& encoded : prepared.instructions) {
+        const auto mnemonic = encoded.instruction.mnemonic;
+        if (mnemonic == hpu::Mnemonic::kPmul || mnemonic == hpu::Mnemonic::kPntt) computation_started = true;
+        require(mnemonic != hpu::Mnemonic::kDload || !computation_started,
+                "NTT parameter load remained inside the continuous execution interval");
+    }
+    const auto execute = [&](const auto& program) {
+        std::vector<hpu::runtime::HpuMemSpan> ranges;
+        for (const auto& dma : program.dma) ranges.push_back(dma.span);
+        const auto result = hpu::model::execute_instructions(program.instructions, ranges, program.image);
+        require(result.report.completed(), result.report.message.c_str());
+        return allocation_words(result.words, program.image, "output");
+    };
+    require(execute(prepared) == execute(baseline), "entry preloading changed the NTT result");
+}
+
 } // namespace
 
 int main()
@@ -1051,6 +1205,8 @@ int main()
         test_native_operator_resources();
         test_nested_recording();
         test_fragment_ssa_renaming();
+        test_entry_preload_preserves_continuous_schedule();
+        test_entry_preloads_complete_ntt_parameters();
         test_scratch_reuse();
         test_dirty_spill();
         test_stage_bank_and_multiple_readers();

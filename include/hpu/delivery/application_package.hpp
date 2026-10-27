@@ -3,6 +3,7 @@
 #include "hpu/runtime/application.hpp"
 #include "hpu/runtime/memory_image.hpp"
 #include "instruction.hpp"
+#include "executable.hpp"
 #include "hpu/compiler/operator_resources.hpp"
 #include <memory>
 
@@ -50,6 +51,8 @@ struct ProgramArtifacts {
     // Serialized in memory/abi.json and checked against final DMA bindings.
     hpu::compiler::DmaCachePolicy dma_cache_policy =
         hpu::compiler::DmaCachePolicy::preserve;
+    bool profile_execution = false;
+    std::optional<hpu::ExecutionProfileWindow> execution_profile;
 };
 
 struct VerifiedOutputLimb {

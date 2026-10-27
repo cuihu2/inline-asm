@@ -308,12 +308,15 @@ struct ScheduledProgram {
 
 class Scheduler {
 public:
-    Scheduler(VirtualProgram& program, const CompileOptions& options)
+    Scheduler(VirtualProgram& program, const CompileOptions& options,
+              std::size_t preload_limit = 0)
         : program_(program), states_(program.objects.size()), uses_(program),
-          allocator_(bank_options(options)), automatic_(options.automatic_lifetimes) {}
+          allocator_(bank_options(options)), automatic_(options.automatic_lifetimes),
+          preload_limit_(preload_limit) {}
 
     ScheduledProgram run()
     {
+        if (preload_limit_) preload_inputs();
         for (cursor_ = 0; cursor_ < program_.instructions.size(); ++cursor_) {
             const auto op = program_.instructions[cursor_];
             uses_.consume(op, cursor_);
@@ -360,7 +363,116 @@ private:
         std::size_t loads = 0;
         bool exact_copy = false;
         std::string logical_value;
+        std::optional<std::size_t> prefetched_definition;
     };
+
+    void preload_inputs()
+    {
+        // Only initial immutable memory versions can move across arbitrary
+        // operations. A later DLOAD into reused storage is not an initial
+        // definition and must retain its position in the normal schedule.
+        std::vector<std::optional<std::size_t>> first_definition(states_.size());
+        std::vector<std::size_t> load_count(states_.size());
+        std::uint64_t largest_block = 128;
+        for (const auto& shape : program_.objects) {
+            if (shape.type == 1 || (shape.dma_flag && !(shape.dma_flag & 0x1f))) continue;
+            std::uint64_t capacity = 128;
+            while (capacity < shape.line_count) capacity *= 2;
+            largest_block = std::max(largest_block, capacity);
+        }
+        for (std::size_t i = 0; i < program_.instructions.size(); ++i) {
+            const auto& op = program_.instructions[i];
+            for (const auto id : op.definitions) {
+                if (!first_definition[id]) first_definition[id] = i;
+                if (op.instruction.mnemonic == hpu::Mnemonic::kDload) ++load_count[id];
+            }
+        }
+        const auto& limits = allocator_.options();
+        const auto total_lines = limits.regular_bank_count * limits.regular_bank_lines;
+        const auto regular_budget = total_lines > 2 * largest_block
+            ? total_lines - 2 * largest_block : 0;
+        std::uint64_t immutable_small_lines = 0;
+        for (std::size_t i = 0; i < program_.instructions.size(); ++i) {
+            const auto& op = program_.instructions[i];
+            if (op.instruction.mnemonic != hpu::Mnemonic::kDload || !op.memory
+                || op.definitions.size() != 1) continue;
+            const auto id = op.definitions.front();
+            const auto& shape = program_.objects[id];
+            if (shape.type != 1 && shape.dma_flag == 0x20
+                && first_definition[id] == i && load_count[id] == 1
+                && program_.buffers[op.memory->buffer].read_only)
+                immutable_small_lines += shape.line_count;
+        }
+        // A complete single-modulus N8192 transform has exactly fourteen
+        // two-line parameters, which can all stay in Bank 5. Otherwise leave
+        // two parameter slots available for later on-demand resources.
+        const auto small_budget = immutable_small_lines
+                <= limits.small_bank_lines - limits.mod_table_lines
+            ? limits.small_bank_lines : limits.small_bank_lines - 4;
+        std::size_t ordinary_count = 0;
+        bool modulus_loaded = false;
+        const auto try_load = [&](std::size_t i) {
+            const auto& op = program_.instructions[i];
+            if (op.instruction.mnemonic != hpu::Mnemonic::kDload
+                || !op.memory || op.definitions.size() != 1 || op.reload_retained_object
+                || !program_.buffers[op.memory->buffer].read_only) return;
+            const auto id = op.definitions.front();
+            const auto& shape = program_.objects[id];
+            if (first_definition[id] != i || load_count[id] != 1
+                || (shape.type != 1 && next_use(id) == kNoUse)) return;
+            if (shape.type == 1 ? modulus_loaded : ordinary_count >= preload_limit_) return;
+            std::array<bool, 64> used{};
+            for (const auto other : resident_) used[*states_[other].slot] = true;
+            auto free_slot = std::find(used.begin(), used.end(), false);
+            if (shape.type == 1 && !used[4]) free_slot = used.begin() + 4;
+            // Leave logical names available for normal instruction results.
+            if (free_slot == used.end() || resident_.size() >= 60) return;
+            const auto slot = static_cast<std::uint8_t>(free_slot - used.begin());
+            auto trial = allocator_;
+            try { trial.load(slot, shape.line_count, shape.type, shape.dma_flag); }
+            catch (const hpu::runtime::BankAllocationError&) { return; }
+            if (shape.type != 1 && (trial.stats().regular_lines > regular_budget
+                || trial.stats().small_lines > small_budget)) return;
+            allocator_ = std::move(trial);
+            auto& state = states_[id];
+            state.slot = slot;
+            state.home = op.memory;
+            state.initialized = true;
+            state.loads = 1;
+            state.exact_copy = op.exact_copy;
+            state.logical_value = op.logical_value;
+            state.prefetched_definition = i;
+            resident_.insert(id);
+            if (shape.type == 1) { modulus_ = id; modulus_loaded = true; }
+            else ++ordinary_count;
+            auto instruction = op.instruction;
+            instruction.obj_id = slot;
+            auto origin = op.origin.value_or(ResolvedDma{});
+            origin.purpose = op.exact_copy ? "exact_copy" : "input";
+            origin.logical_value = op.logical_value;
+            emit_dma(instruction, *op.memory, std::move(origin));
+            ++result_.report.preloaded_dma_count;
+            result_.report.preloaded_dma_bytes += shape.line_count * 256;
+            measure();
+        };
+        // The fixed modulus-table owner remains the first resident resource.
+        bool has_modulus_load = false;
+        for (std::size_t i = 0; i < program_.instructions.size(); ++i) {
+            const auto& op = program_.instructions[i];
+            if (op.instruction.mnemonic == hpu::Mnemonic::kDload && !op.definitions.empty()
+                && program_.objects[op.definitions.front()].type == 1) {
+                has_modulus_load = true;
+                try_load(i);
+                break;
+            }
+        }
+        if (has_modulus_load && !modulus_loaded) return;
+        for (std::size_t i = 0; i < program_.instructions.size(); ++i) {
+            const auto& op = program_.instructions[i];
+            if (op.instruction.mnemonic == hpu::Mnemonic::kDload && !op.definitions.empty()
+                && program_.objects[op.definitions.front()].type != 1) try_load(i);
+        }
+    }
 
     std::size_t next_use(ObjectId id) const
     {
@@ -596,6 +708,13 @@ private:
     {
         const ObjectId id = op.definitions.at(0);
         auto& state = states_[id];
+        if (state.prefetched_definition == cursor_) {
+            // This exact immutable definition was materialized at entry. If
+            // normal allocation evicted it, its unchanged home still reloads
+            // on demand; do not erase its residency or memory version here.
+            state.prefetched_definition.reset();
+            return;
+        }
         if (op.reload_retained_object) {
             ensure(id);
             return;
@@ -734,6 +853,7 @@ private:
     std::size_t cursor_ = 0;
     ResolvedDma current_origin_;
     bool automatic_ = false;
+    std::size_t preload_limit_ = 0;
 };
 
 std::vector<LogicalBufferPlacement> place_buffers(
@@ -1179,7 +1299,7 @@ CompiledResources compile_resources(
     for (auto& buffer : program.buffers)
         if (options.required_outputs.count(buffer.id)) buffer.retained = true;
     if (options.optimization == OptimizationMode::no_opt && !instructions.empty() && !ssa_copies
-        && !options.automatic_lifetimes) {
+        && !options.automatic_lifetimes && !options.preload_readonly_inputs) {
         CompiledResources result(image.capacity_lines());
         result.image = image;
         result.instructions = instructions;
@@ -1200,7 +1320,41 @@ CompiledResources compile_resources(
             op.reload_retained_object = false;
         }
     }
-    auto scheduled = Scheduler(program, options).run();
+    // Preloading is a preparation candidate, not a different execution
+    // allocator. Keep the unmodified normal schedule unless entry residency
+    // can be gained without extra transfers, reloads, or dirty spills.
+    ScheduledProgram scheduled;
+    if (options.preload_readonly_inputs) {
+        auto normal_program = program;
+        scheduled = Scheduler(normal_program, options).run();
+        const auto dma_cost = [](const ScheduledProgram& candidate) {
+            std::uint64_t lines = 0;
+            for (const auto& dma : candidate.dma) lines += dma.range.line_count;
+            return std::make_pair(lines, candidate.dma.size());
+        };
+        const auto baseline_cost = dma_cost(scheduled);
+        for (const auto limit : {24U, 12U, 6U, 3U}) {
+            auto candidate_program = program;
+            try {
+                auto candidate = Scheduler(candidate_program, options, limit).run();
+                const auto cost = dma_cost(candidate);
+                if (candidate.report.preloaded_dma_count == 0
+                    || cost.first > baseline_cost.first || cost.second > baseline_cost.second
+                    || candidate.report.spills > scheduled.report.spills
+                    || candidate.report.reloads > scheduled.report.reloads) continue;
+                scheduled = std::move(candidate);
+                normal_program = std::move(candidate_program);
+                break;
+            } catch (const ResourceCapacityError&) {
+                // Speculative early residency can block an otherwise valid
+                // aligned transient placement. The original schedule remains
+                // valid and the next smaller admission limit may still fit.
+            }
+        }
+        program = std::move(normal_program);
+    } else {
+        scheduled = Scheduler(program, options).run();
+    }
     if (options.prune_unused_buffers) {
         for (auto& buffer : program.buffers) buffer.materialized = false;
         for (const auto& entry : scheduled.dma) program.buffers[entry.range.buffer].materialized = true;
@@ -1285,6 +1439,8 @@ std::string render_resource_report(const CompiledResources& resources)
            << ",\n  \"spill_write_bytes\": " << report.spill_write_bytes
            << ",\n  \"reload_read_bytes\": " << report.reload_read_bytes
            << ",\n  \"exact_copy_bytes\": " << report.exact_copy_bytes
+           << ",\n  \"preloaded_dma_count\": " << report.preloaded_dma_count
+           << ",\n  \"preloaded_dma_bytes\": " << report.preloaded_dma_bytes
            << ",\n  \"repeated_range_read_bytes\": " << report.repeated_range_read_bytes
            << ",\n  \"required_output_write_bytes\": " << report.required_output_write_bytes
            << ",\n  \"initial_image_bytes\": " << report.initial_image_bytes

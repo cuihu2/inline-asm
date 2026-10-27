@@ -10,6 +10,10 @@ RISC-V 编译、Nexus-AM 接入以及 RTL/板级执行由 IT 环境完成。
 不提供 SEAL 密文差分、解密结果或安全参数证据；下文的 SEAL 双路径要求适用于
 三方案加密应用包。原生用例仍须通过包校验及最终指令模型比较。
 
+带 `execution_profile_manifest` 的包使用单一连续计时入口，须接入时钟与 PSYNC 完成
+回调；窗口内必要 DMA 仍计时，普通入口返回 `-5`。具体操作见
+[单一连续窗口计时](../getting-started/HPU_EXECUTION_PROFILING.md)。
+
 ## 64 对象版本接收要求
 
 本轮改为 `hpu-objects64-v1.2` ISA。接收时检查 `memory/abi.json` 的
